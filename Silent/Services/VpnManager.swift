@@ -26,6 +26,11 @@ final class VpnManager: ObservableObject {
         state = Self.map(mgr.connection.status)
     }
 
+    func isApiTunnelActive() async -> Bool {
+        guard let mgr = try? await load() else { return false }
+        return mgr.connection.status == .connected || mgr.connection.status == .reasserting
+    }
+
     func connect(_ config: TunnelConfig) async throws {
         guard let url = AppIdentity.configURL else {
             throw APIError.server("Нет App Group. Включите group.com.silent.vpn в подписи приложения и расширения.")

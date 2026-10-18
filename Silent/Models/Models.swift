@@ -14,7 +14,7 @@ struct SubscriptionInfo: Decodable {
 
 struct DeviceInfo: Decodable, Identifiable {
     let id: String
-    let device_name: String
+    var device_name: String
     let device_type: String
     let is_connected: Bool
     let last_connected: String?
@@ -26,9 +26,9 @@ struct UserProfile: Decodable {
     let display_id: String
     let is_admin: Bool
     let subscription: SubscriptionInfo
-    let devices: [DeviceInfo]
-    let devices_count: Int
-    let connected_count: Int
+    var devices: [DeviceInfo]
+    var devices_count: Int
+    var connected_count: Int
     let max_devices: Int
     let payment_previews: [String: PaymentPreview]?
 

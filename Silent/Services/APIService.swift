@@ -49,10 +49,12 @@ class APIService: ObservableObject {
         auth: Bool = true,
         allowRefresh: Bool = true
     ) async throws -> Data {
-        let bases = PublicApiFailover.bases(preferred: serverURL)
+        let tunnelActive = await VpnManager.shared.isApiTunnelActive()
+        let bases = PublicApiFailover.bases(preferred: serverURL, tunnelActive: tunnelActive)
         guard !bases.isEmpty else { throw APIError.noServer }
         var lastError: Error = APIError.network
         for base in bases {
+            try Task.checkCancellation()
             do {
                 return try await requestOnce(path, method: method, body: body, auth: auth, base: base, allowRefresh: allowRefresh)
             } catch let e as APIError {
@@ -99,8 +101,10 @@ class APIService: ObservableObject {
         do {
             (data, response) = try await session.data(for: req)
         } catch {
+            session.invalidateAndCancel()
             throw APIError.network
         }
+        session.finishTasksAndInvalidate()
 
         guard let httpResp = response as? HTTPURLResponse else { throw APIError.network }
         if httpResp.statusCode == 401 && auth && allowRefresh {
@@ -129,9 +133,11 @@ class APIService: ObservableObject {
 
     private func refreshTokens() async throws {
         guard let rt = refreshToken else { throw APIError.unauthorized }
+        let oldAccess = accessToken
         struct RefReq: Encodable { let refresh_token: String }
         let data = try await requestData("api/auth/refresh", method: "POST", body: RefReq(refresh_token: rt), auth: false, allowRefresh: false)
         let resp = try JSONDecoder().decode(TokenResponse.self, from: data)
+        guard refreshToken == rt, accessToken == oldAccess else { throw APIError.unauthorized }
         accessToken = resp.access_token
         refreshToken = resp.refresh_token
     }

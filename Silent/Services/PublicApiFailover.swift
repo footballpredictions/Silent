@@ -1,6 +1,6 @@
 import Foundation
 
-/// Публичный API: Улей :443, затем соты :9100 (прокси на Улей).
+/// При активном VPN сначала шлюз туннеля; публичные адреса остаются резервом.
 enum PublicApiFailover {
     static let hiveHttps = "https://89-125-188-100.nip.io"
     static let hiveIpHttps = "https://89.125.188.100"
@@ -21,7 +21,9 @@ enum PublicApiFailover {
         return stored
     }
 
-    static func bases(preferred: String) -> [String] {
+    static let tunnelAPI = "http://10.66.66.1:8000"
+
+    static func bases(preferred: String, tunnelActive: Bool = false) -> [String] {
         var out: [String] = []
         func add(_ raw: String) {
             let v = rewriteStoredBase(raw)
@@ -29,6 +31,7 @@ enum PublicApiFailover {
             if v.contains("132.243.234.162") || v.contains("132-243-234-162") { return }
             out.append(v)
         }
+        if tunnelActive { out.append(tunnelAPI) }
         if !out.contains(hiveIpHttps) { out.append(hiveIpHttps) }
         cells.forEach { add($0) }
         add(hiveHttps)

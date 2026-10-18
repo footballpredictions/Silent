@@ -413,9 +413,11 @@ private struct BonusesPage: View {
 
 private struct DevicesPage: View {
     @EnvironmentObject var vm: MainViewModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var rename: DeviceInfo?
     @State private var renameText = ""
     @State private var hint = ""
+    @State private var deleteTarget: DeviceInfo?
 
     var body: some View {
         let p = vm.palette
@@ -423,11 +425,14 @@ private struct DevicesPage: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Сессии").font(AppFont.text(14, weight: .semibold)).foregroundColor(p.fg)
                 Text(vm.profile?.sessionsBadge ?? "0/3").font(AppFont.text(12)).foregroundColor(p.fg.opacity(0.5))
+                Text("VPN онлайн: \(vm.profile?.devices.filter { vm.sessionOnline($0) }.count ?? 0) из \(vm.profile?.devices_count ?? 0)")
+                    .font(AppFont.text(12)).foregroundColor(p.fg.opacity(0.5))
+                if !vm.sessionsError.isEmpty { Text(vm.sessionsError).font(AppFont.text(12)).foregroundColor(p.fg.opacity(0.7)) }
                 if !hint.isEmpty { Text(hint).font(AppFont.text(12)).foregroundColor(.red) }
                 ForEach(vm.profile?.devices ?? []) { device in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Circle().fill(device.is_connected ? Color(red: 0.09, green: 0.64, blue: 0.29) : p.fg.opacity(0.25)).frame(width: 8, height: 8)
+                            Circle().fill(vm.sessionOnline(device) ? Color(red: 0.09, green: 0.64, blue: 0.29) : p.fg.opacity(0.25)).frame(width: 8, height: 8)
                             Text(device.device_name).font(AppFont.text(14, weight: .semibold)).foregroundColor(p.fg)
                             Spacer()
                             Text(device.device_type).font(AppFont.text(11)).foregroundColor(p.fg.opacity(0.4))
@@ -439,9 +444,7 @@ private struct DevicesPage: View {
                             }
                             .font(AppFont.text(12)).foregroundColor(p.link)
                             Button("Удалить") {
-                                Task {
-                                    if let err = await vm.deleteDevice(device.id) { hint = err } else { hint = "" }
-                                }
+                                deleteTarget = device
                             }
                             .font(AppFont.text(12)).foregroundColor(.red)
                         }
@@ -450,6 +453,23 @@ private struct DevicesPage: View {
                 }
             }
             .padding(16)
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await vm.refreshSessions()
+                do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
+            }
+        }
+        .confirmationDialog("Удалить сессию?", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
+            Button("Удалить", role: .destructive) {
+                guard let id = deleteTarget?.id else { return }
+                Task {
+                    hint = await vm.deleteDevice(id) ?? ""
+                    deleteTarget = nil
+                }
+            }
+            Button("Отмена", role: .cancel) { deleteTarget = nil }
         }
         .alert("Приписать имя", isPresented: Binding(get: { rename != nil }, set: { if !$0 { rename = nil } })) {
             TextField("Имя", text: $renameText)

@@ -11,6 +11,10 @@ enum PaymentUi { case idle, waiting, success, failed, timeout }
 final class MainViewModel: ObservableObject {
     @Published var vpnState: VpnState = .disconnected
     @Published var profile: UserProfile?
+    @Published var sessionsError = ""
+    private var sessionsVersion = 0
+    private var sessionsFetching = false
+    private var sessionsMutation = false
     @Published var theme: ThemeData?
     @Published var errorMessage: String?
     @Published var loggedIn = false
@@ -58,6 +62,15 @@ final class MainViewModel: ObservableObject {
 
     var palette: Palette { Palette.resolve(theme: theme, dark: darkMode) }
     var hasAccess: Bool { profile?.is_admin == true || profile?.subscription.is_active == true }
+    var sessionDeviceId: String? {
+        guard let url = AppIdentity.configURL, let data = try? Data(contentsOf: url),
+              let config = try? JSONDecoder().decode(TunnelConfig.self, from: data) else { return nil }
+        return config.deviceId
+    }
+
+    func sessionOnline(_ device: DeviceInfo) -> Bool {
+        device.is_connected || (device.id == sessionDeviceId && vpnState == .connected)
+    }
 
     init() {
         theme = api.cachedTheme()
@@ -150,6 +163,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func logout() {
+        sessionsVersion += 1
         Task {
             if vpnState == .connected || vpnState == .connecting {
                 await vpn.disconnect()
@@ -444,10 +458,45 @@ final class MainViewModel: ObservableObject {
         }
     }
 
-    func renameDevice(_ id: String, _ name: String) async -> String? {
+    func refreshSessions() async {
+        guard loggedIn, !sessionsFetching, !sessionsMutation else { return }
+        sessionsFetching = true
+        let version = sessionsVersion
+        defer { sessionsFetching = false }
         do {
-            try await api.renameDevice(id: id, name: name)
-            profile = try? await api.getProfile()
+            let fresh = try await api.getProfile()
+            guard !Task.isCancelled, loggedIn, version == sessionsVersion else { return }
+            profile = fresh
+            sessionsError = ""
+        } catch {
+            if !Task.isCancelled, loggedIn, version == sessionsVersion {
+                sessionsError = "Не удалось обновить сессии. Показаны последние данные."
+            }
+        }
+    }
+
+    func renameDevice(_ id: String, _ name: String) async -> String? {
+        guard !sessionsMutation else { return "Дождитесь завершения операции" }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 64 else { return "Введите имя до 64 символов" }
+        sessionsMutation = true
+        sessionsVersion += 1
+        let version = sessionsVersion
+        defer { sessionsMutation = false }
+        do {
+            try await api.renameDevice(id: id, name: trimmed)
+            guard loggedIn, version == sessionsVersion else { return nil }
+            sessionsVersion += 1
+            if var current = profile {
+                current.devices = current.devices.map { device in
+                    var updated = device
+                    if updated.id == id { updated.device_name = trimmed }
+                    return updated
+                }
+                profile = current
+            }
+            sessionsMutation = false
+            await refreshSessions()
             return nil
         } catch {
             return error.localizedDescription
@@ -455,9 +504,24 @@ final class MainViewModel: ObservableObject {
     }
 
     func deleteDevice(_ id: String) async -> String? {
+        guard !sessionsMutation else { return "Дождитесь завершения операции" }
+        sessionsMutation = true
+        sessionsVersion += 1
+        let version = sessionsVersion
+        defer { sessionsMutation = false }
         do {
             try await api.deleteDevice(id: id)
-            profile = try? await api.getProfile()
+            guard loggedIn, version == sessionsVersion else { return nil }
+            if id == sessionDeviceId { logout(); return nil }
+            sessionsVersion += 1
+            if var current = profile {
+                current.devices.removeAll { $0.id == id }
+                current.devices_count = current.devices.count
+                current.connected_count = current.devices.filter { $0.is_connected }.count
+                profile = current
+            }
+            sessionsMutation = false
+            await refreshSessions()
             return nil
         } catch {
             return error.localizedDescription

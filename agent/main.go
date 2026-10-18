@@ -137,6 +137,9 @@ func (a *Agent) serveAPI(w http.ResponseWriter, r *http.Request) {
 	op := strings.TrimPrefix(r.URL.Path, "/cgi-bin/silent-api/")
 	methods := map[string]string{"status": "GET", "theme": "GET", "login": "POST", "register": "POST", "forgot": "POST", "profile": "GET", "referral": "GET", "servers": "GET", "server": "POST", "pay": "POST", "pay-preview": "POST", "pay-status": "POST", "promo": "POST", "connect": "POST", "disconnect": "POST", "logout": "POST", "log": "GET", "update-check": "GET", "update-status": "GET", "update-start": "POST"}
 	method, exists := methods[op]
+	if op == "device-rename" || op == "device-delete" {
+		method, exists = "POST", true
+	}
 	if op == "dns" || op == "exclusions" {
 		exists = true
 		method = r.Method
@@ -176,6 +179,30 @@ func (a *Agent) serveAPI(w http.ResponseWriter, r *http.Request) {
 	var v any
 	var err error
 	switch op {
+	case "device-rename", "device-delete":
+		id, _ := body["id"].(string)
+		if len(id) == 0 || len(id) > 128 || strings.Trim(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != "" {
+			reply(w, 400, map[string]string{"detail": "Некорректная сессия"})
+			return
+		}
+		a.mu.RLock()
+		token := a.cfg.Token
+		a.mu.RUnlock()
+		if token == "" {
+			reply(w, 401, map[string]string{"detail": "Войдите в аккаунт"})
+			return
+		}
+		if op == "device-rename" {
+			name, _ := body["name"].(string)
+			name = strings.TrimSpace(name)
+			if len([]rune(name)) == 0 || len([]rune(name)) > 64 {
+				reply(w, 400, map[string]string{"detail": "Имя должно содержать от 1 до 64 символов"})
+				return
+			}
+			v, err = a.callSession(ctx, "PATCH", "/api/users/devices/"+id, map[string]string{"device_name": name})
+		} else {
+			v, err = a.callSession(ctx, "DELETE", "/api/users/devices/"+id, nil)
+		}
 	case "update-check":
 		v = a.checkUpdate(ctx)
 	case "update-status":
@@ -280,7 +307,11 @@ func (a *Agent) serveAPI(w http.ResponseWriter, r *http.Request) {
 			method = "GET"
 			payload = nil
 		}
-		v, err = a.call(ctx, method, path, payload)
+		if op == "profile" {
+			v, err = a.callSession(ctx, method, path, payload)
+		} else {
+			v, err = a.call(ctx, method, path, payload)
+		}
 	}
 	if err != nil {
 		var ae *apiError

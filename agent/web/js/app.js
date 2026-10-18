@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js?v=1.0.169-r10";
+import { api, openPaymentUrl } from "./api.js?v=1.0.169-r11";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
@@ -148,10 +148,12 @@ function canRestoreSession() {
 let sessionVersion = 0;
 let connectionVersion = 0;
 let profileRequest = null;
+let devicesVersion = 0;
+let deviceMutation = false;
 
 function loadProfile(version = sessionVersion, knownStatus = null) {
-  if (profileRequest?.version === version) return profileRequest.promise;
-  const request = { version };
+  if (profileRequest?.version === version && profileRequest.revision === devicesVersion) return profileRequest.promise;
+  const request = { version, revision: devicesVersion };
   const connection = connectionVersion;
   request.promise = (async () => {
     try {
@@ -159,7 +161,7 @@ function loadProfile(version = sessionVersion, knownStatus = null) {
         api.profile(), knownStatus ? Promise.resolve(knownStatus) : api.status().catch(() => null),
       ]);
       if (!profile?.email) throw new Error(detailText(profile?.detail) || "Не удалось загрузить аккаунт");
-      if (version !== sessionVersion) return false;
+      if (version !== sessionVersion || request.revision !== devicesVersion) return false;
       if (status && connection === connectionVersion && !state.connecting && !state.disconnecting) {
         state.connected = !!status.connected;
       }
@@ -180,7 +182,7 @@ function loadProfile(version = sessionVersion, knownStatus = null) {
 }
 
 async function refreshProfile() {
-  if (!state.session || state.loading) return;
+  if (!state.session || state.loading || deviceMutation) return;
   const version = sessionVersion;
   try { await loadProfile(version); }
   catch (e) {
@@ -616,11 +618,13 @@ function devicesPage() {
       return `
       <div class="session">
         <span class="dot ${d.is_connected ? "on" : ""}"></span>
-        <div>
+        <div class="session-body">
           <div style="font-size:14px;font-weight:500">${esc(kind)}${d.self ? ' <span class="hint">· это вы</span>' : ""}</div>
           ${extra ? `<div class="hint">${esc(extra)}</div>` : ""}
           <div class="hint" style="${d.is_connected ? `color:var(--sv-green)` : ""}">${d.is_connected ? "В сети" : "Не в сети"}</div>
         </div>
+        <button type="button" class="session-act" data-act="device-rename" data-id="${esc(d.id)}" ${deviceMutation ? "disabled" : ""}>Переименовать</button>
+        <button type="button" class="session-act" data-act="device-delete" data-id="${esc(d.id)}" data-self="${d.self ? "1" : "0"}" ${deviceMutation ? "disabled" : ""}>Удалить</button>
       </div>`;
     }).join("") || `<p class="hint">Нет зарегистрированных устройств</p>`}`;
 }
@@ -755,6 +759,8 @@ async function handle(act, el) {
       render();
       return;
     }
+    if (act === "device-rename") return renameDevice(el.dataset.id);
+    if (act === "device-delete") return deleteDevice(el.dataset.id, el.dataset.self === "1");
     if (act === "page-back") { if (state.showSubscriptionShop) state.showSubscriptionShop = false; else { state.page = null; state.menu = true; } render(); return; }
     if (act === "pay-early") { state.shopTier = state.profile?.max_devices === 5 ? 5 : 3; state.showSubscriptionShop = true; render(); return; }
     if (act === "pay-cancel") { ++paymentPollVersion; state.paymentStatus = "idle"; state.showSubscriptionShop = false; render(); return; }
@@ -870,6 +876,56 @@ async function forgot() {
     state.loading = false;
     render();
   }
+}
+
+async function changeDevice(id, action) {
+  if (!id || deviceMutation) return;
+  const version = sessionVersion;
+  deviceMutation = true;
+  devicesVersion++;
+  state.profileError = "";
+  render();
+  try {
+    await action(version);
+    if (version !== sessionVersion) return;
+    devicesVersion++;
+    deviceMutation = false;
+    await refreshProfile();
+  } catch (e) {
+    if (version === sessionVersion) state.profileError = e.message || "Не удалось изменить сессию";
+  } finally {
+    deviceMutation = false;
+    if (version === sessionVersion) render();
+  }
+}
+
+async function renameDevice(id) {
+  const current = (state.profile?.devices || []).find((d) => d.id === id);
+  if (!current || deviceMutation) return;
+  const name = window.prompt("Имя сессии", current.device_name || "");
+  if (name == null) return;
+  const trimmed = Array.from(String(name).trim()).slice(0, 64).join("");
+  if (!trimmed) return;
+  await changeDevice(id, async (version) => {
+    await api.renameDevice(id, trimmed);
+    if (version !== sessionVersion) return;
+    if (state.profile?.devices) state.profile.devices = state.profile.devices.map(d => d.id === id ? {...d, device_name:trimmed} : d);
+  });
+}
+
+async function deleteDevice(id, isSelf) {
+  if (!id || deviceMutation) return;
+  if (!window.confirm(isSelf ? "Удалить эту сессию и выйти из аккаунта?" : "Удалить эту сессию?")) return;
+  await changeDevice(id, async (version) => {
+    await api.deleteDevice(id);
+    if (version !== sessionVersion) return;
+    if (isSelf) { await logout(); return; }
+    if (state.profile?.devices) {
+      state.profile.devices = state.profile.devices.filter(d => d.id !== id);
+      state.profile.devices_count = state.profile.devices.length;
+      state.profile.connected_count = state.profile.devices.filter(d => d.is_connected).length;
+    }
+  });
 }
 
 async function logout() {

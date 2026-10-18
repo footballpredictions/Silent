@@ -811,6 +811,13 @@ body.has-chrome { --sv-chrome: 36px; }
   border-bottom: 1px solid var(--sv-border);
 }
 
+.session-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.session-act { flex-shrink: 0; border: 0; border-radius: 8px; background: transparent; color: var(--sv-hint); font: inherit; font-size: 12px; padding: 8px; }
+.session-act:hover { background: var(--sv-surface); color: var(--sv-fg); }
+.session-act:focus-visible { outline: 2px solid var(--sv-link); outline-offset: 2px; }
+.session-act:disabled { opacity: .5; cursor: wait; }
+@media (max-width: 480px) { .session { flex-wrap: wrap; } .session-body { min-width: 60%; } }
+
 .dot { width: 10px; height: 10px; border-radius: 50%; background: #d1d5db; flex-shrink: 0; }
 .dot.on { background: var(--sv-green); }
 

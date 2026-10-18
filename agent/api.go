@@ -159,16 +159,28 @@ func (a *Agent) login(ctx context.Context, body map[string]any) (any, error) {
 	return map[string]any{"email": p.Email, "profile": profile, "lan_ip": a.cfg.LANIP, "lan_url": a.lanURL(), "router_name": "Keenetic " + a.model, "connected": false}, nil
 }
 
-func (a *Agent) refresh(ctx context.Context) {
+func (a *Agent) callSession(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
+	raw, err := a.call(ctx, method, path, body)
+	if failure, ok := err.(*apiError); ok && failure.Code == 401 {
+		if refreshErr := a.refresh(ctx); refreshErr != nil {
+			return nil, refreshErr
+		}
+		return a.call(ctx, method, path, body)
+	}
+	return raw, err
+}
+
+func (a *Agent) refresh(ctx context.Context) error {
 	a.mu.RLock()
 	token := a.cfg.RefreshToken
+	access := a.cfg.Token
 	a.mu.RUnlock()
 	if token == "" {
-		return
+		return &apiError{401, json.RawMessage(`{"detail":"Войдите в аккаунт"}`)}
 	}
 	raw, err := a.call(ctx, "POST", "/api/auth/refresh", map[string]string{"refresh_token": token})
 	if err != nil {
-		return
+		return err
 	}
 	var v struct {
 		Access  string `json:"access_token"`
@@ -176,13 +188,18 @@ func (a *Agent) refresh(ctx context.Context) {
 	}
 	if json.Unmarshal(raw, &v) == nil && v.Access != "" {
 		a.mu.Lock()
+		if a.cfg.Token != access || a.cfg.RefreshToken != token {
+			a.mu.Unlock()
+			return nil
+		}
 		a.cfg.Token = v.Access
 		if v.Refresh != "" {
 			a.cfg.RefreshToken = v.Refresh
 		}
 		a.mu.Unlock()
-		_ = a.persist()
+		return a.persist()
 	}
+	return fmt.Errorf("Не удалось обновить сессию. Повторите попытку")
 }
 
 func newHTTPClient() *http.Client {

@@ -136,8 +136,23 @@ class WireGuardHelper(context: Context) {
         withContext(Dispatchers.IO) {
             wgTransitionActive = true
             try {
+            val lanCidrs =
+                if (!apiOverlayMode && !isBootstrap) {
+                    LanBypassRoutes.sanitizeLanCidrs(
+                        LanBypassRoutes.defaultHomeLanCidrs() + LanBypassRoutes.underlayLanCidrs(appContext),
+                    )
+                } else {
+                    emptyList()
+                }
             val excludeRouteCidrs =
-                if (!apiOverlayMode && !isBootstrap) holeCidrsForExcludeRoute(excludeIPs) else emptyList()
+                if (!apiOverlayMode && !isBootstrap) {
+                    LanBypassRoutes.mergeExcludeCidrs(
+                        siteHoles = holeCidrsForExcludeRoute(excludeIPs),
+                        lanCidrs = lanCidrs,
+                    )
+                } else {
+                    emptyList()
+                }
             SilentGoBackendVpnService.vpnExcludeRouteCidrs = excludeRouteCidrs
             SilentGoBackendVpnService.blockUnderlyingNetwork =
                 Ipv6LeakPolicy.shouldBlockUnderlyingNetwork(
@@ -170,6 +185,14 @@ class WireGuardHelper(context: Context) {
             } else {
                 configString
             }
+            if (!apiOverlayMode && !isBootstrap) {
+                val lanDns = LanBypassRoutes.underlayLanDnsServers(appContext)
+                if (lanDns.isNotEmpty()) {
+                    configToApply = prependDnsServers(configToApply, lanDns).also {
+                        DebugLog.i(TAG, "LAN DNS prepended for panel: ${lanDns.joinToString(",")}")
+                    }
+                }
+            }
             val siteState = com.silent.vpn.data.SiteExclusionsStore.load(SilentPrefs.open(appContext))
             val russian = com.silent.vpn.data.RussianServices.config(appContext)
             val ruDirect = russian.getBoolean("enabled") && !isBootstrap && !apiOverlayMode && !includeAppOverlay
@@ -196,20 +219,23 @@ class WireGuardHelper(context: Context) {
                             DebugLog.i(TAG, "Bootstrap AllowedIPs: API + backend HTTPS")
                         }
                     }
-                } else if (excludeIPs.isNotEmpty()) {
+                } else if (excludeIPs.isNotEmpty() || lanCidrs.isNotEmpty()) {
                     // Main: не complement. ~32 CIDR на 1 IP → blackhole (2ip.io / YouTube на OEM).
                     // Дыры — excludeRoute /32 (API 33+). AllowedIPs остаются 0.0.0.0/0.
+                    // LAN (192.168/16, 172.16/12, underlay) — панель роутера при включённом VPN.
                     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                        configToApply = AllowedIpsHelper.patchAllowedIPs(configToApply, excludeIPs).also {
+                        val holes = (excludeIPs.map { it.trim() }.filter { it.isNotEmpty() } + lanCidrs)
+                            .distinct()
+                        configToApply = AllowedIpsHelper.patchAllowedIPs(configToApply, holes).also {
                             DebugLog.i(
                                 TAG,
-                                "Main AllowedIPs: 0.0.0.0/0 − ${excludeIPs.size} (API<33 fallback)",
+                                "Main AllowedIPs: 0.0.0.0/0 − ${holes.size} (API<33; lan=${lanCidrs.size})",
                             )
                         }
                     } else {
                         DebugLog.i(
                             TAG,
-                            "Main AllowedIPs: 0.0.0.0/0; excludeRoute=${excludeRouteCidrs.size}",
+                            "Main AllowedIPs: 0.0.0.0/0; excludeRoute=${excludeRouteCidrs.size} (lan=${lanCidrs.size})",
                         )
                     }
                 }
@@ -532,6 +558,24 @@ class WireGuardHelper(context: Context) {
             return lines.joinToString("\n")
         }
         return conf
+    }
+
+    /** Router DNS first so local `*.silent.vpn` resolves; keep existing public DNS after. */
+    private fun prependDnsServers(conf: String, servers: Collection<String>): String {
+        val prepend = servers.map { it.trim() }.filter { IPV4.matches(it) }.distinct()
+        if (prepend.isEmpty()) return conf
+        val lines = conf.lines().toMutableList()
+        for (i in lines.indices) {
+            val trim = lines[i].trimStart()
+            if (!trim.startsWith("DNS", ignoreCase = true) || !trim.contains("=")) continue
+            val indent = lines[i].takeWhile { it == ' ' || it == '\t' }
+            val current = trim.substringAfter('=').trim()
+            val existing = current.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            val merged = (prepend + existing).distinct().joinToString(", ")
+            lines[i] = indent + "DNS = $merged"
+            return lines.joinToString("\n")
+        }
+        return patchDnsServers(conf, prepend.joinToString(", "))
     }
 
     private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")

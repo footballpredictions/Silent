@@ -1883,6 +1883,7 @@ export default function MainScreen({
                 border={border}
                 borderStrong={palette.borderStrong}
                 dark={palette.dark}
+                green={GREEN}
                 primaryBtnBg={palette.primaryBtnBg}
                 primaryBtnFg={palette.primaryBtnFg}
                 onBack={() => setMenuPage(null)}

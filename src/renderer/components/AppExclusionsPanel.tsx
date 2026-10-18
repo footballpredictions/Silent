@@ -32,12 +32,23 @@ interface Props {
   border: string
   borderStrong: string
   dark: boolean
+  green: string
   primaryBtnBg: string
   primaryBtnFg: string
   onBack: () => void
 }
 
 type Pane = 'sites' | 'apps'
+type RussianDelivery = 'waiting' | 'loading' | 'received' | 'failed'
+
+function russianDeliveryLabel(delivery: RussianDelivery): string {
+  switch (delivery) {
+    case 'received': return 'Список получен'
+    case 'loading': return 'Получаем список через VPN…'
+    case 'failed': return 'Не удалось обновить список. Используется сохранённый; повторим автоматически.'
+    default: return 'Список будет получен после подключения VPN'
+  }
+}
 
 function ThemeCheck({
   checked,
@@ -187,6 +198,7 @@ export default function AppExclusionsPanel({
   border,
   borderStrong,
   dark,
+  green,
   primaryBtnBg,
   primaryBtnFg,
   onBack,
@@ -195,14 +207,25 @@ export default function AppExclusionsPanel({
   const russianLocked = useRef(true)
   const [russianSupported, setRussianSupported] = useState(true)
   const [russianDirect, setRussianDirect] = useState(false)
+  const [russianDelivery, setRussianDelivery] = useState<RussianDelivery>('waiting')
   const [russianBusy, setRussianBusy] = useState(true)
   const [russianError, setRussianError] = useState<string | null>(null)
+  function applyRussianState(state: any) {
+    if (!state) return
+    setRussianSupported(state.supported !== false)
+    russianLocked.current = state.enabled === true
+    setRussianDirect(state.enabled === true)
+    if (typeof state.delivery === 'string') setRussianDelivery(state.delivery as RussianDelivery)
+  }
   useEffect(() => {
     let cancelled = false
     Promise.resolve((window as any).electronAPI?.getRussianServices?.()).then(state => {
-      if (!cancelled) { setRussianSupported(state?.supported !== false); russianLocked.current = state?.enabled === true; setRussianDirect(state?.enabled === true); setRussianBusy(false) }
+      if (!cancelled) { applyRussianState(state); setRussianBusy(false) }
     }).catch(() => { if (!cancelled) { setRussianError('Не удалось прочитать режим'); setRussianBusy(false) } })
-    return () => { cancelled = true }
+    const off = (window as any).electronAPI?.onRussianServicesChanged?.((state: any) => {
+      if (!cancelled) applyRussianState(state)
+    })
+    return () => { cancelled = true; off?.() }
   }, [])
   async function toggleRussianDirect() {
     russianLocked.current = true
@@ -212,8 +235,7 @@ export default function AppExclusionsPanel({
     try {
       const result = await (window as any).electronAPI?.setRussianServices?.(!russianDirect)
       if (!result?.ok) throw new Error(result?.detail || 'Не удалось применить режим')
-      russianLocked.current = result.enabled === true
-      setRussianDirect(result.enabled === true)
+      applyRussianState(result)
     } catch (error: any) { russianLocked.current = russianDirect; setRussianError(error.message) }
     finally { setRussianBusy(false) }
   }
@@ -505,13 +527,13 @@ export default function AppExclusionsPanel({
         <button type="button" onClick={onBack} className="text-xs text-left" style={{ color: muted }}>
           ← Назад
         </button>
-        {pane === 'sites' ? (
+        {pane === 'sites' && !russianDirect ? (
           <div className="flex items-center gap-1">
             <button
               type="button"
               title="Импорт списка"
               aria-label="Импорт списка"
-              disabled={siteBusy || russianDirect || russianBusy}
+              disabled={siteBusy || russianBusy}
               onClick={() => importInputRef.current?.click()}
               className="p-1.5 rounded-lg disabled:opacity-40"
               style={{ color: muted }}
@@ -524,7 +546,7 @@ export default function AppExclusionsPanel({
               type="button"
               title="Экспорт списка"
               aria-label="Экспорт списка"
-              disabled={siteBusy || russianDirect || russianBusy || siteRules.length === 0}
+              disabled={siteBusy || russianBusy || siteRules.length === 0}
               onClick={exportSites}
               className="p-1.5 rounded-lg disabled:opacity-40"
               style={{ color: muted }}
@@ -558,9 +580,26 @@ export default function AppExclusionsPanel({
         </span>
       </button>}
       {russianError && <p role="alert" className="text-xs mb-3" style={{ color: fg }}>{russianError}</p>}
-      {russianDirect && <p className="text-xs mb-3" style={{ color: muted }}>Другие исключения временно отключены. Ваши списки сохранены.</p>}
-      <fieldset disabled={russianDirect || russianBusy} className="m-0 p-0 border-0 min-w-0 w-full"
-        style={{ opacity: russianDirect ? 0.35 : 1 }}>
+      {russianDirect ? (
+        <div className="w-full text-left">
+          <p
+            className="text-xs mb-2"
+            style={{ color: russianDelivery === 'received' ? (dark ? green : '#15803D') : muted }}
+          >
+            {russianDeliveryLabel(russianDelivery)}
+          </p>
+          <p className="text-xs mb-3" style={{ color: muted }}>
+            Другие исключения временно отключены. Ваши списки сохранены.
+          </p>
+          <p className="text-[13px] mb-1" style={{ color: muted, opacity: 0.7 }}>
+            Сайты: {siteRules.length} сохранено
+          </p>
+          <p className="text-[13px]" style={{ color: muted, opacity: 0.7 }}>
+            Приложения: {selected.size} сохранено
+          </p>
+        </div>
+      ) : (
+      <fieldset disabled={russianBusy} className="m-0 p-0 border-0 min-w-0 w-full">
       <legend className="sr-only">Ручные исключения</legend>
       <div className="flex gap-2 mt-3 mb-3">
         <ModeChip label="Сайты" active={pane === 'sites'} fg={fg} bg={bg} onClick={() => setPane('sites')} />
@@ -736,6 +775,7 @@ export default function AppExclusionsPanel({
         </>
       )}
       </fieldset>
+      )}
     </div>
   )
 }

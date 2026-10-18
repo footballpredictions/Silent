@@ -18,12 +18,33 @@ test('RU mode defaults OFF; cached policy and independent flag survive restart',
     const next = { ...bundled, revision: 'a'.repeat(64), direct_domains: ['ru', 'shop.com'] }
     const store = new russian.RussianServices(f.dir, async () => next)
     assert.equal(store.enabled(), false)
+    assert.equal(store.deliveryStatus(), 'waiting')
     assert.equal(await store.refresh(), false)
     store.setEnabled(true)
+    assert.equal(store.deliveryStatus(), 'waiting')
     assert.equal(await store.refresh(), true)
-    assert.deepEqual(new russian.RussianServices(f.dir).snapshot(), { ...next, enabled: true })
+    store.markApplied()
+    assert.equal(store.deliveryStatus(), 'received')
+    assert.equal(store.snapshot().delivery, 'received')
+    assert.deepEqual(
+      (({ delivery, ...rest }) => rest)(store.snapshot()),
+      { ...next, enabled: true },
+    )
     store.setEnabled(false)
-    assert.deepEqual(new russian.RussianServices(f.dir).snapshot(), { ...next, enabled: false })
+    assert.equal(store.deliveryStatus(), 'waiting')
+    assert.deepEqual(
+      (({ delivery, ...rest }) => rest)(new russian.RussianServices(f.dir).snapshot()),
+      { ...next, enabled: false },
+    )
+  } finally { f.close() }
+})
+test('delivery becomes failed when every public endpoint rejects', async () => {
+  const f = fixture()
+  try {
+    const store = new russian.RussianServices(f.dir, async () => { throw new Error('down') })
+    store.setEnabled(true)
+    assert.equal(await store.refresh(), false)
+    assert.equal(store.deliveryStatus(), 'failed')
   } finally { f.close() }
 })
 test('invalid schema, suffixes and server errors retain the last validated cache', async () => {
@@ -57,7 +78,7 @@ test('production toggle IPC suppresses and restores manual routing without rewri
     const context = vm.createContext({
       russianServices: russian, russianModeChanging: false,
       wgApplied: true, vpnBootstrapMode: false, sessionDnsOverride: null, lastVpnConnectConfig: null,
-      app: { getPath: () => f.dir }, sendLog() {},
+      app: { getPath: () => f.dir }, sendLog() {}, notifyRussianServices() {},
       require(name) {
         if (name === './vpn/browserRouter') return { updatePolicy: async policy => { policies.push(policy) } }
         if (name === './apps/appExclusionBypass') return { stopAppExclusionBypass: async () => {} }

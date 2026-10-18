@@ -737,6 +737,10 @@ function cleanupVpn() {
   wgInstallInFlight = false
   tunnelReadySent = false
   clearTunnelReadyPoll()
+  try {
+    russianServices.configure(app.getPath('userData')).tunnelStopped()
+    notifyRussianServices()
+  } catch { /* russianServices may not be ready during early quit */ }
 }
 
 /** Последний stopWireGuardTunnel — для await на before-quit (Mac/Linux). */
@@ -913,6 +917,7 @@ function ensureVpnReadyEvent(sendLogFn) {
     maybeWarmupTelegram(sendLogFn, { logDefer: true })
     scheduleTelegramWarmupRetries(sendLogFn)
   }
+  if (!vpnBootstrapMode && process.platform === 'win32') void syncRussianPolicyDelivery({ forceRefresh: true })
 }
 
 let telegramWarmupTimers = []
@@ -1237,22 +1242,55 @@ ipcMain.handle('get-app-exclusions', () => {
 const russianServices = require('./apps/russianServices')
 let russianModeChanging = false
 let russianRefreshTimer = null
+function notifyRussianServices() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const store = russianServices.configure(app.getPath('userData'))
+  mainWindow.webContents.send('russian-services-changed', {
+    enabled: store.enabled(),
+    supported: russianServices.supported(),
+    delivery: store.deliveryStatus(),
+  })
+}
+async function syncRussianPolicyDelivery({ forceRefresh = false } = {}) {
+  if (!russianServices.supported() || russianModeChanging) return
+  const store = russianServices.configure(app.getPath('userData'))
+  if (!store.enabled()) {
+    notifyRussianServices()
+    return
+  }
+  if (!wgApplied || vpnBootstrapMode) {
+    store.tunnelStopped()
+    notifyRussianServices()
+    return
+  }
+  if (forceRefresh || store.deliveryStatus() !== 'received') store.beginRefresh()
+  notifyRussianServices()
+  await store.refresh()
+  if (!store.enabled() || !wgApplied || vpnBootstrapMode || russianModeChanging) return
+  try {
+    await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
+    store.markApplied()
+    if (store.deliveryStatus() !== 'received') store.markFailed()
+  } catch (error) {
+    store.markFailed()
+    sendLog(`[RU] обновление политики: ${error.message}`)
+  }
+  notifyRussianServices()
+}
 function startRussianPolicyRefresh() {
   if (russianRefreshTimer) return
-  russianRefreshTimer = setInterval(async () => {
-    if (!wgApplied || vpnBootstrapMode || russianModeChanging || !russianServices.enabled()) return
-    const store = russianServices.configure(app.getPath('userData'))
-    await store.refresh()
-    if (wgApplied && !vpnBootstrapMode && !russianModeChanging && store.enabled()) {
-      try { await require('./vpn/browserRouter').updatePolicy({ russian: store.snapshot() }) }
-      catch (error) { sendLog(`[RU] обновление политики: ${error.message}`) }
-    }
+  russianRefreshTimer = setInterval(() => {
+    void syncRussianPolicyDelivery({ forceRefresh: true })
   }, 300000)
   russianRefreshTimer.unref?.()
 }
 ipcMain.handle('get-russian-services', () => {
-  russianServices.configure(app.getPath('userData'))
-  return { enabled: russianServices.enabled(), supported: russianServices.supported() }
+  const store = russianServices.configure(app.getPath('userData'))
+  return {
+    enabled: store.enabled(),
+    supported: russianServices.supported(),
+    delivery: store.deliveryStatus(),
+  }
 })
 ipcMain.handle('set-russian-services', async (_, enabled) => {
   if (!russianServices.supported()) return { ok: false, detail: 'Режим пока поддерживается в Windows-клиенте' }
@@ -1262,13 +1300,23 @@ ipcMain.handle('set-russian-services', async (_, enabled) => {
   russianModeChanging = true
   try {
     store.setEnabled(enabled)
+    notifyRussianServices()
     if (wgApplied && !vpnBootstrapMode) {
       const router = require('./vpn/browserRouter')
       const sites = require('./apps/siteBypass')
       const apps = require('./apps/vpnAppExclusions')
       await require('./apps/appExclusionBypass').stopAppExclusionBypass(sendLog)
       await sites.clearSiteBypass(sendLog)
+      if (enabled) {
+        store.beginRefresh()
+        notifyRussianServices()
+        await store.refresh()
+      }
       await router.updatePolicy(prepareBrowserRoutingPolicy())
+      if (enabled) {
+        store.markApplied()
+        if (store.deliveryStatus() !== 'received') store.markFailed()
+      }
       if (!enabled) {
         const { loadExclusionsState, defaultStatePath } = require('./apps/exclusionsState')
         apps.applyAppExclusionsForSession(loadExclusionsState(defaultStatePath(app.getPath('userData'))).exePaths, sendLog)
@@ -1277,13 +1325,15 @@ ipcMain.handle('set-russian-services', async (_, enabled) => {
         })
       }
     }
-    return { ok: true, enabled }
+    notifyRussianServices()
+    return { ok: true, enabled, delivery: store.deliveryStatus() }
   } catch (error) {
     try {
       store.setEnabled(previous)
       if (wgApplied && !vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
     } catch (rollback) { sendLog(`[RU] откат режима: ${rollback.message}`) }
-    return { ok: false, enabled: store.enabled(), detail: error.message }
+    notifyRussianServices()
+    return { ok: false, enabled: store.enabled(), delivery: store.deliveryStatus(), detail: error.message }
   } finally { russianModeChanging = false }
 })
 

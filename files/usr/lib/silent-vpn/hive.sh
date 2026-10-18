@@ -99,6 +99,66 @@ sv_hive_wget() {
 	esac
 }
 
+# PATCH/DELETE for device rename/remove (uclient-fetch --method).
+sv_hive_method() {
+	local method="$1" path="$2" json="${3:-}"
+	local tmp out code base to token errf err st
+	sv_mkdir
+	out="$(mktemp "$SV_RUN/out.XXXXXX")"
+	token="$(sv_token)"
+	[ -n "$token" ] || { printf '%s\n' '{"detail":"Войдите в аккаунт"}' > "$out"; echo "$out"; return 1; }
+	tmp=""
+	[ -n "$json" ] && { tmp="$(mktemp "$SV_RUN/body.XXXXXX")"; printf '%s' "$json" > "$tmp"; }
+	code="000"
+	for base in $(sv_api_bases); do
+		: > "$out"
+		to="$(sv_hive_timeout_for "$base")"
+		errf="$(mktemp "$SV_RUN/wget.XXXXXX")"
+		if [ -n "$tmp" ]; then
+			wget -O "$out" --timeout="$to" --method="$method" \
+				--header="Content-Type: application/json" \
+				--header="X-App-Version: $SV_VERSION" \
+				--header="Authorization: Bearer $token" \
+				--body-file="$tmp" \
+				"${base}${path}" >"$errf" 2>&1
+		else
+			wget -O "$out" --timeout="$to" --method="$method" \
+				--header="X-App-Version: $SV_VERSION" \
+				--header="Authorization: Bearer $token" \
+				"${base}${path}" >"$errf" 2>&1
+		fi
+		st=$?
+		err="$(cat "$errf" 2>/dev/null || true)"
+		rm -f "$errf"
+		if [ "$st" -eq 0 ]; then
+			code=200
+			break
+		fi
+		code="$(printf '%s\n' "$err" | sed -n 's/.*[^0-9]\([1-5][0-9][0-9]\).*/\1/p' | head -n 1)"
+		case "$code" in
+			2*|4*) [ ! -s "$out" ] || break ;;
+			*) code=000 ;;
+		esac
+	done
+	rm -f "$tmp"
+	case "$code" in
+		000|5*) printf '%s\n' '{"detail":"Сервер временно недоступен. Повторите попытку."}' > "$out" ;;
+		401) [ -s "$out" ] || printf '%s\n' '{"detail":"Войдите в аккаунт"}' > "$out" ;;
+		4*) [ -s "$out" ] || printf '%s\n' "{\"detail\":\"Сервер ответил ${code}\"}" > "$out" ;;
+	esac
+	echo "$code" > "$SV_RUN/http.code"
+	echo "$out"
+}
+
+sv_hive_rename_device() {
+	local id="$1" name="$2"
+	sv_hive_method PATCH "/api/users/devices/$id" "$(printf '{"device_name":"%s"}' "$name")"
+}
+
+sv_hive_delete_device() {
+	sv_hive_method DELETE "/api/users/devices/$1" ""
+}
+
 sv_hive_theme() {
 	sv_hive_get "/api/vpn/theme"
 }

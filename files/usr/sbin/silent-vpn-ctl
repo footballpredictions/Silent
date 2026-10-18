@@ -59,8 +59,8 @@ case "$cmd" in
 		sv_disconnect_full
 		;;
 	logout)
-		sv_disconnect_full
-		sv_session_clear
+		# Web/CLI logout must not tear down a live tunnel.
+		sv_panel_logout
 		;;
 	preferred)
 		sv_hive_preferred "$1"

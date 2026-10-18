@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js?v=1.0.170-r9";
+import { api, openPaymentUrl } from "./api.js?v=1.0.170-r10";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
@@ -134,15 +134,24 @@ function savePanelSession(email, password) {
   if (state.remember) {
     // Opt-in form credentials belong to this browser; router tokens are never stored here.
     try { localStorage.setItem("sv-login", JSON.stringify({ email, password })); } catch { /* private browser */ }
+    try { localStorage.setItem("sv-panel-session", "1"); } catch { /* private browser */ }
   } else {
     forgetRememberedLogin();
+    try { localStorage.removeItem("sv-panel-session"); } catch { /* private browser */ }
   }
   try { sessionStorage.setItem("sv-panel-session", "1"); } catch { /* private browser */ }
 }
 
+function clearPanelSession() {
+  try { sessionStorage.removeItem("sv-panel-session"); } catch { /* private browser */ }
+  try { localStorage.removeItem("sv-panel-session"); } catch { /* private browser */ }
+}
+
+/** Per-browser unlock only — other LAN devices must enter login/password. */
 function canRestoreSession() {
-  return readStorage(localStorage, "sv-remember") !== "0" ||
-    readStorage(sessionStorage, "sv-panel-session") === "1";
+  if (readStorage(sessionStorage, "sv-panel-session") === "1") return true;
+  return readStorage(localStorage, "sv-remember") === "1" &&
+    readStorage(localStorage, "sv-panel-session") === "1";
 }
 
 let sessionVersion = 0;
@@ -301,9 +310,11 @@ function loginView(p) {
     const submit = state.tab === "login" ? "login" : "register";
     const label = state.tab === "login" ? "Войти" : "Зарегистрироваться";
     body = `
-      <p class="status-line" style="color:${p.green}">${state.preview
+      <p class="status-line" style="color:${state.connected ? p.green : p.hint}">${state.preview
         ? "Preview · вход на живой Улей. Почта и пароль как в приложении (админ или обычный)."
-        : "Канал готов. Войдите или зарегистрируйтесь."}</p>
+        : state.connected
+          ? "VPN на роутере включён. Войдите, чтобы управлять подключением."
+          : "Канал готов. Войдите или зарегистрируйтесь."}</p>
       <div class="tabs">
         <button class="tab ${state.tab === "login" ? "on" : ""}" data-act="tab-login">Войти</button>
         <button class="tab ${state.tab === "register" ? "on" : ""}" data-act="tab-reg">Регистрация</button>
@@ -613,14 +624,19 @@ function devicesPage() {
     ${devices.map((d) => {
       const kind = sessionKind(d);
       const extra = sessionRouterName(d);
+      const id = esc(d.id || "");
       return `
       <div class="session">
         <span class="dot ${d.is_connected ? "on" : ""}"></span>
-        <div>
+        <div class="session-body">
           <div style="font-size:14px;font-weight:500">${esc(kind)}${d.self ? ' <span class="hint">· это вы</span>' : ""}</div>
           ${extra ? `<div class="hint">${esc(extra)}</div>` : ""}
           <div class="hint" style="${d.is_connected ? `color:var(--sv-green)` : ""}">${d.is_connected ? "В сети" : "Не в сети"}</div>
         </div>
+        ${id ? `
+        <button type="button" class="session-act" data-act="device-rename" data-id="${id}" title="Подписать">✎</button>
+        <button type="button" class="session-act" data-act="device-delete" data-id="${id}" data-self="${d.self ? "1" : "0"}" title="Удалить сессию">×</button>
+        ` : ""}
       </div>`;
     }).join("") || `<p class="hint">Нет зарегистрированных устройств</p>`}`;
 }
@@ -768,6 +784,8 @@ async function handle(act, el) {
     if (act === "log-copy") { await copyLog(); return; }
     if (act === "log-clear") { await clearLog(); return; }
     if (act === "logout") return logout();
+    if (act === "device-rename") return renameDevice(el.dataset.id);
+    if (act === "device-delete") return deleteDevice(el.dataset.id, el.dataset.self === "1");
     if (act === "toggle") return toggleVpn();
     if (act === "copy-ref") return copyRef();
     if (act === "promo") return checkPromo();
@@ -872,15 +890,59 @@ async function forgot() {
   }
 }
 
+async function renameDevice(id) {
+  if (!id) return;
+  const current = (state.profile?.devices || []).find((d) => d.id === id);
+  const initial = sessionRouterName(current || {}) || "";
+  const name = window.prompt("Имя сессии", initial);
+  if (name == null) return;
+  const trimmed = String(name).trim().slice(0, 64);
+  if (!trimmed) return;
+  try {
+    await api.renameDevice(id, trimmed);
+    await refreshProfile();
+  } catch (e) {
+    state.profileError = e.message || "Не удалось переименовать";
+    render();
+  }
+}
+
+async function deleteDevice(id, isSelf) {
+  if (!id) return;
+  const msg = isSelf
+    ? "Удалить эту сессию и выйти из аккаунта на роутере? VPN при этом не отключится."
+    : "Удалить эту сессию?";
+  if (!window.confirm(msg)) return;
+  try {
+    await api.deleteDevice(id);
+    if (isSelf) {
+      await logout();
+      return;
+    }
+    await refreshProfile();
+  } catch (e) {
+    state.profileError = e.message || "Не удалось удалить сессию";
+    render();
+  }
+}
+
 async function logout() {
   ++sessionVersion;
-  try { sessionStorage.removeItem("sv-panel-session"); } catch { /* private browser */ }
+  clearPanelSession();
   ++paymentPollVersion;
   state.paymentStatus = "idle";
   state.showSubscriptionShop = false;
   state.loading = true;
   render();
-  try { await api.logout(); } catch { /* keep going */ }
+  let stillConnected = state.connected;
+  try {
+    const res = await api.logout();
+    if (res && typeof res.connected === "boolean") stillConnected = res.connected;
+  } catch { /* keep going — VPN must stay up even if CGI fails */ }
+  try {
+    const st = await api.status();
+    if (typeof st.connected === "boolean") stillConnected = !!st.connected;
+  } catch { /* ignore */ }
   state.session = null;
   state.profile = null;
   const saved = readRememberedLogin();
@@ -892,7 +954,7 @@ async function logout() {
   state.error = "";
   state.profileError = "";
   state.restoreAvailable = false;
-  state.connected = false;
+  state.connected = stillConnected;
   state.menu = false;
   state.page = null;
   state.live = false;
@@ -1175,15 +1237,18 @@ async function boot() {
     if (version !== sessionVersion) return;
     if (status.theme) state.theme = status.theme;
     applyExtras(status);
+    // Tunnel may stay up after panel logout; never auto-enter from shared router tokens alone.
+    state.connected = !!status.connected;
     if (status.session && canRestoreSession()) {
       state.restoreAvailable = true;
       state.session = status.session;
-      state.connected = !!status.connected;
       if (!await loadProfile(version, status)) return;
       state.restoreAvailable = false;
       state.password = "";
       await hydrateAfterAuth();
     } else {
+      state.session = null;
+      state.profile = null;
       applyServerPayload(null);
     }
   } catch (e) {

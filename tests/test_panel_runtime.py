@@ -24,7 +24,7 @@ const storage = (values = new Map()) => ({
   removeItem: key => values.delete(key),
 });
 const profile = {email:'fixture@example.test', display_id:42, devices:[], max_devices:3};
-function panel({local = storage(), tab = storage(), api = {}} = {}) {
+function panel({local = storage(), tab = storage(new Map([['sv-panel-session','1']])), api = {}} = {}) {
   const node = () => ({innerHTML:'', classList:{add(){},remove(){}},
     querySelectorAll:()=>[], querySelector:()=>null});
   const app = node(), timers = [], listeners = {};
@@ -32,14 +32,16 @@ function panel({local = storage(), tab = storage(), api = {}} = {}) {
     getElementById:()=>app, addEventListener:(name, fn)=>{listeners[name]=fn;}};
   const context = vm.createContext({console, document, localStorage:local,
     sessionStorage:tab, location:{hostname:'router.test'},
-    window:{addEventListener:(name, fn)=>{listeners[name]=fn;}},
+    window:{addEventListener:(name, fn)=>{listeners[name]=fn;},
+      prompt:(msg, initial)=>(initial && String(initial).trim()) || 'Renamed', confirm:()=>true},
     setTimeout, clearTimeout, setInterval:fn=>{timers.push(fn);return timers.length;},
     clearInterval(){}, ...modules.servers, ...modules.subscription,
     palette:()=>({}), applyPalette(){}, mountToggleSnake(){}, toggleMarkup:()=>'',
     api:{status:async()=>({session:true,connected:true}), theme:async()=>({}),
       servers:async()=>({}), dns:async()=>({}), exclusions:async()=>({}),
       profile:async()=>profile, login:async()=>({profile,connected:true}),
-      logout:async()=>({ok:true}), ...api},
+      logout:async()=>({ok:true}), renameDevice:async()=>({}), deleteDevice:async()=>({}),
+      ...api},
   });
   vm.runInContext(source + '\nglobalThis.panel={state,boot,login,logout,handle,toggleVpn};', context);
   return {...context.panel, app, timers, listeners, api:context.api, document};
@@ -74,7 +76,8 @@ assert.ok(p.app.innerHTML.includes('data-act="update-start"'));
 assert.ok(p.app.innerHTML.includes('1.0.171'));
 await p.handle('update-start');assert.equal(p.state.update.phase,'downloading');
 assert.ok(p.app.innerHTML.includes('Downloading'));
-await p.handle('logout');assert.ok(p.state.session);
+// Logout during update is blocked in the UI; call logout() directly.
+await p.logout();assert.equal(p.state.session,null);
 ''')
 
     def test_about_uses_installed_version_from_router_status(self):
@@ -97,6 +100,25 @@ const p = panel(); await p.boot();
 assert.equal(p.state.profile?.email, profile.email);
 assert.ok(p.app.innerHTML.includes('fixture@example.test'));
 assert.equal(p.state.connected, true);
+''')
+
+    def test_other_browser_on_lan_requires_password_even_if_router_has_session(self):
+        self.run_panel('''
+const p = panel({tab:storage()}); await p.boot();
+assert.equal(p.state.session, null);
+assert.ok(p.app.innerHTML.includes('data-act="login"'));
+''')
+
+    def test_logout_keeps_vpn_connected_flag_from_api(self):
+        self.run_panel('''
+const p=panel({api:{logout:async()=>({ok:true,connected:true}),
+  status:async()=>({session:true,connected:true})}});
+await p.boot();assert.equal(p.state.connected,true);
+p.api.status=async()=>({session:false,connected:true});
+await p.logout();
+assert.equal(p.state.session,null);
+assert.equal(p.state.connected,true);
+assert.ok(p.app.innerHTML.includes('data-act="login"'));
 ''')
 
     def test_unchecked_remember_requires_login_in_new_tab_without_logout(self):
@@ -230,6 +252,35 @@ p.api.profile=()=>new Promise(done=>{resolve=done;});
 const pending=p.handle('page',{dataset:{page:'devices'}});
 await p.toggleVpn();assert.equal(p.state.connected,false);
 resolve(profile);await pending;assert.equal(p.state.connected,false);
+''')
+
+    def test_devices_page_exposes_rename_and_delete_actions(self):
+        self.run_panel('''
+const p=panel({api:{status:async()=>({session:true,connected:true,device_id:'router'}),
+  profile:async()=>({...profile,devices:[{id:'router',device_name:'OpenWrt lab',device_type:'pc',is_connected:true},
+    {id:'phone',device_name:'Android',device_type:'android',is_connected:false}]})}});
+await p.boot();await p.handle('page',{dataset:{page:'devices'}});
+assert.ok(p.app.innerHTML.includes('data-act="device-rename"'));
+assert.ok(p.app.innerHTML.includes('data-act="device-delete"'));
+assert.ok(p.app.innerHTML.includes('data-id="phone"'));
+let renamed=null, deleted=null;
+p.api.renameDevice=async(id,name)=>{renamed={id,name};};
+p.api.deleteDevice=async(id)=>{deleted=id;};
+p.api.profile=async()=>({...profile,devices:[{id:'phone',device_name:'Phone',device_type:'android'}]});
+await p.handle('device-rename',{dataset:{id:'phone'}});
+assert.deepEqual(renamed,{id:'phone',name:'Renamed'});
+await p.handle('device-delete',{dataset:{id:'phone',self:'0'}});
+assert.equal(deleted,'phone');
+''')
+
+    def test_router_tokens_without_panel_flag_stay_on_login_while_vpn_up(self):
+        self.run_panel('''
+const p=panel({tab:storage(), api:{status:async()=>({session:true,connected:true})}});
+await p.boot();
+assert.equal(p.state.session,null);
+assert.equal(p.state.connected,true);
+assert.ok(p.app.innerHTML.includes('data-act="login"'));
+assert.ok(p.app.innerHTML.includes('VPN на роутере включён'));
 ''')
 
 

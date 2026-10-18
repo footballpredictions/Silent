@@ -11,6 +11,11 @@ sv_session_clear() {
 	sv_cloak_stop
 }
 
+# Leave the WireGuard tunnel up; only drop Hive tokens so the web UI needs a password again.
+sv_panel_logout() {
+	rm -f "$SV_VAR/access_token" "$SV_VAR/refresh_token" "$SV_VAR/email"
+}
+
 sv_session_active() {
 	[ -s "$SV_VAR/access_token" ]
 }

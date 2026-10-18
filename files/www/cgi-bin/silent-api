@@ -49,6 +49,13 @@ email_of() { printf '%s' "$BODY" | jsonfilter -e '@.email' 2>/dev/null || true; 
 pass_of() { printf '%s' "$BODY" | jsonfilter -e '@.password' 2>/dev/null || true; }
 code_of() { printf '%s' "$BODY" | jsonfilter -e '@.referral_or_promo' 2>/dev/null || true; }
 
+require_session() {
+	if ! sv_session_active; then
+		json_out 401 '{"detail":"Войдите в аккаунт"}'
+		exit 0
+	fi
+}
+
 case "$OP" in
 	update-check|update-status)
 		json_out 200 "$(/usr/sbin/silent-vpn-update "${OP#update-}")"
@@ -111,11 +118,16 @@ case "$OP" in
 		json_out 200 "$(cat "$f")"
 		;;
 	logout)
-		sv_disconnect_full
-		sv_session_clear
-		json_out 200 '{"ok":true}'
+		# Keep VPN up; only drop Hive tokens. Browser clears its own panel unlock.
+		sv_panel_logout
+		if sv_session_connected; then
+			json_out 200 '{"ok":true,"connected":true}'
+		else
+			json_out 200 '{"ok":true,"connected":false}'
+		fi
 		;;
 	connect)
+		require_session
 		if sv_connect_full; then
 			json_out 200 '{"ok":true,"connected":true}'
 		else
@@ -130,20 +142,54 @@ case "$OP" in
 		echo "Лог отключён"
 		;;
 	disconnect)
+		require_session
 		sv_disconnect_full
 		json_out 200 '{"ok":true,"connected":false}'
 		;;
 	profile)
+		require_session
 		f="$(sv_hive_me)"
 		json_out 200 "$(cat "$f")"
 		rm -f "$f"
 		;;
 	referral)
+		require_session
 		f="$(sv_hive_referral)"
 		json_out 200 "$(cat "$f")"
 		;;
+	device-rename)
+		require_session
+		id="$(printf '%s' "$BODY" | jsonfilter -e '@.id' 2>/dev/null || true)"
+		name="$(printf '%s' "$BODY" | jsonfilter -e '@.name' 2>/dev/null || true)"
+		name="$(printf '%s' "$name" | tr -d '\r\n' | cut -c 1-64)"
+		case "$id" in ""|*[!a-zA-Z0-9_-]*) json_out 400 '{"detail":"Некорректная сессия"}'; exit 0 ;; esac
+		[ -n "$name" ] || name="Устройство"
+		name_esc="$(printf '%s' "$name" | sed 's/\\/\\\\/g;s/"/\\"/g')"
+		f="$(sv_hive_rename_device "$id" "$name_esc")"
+		code="$(cat "$SV_RUN/http.code" 2>/dev/null || echo 502)"
+		case "$code" in
+			2*) json_out 200 "$(cat "$f")" ;;
+			401) json_out 401 "$(cat "$f")" ;;
+			*) json_out 502 "$(cat "$f")" ;;
+		esac
+		rm -f "$f"
+		;;
+	device-delete)
+		require_session
+		id="$(printf '%s' "$BODY" | jsonfilter -e '@.id' 2>/dev/null || true)"
+		case "$id" in ""|*[!a-zA-Z0-9_-]*) json_out 400 '{"detail":"Некорректная сессия"}'; exit 0 ;; esac
+		f="$(sv_hive_delete_device "$id")"
+		code="$(cat "$SV_RUN/http.code" 2>/dev/null || echo 502)"
+		case "$code" in
+			2*) json_out 200 '{"ok":true}' ;;
+			401) json_out 401 "$(cat "$f")" ;;
+			*) json_out 502 "$(cat "$f")" ;;
+		esac
+		rm -f "$f"
+		;;
 	dns)
 		if [ "$REQUEST_METHOD" = "POST" ]; then
+			require_session
 			preset="$(printf '%s' "$BODY" | jsonfilter -e '@.preset' 2>/dev/null || echo server)"
 			custom="$(printf '%s' "$BODY" | jsonfilter -e '@.custom' 2>/dev/null || true)"
 			silent-vpn-ctl set-dns "$preset" "$custom"
@@ -154,6 +200,7 @@ case "$OP" in
 		;;
 	exclusions)
 		if [ "$REQUEST_METHOD" = "POST" ]; then
+			require_session
 			on="$(printf '%s' "$BODY" | jsonfilter -e '@.ru_direct' 2>/dev/null)"
 			if [ "$on" = "true" ] || [ "$on" = "1" ]; then
 				on=1
@@ -169,6 +216,7 @@ case "$OP" in
 			"$([ "$(uci -q get silent-vpn.main.ru_direct 2>/dev/null)" = 1 ] && echo true || echo false)")"
 		;;
 	servers)
+		require_session
 		f="$(sv_hive_servers)"
 		if [ -s "$f" ]; then
 			json_out 200 "$(cat "$f")"
@@ -177,6 +225,7 @@ case "$OP" in
 		fi
 		;;
 	pay|pay-preview)
+		require_session
 		plan="$(printf '%s' "$BODY" | jsonfilter -e '@.plan_type' 2>/dev/null || echo monthly)"
 		[ -n "$plan" ] || plan="monthly"
 		if [ "$OP" = "pay-preview" ]; then
@@ -191,6 +240,7 @@ case "$OP" in
 		fi
 		;;
 	pay-status)
+		require_session
 		label="$(printf '%s' "$BODY" | jsonfilter -e '@.label' 2>/dev/null)"
 		case "$label" in silent_[a-f0-9]*) ;; *) json_out 400 '{"detail":"Некорректный платёж"}'; exit 0;; esac
 		case "$label" in *[!a-z0-9_]*) json_out 400 '{"detail":"Некорректный платёж"}'; exit 0;; esac
@@ -198,6 +248,7 @@ case "$OP" in
 		json_out 200 "$(cat "$f")"
 		;;
 	server)
+		require_session
 		key="$(printf '%s' "$BODY" | jsonfilter -e '@.key' 2>/dev/null || echo server1)"
 		[ -n "$key" ] || key="server1"
 		uci -q set silent-vpn.main.preferred_server="$key"
@@ -214,6 +265,14 @@ case "$OP" in
 				json_out 200 "$(printf '{"selected_server":"%s","servers":[]}' "$key")"
 			fi
 		fi
+		;;
+	promo)
+		require_session
+		code="$(printf '%s' "$BODY" | jsonfilter -e '@.code' 2>/dev/null || true)"
+		code="$(printf '%s' "$code" | tr -d '\r\n"\\' | cut -c 1-64)"
+		f="$(sv_hive_post "/api/payments/promo/check" "$(printf '{"code":"%s","plan_type":"monthly"}' "$code")")"
+		json_out 200 "$(cat "$f")"
+		rm -f "$f"
 		;;
 	*)
 		json_out 404 '{"detail":"unknown op"}'

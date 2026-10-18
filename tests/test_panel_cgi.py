@@ -27,6 +27,9 @@ class PanelCgiTests(unittest.TestCase):
             output = self.run_script(directory, r'''
 sv_mkdir() { :; }
 sv_http_allow_lan() { return 0; }
+sv_session_active() { return 0; }
+sv_session_connected() { return 1; }
+sv_panel_logout() { :; }
 jsonfilter() { cat >/dev/null; echo true; }
 silent-vpn-ctl() { return 1; }
 uci() { echo 1; }
@@ -37,9 +40,12 @@ REQUEST_METHOD=POST
             self.assertNotIn('Status: 200', output)
 
     def run_script(self, directory, script):
+        # Windows CreateProcess truncates long `sh -c` strings (~8k); run from a file.
         environment = os.environ.copy()
         environment.update(SV_RUN=Path(directory).as_posix(), SV_VAR=Path(directory).as_posix())
-        return subprocess.run([SHELL, "-c", script], env=environment, capture_output=True,
+        path = Path(directory) / "panel-cgi.sh"
+        path.write_text(script.replace("\r\n", "\n"), encoding="utf-8", newline="\n")
+        return subprocess.run([SHELL, str(path)], env=environment, capture_output=True,
                               text=True, encoding="utf-8", timeout=10, check=True).stdout
 
     def test_local_online_requires_live_process_and_applied_path(self):
@@ -73,6 +79,9 @@ sv_session_connected || echo INVALID
             script = r'''
 sv_mkdir() { mkdir -p "$SV_RUN"; }
 sv_http_allow_lan() { return 0; }
+sv_session_active() { return 0; }
+sv_session_connected() { return 1; }
+sv_panel_logout() { :; }
 sv_hive_me() {
     printf '{"email":"fixture@example.test"}' > "$SV_RUN/profile.tmp"
     echo "$SV_RUN/profile.tmp"

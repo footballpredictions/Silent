@@ -49,6 +49,10 @@ export const api = {
   logout: () => send("/logout", { method: "POST", body: "{}" }),
   connect: () => send("/connect", { method: "POST", body: "{}" }),
   disconnect: () => send("/disconnect", { method: "POST", body: "{}" }),
+  renameDevice: (id, name) =>
+    send("/device-rename", { method: "POST", body: JSON.stringify({ id, name }) }),
+  deleteDevice: (id) =>
+    send("/device-delete", { method: "POST", body: JSON.stringify({ id }) }),
   profile: () => send("/profile"),
   servers: () => send("/servers"),
   pickServer: (key) => send("/server", { method: "POST", body: JSON.stringify({ key }) }),

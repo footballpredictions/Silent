@@ -32,6 +32,7 @@ PREFLIGHT_TESTS = (
     "scripts/test_cell_agent_build_id_unit.py",
     "scripts/test_availability_refresh_unit.py",
     "scripts/test_availability_polling_unit.py",
+    "scripts/test_session_presence_unit.py",
 )
 
 

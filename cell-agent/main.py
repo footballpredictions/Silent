@@ -360,6 +360,7 @@ def _collect_status() -> dict:
 
     wg_peers_total = wg_peers_never_hs = wg_peers_live_3m = wg_gc_last_removed = 0
     wg_live_pubs: list[str] = []
+    wg_live_devices: list[str] = []
     try:
         from standby_runtime import wg_live_pubs as list_live_pubs
         from standby_runtime import wg_peer_counts
@@ -370,6 +371,8 @@ def _collect_status() -> dict:
         wg_peers_live_3m = int(counts.get("live_3m") or 0)
         wg_gc_last_removed = int(counts.get("last_removed") or 0)
         wg_live_pubs = list(list_live_pubs())
+        from standby_runtime import live_device_refs
+        wg_live_devices = live_device_refs(list_live_pubs(limit=None))
     except Exception:
         pass
 
@@ -398,6 +401,7 @@ def _collect_status() -> dict:
         "wg_peers_live_3m": wg_peers_live_3m,
         "wg_gc_last_removed": wg_gc_last_removed,
         "wg_live_pubs": wg_live_pubs,
+        "wg_live_devices": wg_live_devices,
     }
 
 

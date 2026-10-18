@@ -444,7 +444,19 @@ def _local_handshakes() -> list[tuple[str, float | None]]:
     return out
 
 
-def wg_live_pubs(window_sec: float = 180.0, limit: int = 400) -> list[str]:
+def live_device_refs(pubs: list[str]) -> list[str]:
+    """Exact GETCONF references with recent WG handshakes; no IP guessing."""
+    try:
+        devices = json.loads(WDTT_PASSWORDS_PATH.read_text(encoding="utf-8")).get("devices", {})
+        live = set(pubs)
+        return [str(ref) for ref, d in devices.items()
+                if isinstance(d, dict) and d.get("pub_key") in live
+                and 0 < len(str(ref)) <= 256 and not str(ref).startswith("boot:")]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def wg_live_pubs(window_sec: float = 180.0, limit: int | None = 400) -> list[str]:
     """Ключи с handshake < window — для дашборда (зелёные в VK-хешах)."""
     if _wg_live_pub_list:
         return list(_wg_live_pub_list[:limit])
@@ -453,7 +465,7 @@ def wg_live_pubs(window_sec: float = 180.0, limit: int = 400) -> list[str]:
         if age is None or age >= window_sec:
             continue
         out.append(pub)
-        if len(out) >= limit:
+        if limit is not None and len(out) >= limit:
             break
     return out
 
@@ -468,8 +480,7 @@ def wg_peer_counts() -> dict[str, int]:
             never_hs += 1
         elif age < 180:
             live_3m += 1
-            if len(pubs) < 400:
-                pubs.append(pub)
+            pubs.append(pub)
     _wg_counts["total"] = total
     _wg_counts["never_hs"] = never_hs
     _wg_counts["live_3m"] = live_3m

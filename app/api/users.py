@@ -20,13 +20,13 @@ from app.services.subscription_service import (
 from app.services.vpn_service import (
     end_device_session,
     count_active_sessions,
-    count_connected_sessions,
     clear_stale_online_status,
     collapse_duplicate_devices,
     touch_user_last_seen,
     LAST_SEEN_TOUCH_MINUTES,
 )
 from app.services.referral_service import get_referral_stats
+from app.services.session_presence import session_online_flags
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -83,19 +83,20 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         ).order_by(Device.last_connected.desc().nullslast(), Device.created_at.desc())
     )
     devices = result.scalars().all()
+    online = await session_online_flags(devices)
     device_infos = [
         DeviceInfo(
             id=d.id,
             device_name=d.device_name,
             device_type=d.device_type,
-            is_connected=d.is_connected,
+            is_connected=online[str(d.id)],
             last_connected=d.last_connected,
         )
         for d in devices
     ]
 
     active_sessions = await count_active_sessions(db, user.id)
-    connected = await count_connected_sessions(db, user.id)
+    connected = sum(online.values())
 
     from app.services.payment_service import profile_payment_previews
     payment_previews = await profile_payment_previews(db, user) if not admin and not test else {}

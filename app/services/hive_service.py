@@ -886,6 +886,7 @@ async def fetch_worker_cell_load(
             "wg_peers_live_3m": int(data.get("wg_peers_live_3m") or 0),
             "wg_gc_last_removed": int(data.get("wg_gc_last_removed") or 0),
             "wg_live_pubs": _sanitize_wg_live_pubs(data.get("wg_live_pubs")),
+            "wg_live_devices": [v for v in data.get("wg_live_devices", []) if isinstance(v, str) and 0 < len(v) <= 256] if isinstance(data.get("wg_live_devices"), list) else [],
         }
     except Exception as e:
         logger.debug("Hive: load %s failed: %s", cell.name, e)

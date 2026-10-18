@@ -23,12 +23,12 @@ from app.services.subscription_service import (
 from app.services.referral_service import get_referral_stats
 from app.services.theme_settings import load_theme
 from app.services.config_sync_service import build_sync_state
+from app.services.session_presence import session_online_flags
 
 
 async def _profile_for_user(db: AsyncSession, user: User) -> UserProfileResponse:
     from app.services.vpn_service import (
         count_active_sessions,
-        count_connected_sessions,
         collapse_duplicate_devices,
         clear_stale_online_status,
     )
@@ -72,12 +72,13 @@ async def _profile_for_user(db: AsyncSession, user: User) -> UserProfileResponse
         ).order_by(Device.last_connected.desc().nullslast(), Device.created_at.desc())
     )
     devices = result.scalars().all()
+    online = await session_online_flags(devices)
     device_infos = [
         DeviceInfo(
             id=d.id,
             device_name=d.device_name,
             device_type=d.device_type,
-            is_connected=d.is_connected,
+            is_connected=online[str(d.id)],
             last_connected=d.last_connected,
         )
         for d in devices
@@ -92,7 +93,7 @@ async def _profile_for_user(db: AsyncSession, user: User) -> UserProfileResponse
         subscription=subscription_info,
         devices=device_infos,
         devices_count=await count_active_sessions(db, user.id),
-        connected_count=await count_connected_sessions(db, user.id),
+        connected_count=sum(online.values()),
         max_devices=await max_devices_for_user(db, user),
         vk_linked=user.vk_user_id is not None,
         vk_user_id=user.vk_user_id,

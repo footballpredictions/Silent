@@ -172,11 +172,20 @@ function loadProfile(version = sessionVersion, knownStatus = null) {
       if (status && connection === connectionVersion && !state.connecting && !state.disconnecting) {
         state.connected = !!status.connected;
       }
+      const selfId = String(status?.device_id || "").trim();
       state.profile = {
         ...profile,
-        devices: (profile.devices || []).map(device => status?.device_id && device.id === status.device_id
-          ? { ...device, self: true, is_connected: state.connected }
-          : device),
+        // Same rule as PC/Android: server online for everyone; local tunnel also marks this router.
+        devices: (profile.devices || []).map((device) => {
+          const id = String(device?.id || "").trim();
+          const isSelf = !!selfId && !!id && id === selfId;
+          const serverOnline = device?.is_connected === true || device?.is_connected === 1 || device?.is_connected === "true";
+          return {
+            ...device,
+            self: isSelf,
+            is_connected: serverOnline || (isSelf && !!state.connected),
+          };
+        }),
       };
       state.profileError = "";
       return true;

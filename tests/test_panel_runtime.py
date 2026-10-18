@@ -248,6 +248,22 @@ assert.equal(p.state.profile.devices[0].is_connected,false);
 assert.equal(p.state.connected,false);
 ''')
 
+    def test_other_devices_keep_hive_online_while_router_tunnel_is_up(self):
+        self.run_panel('''
+const p=panel({api:{status:async()=>({session:true,connected:true,device_id:'router'}),
+profile:async()=>({...profile,devices:[
+  {id:'router',device_type:'pc',device_name:'OpenWrt',is_connected:false},
+  {id:'phone',device_type:'android',device_name:'Android',is_connected:true},
+  {id:'laptop',device_type:'pc',device_name:'PC',is_connected:true},
+]})}});
+await p.boot();await p.handle('page',{dataset:{page:'devices'}});
+assert.equal(p.state.profile.devices[0].is_connected,true);
+assert.equal(p.state.profile.devices[1].is_connected,true);
+assert.equal(p.state.profile.devices[2].is_connected,true);
+assert.ok(p.app.innerHTML.includes('VPN онлайн: 3'));
+assert.equal((p.app.innerHTML.match(/В сети/g)||[]).length,3);
+''')
+
     def test_slow_profile_cannot_undo_completed_vpn_toggle(self):
         self.run_panel('''
 let resolve;const p=panel({api:{disconnect:async()=>({connected:false})}});await p.boot();

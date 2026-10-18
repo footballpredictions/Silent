@@ -24,6 +24,9 @@
 
 html, body {
   height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
   background: var(--sv-bg);
   color: var(--sv-fg);
   font-family: var(--sv-font);
@@ -68,9 +71,14 @@ body.has-chrome { --sv-chrome: 36px; }
 
 .app {
   height: calc(100% - var(--sv-chrome));
+  height: calc(100dvh - var(--sv-chrome));
+  max-height: calc(100dvh - var(--sv-chrome));
+  min-height: 0;
   background: var(--sv-bg);
   color: var(--sv-fg);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .boot {
@@ -315,7 +323,11 @@ body.has-chrome { --sv-chrome: 36px; }
 .shell {
   display: grid;
   grid-template-columns: 1fr;
+  flex: 1 1 auto;
   height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 .shell.menu-open { grid-template-columns: var(--sv-side) 1fr; }
 .menu-scrim { display: none; }
@@ -388,7 +400,9 @@ body.has-chrome { --sv-chrome: 36px; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   height: 100%;
+  overflow: hidden;
   position: relative;
 }
 
@@ -791,9 +805,15 @@ body.has-chrome { --sv-chrome: 36px; }
 .update-progress { margin: 10px 0 0; font-size: 12px; line-height: 1.4; }
 
 .page {
-  flex: 1;
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   padding: 28px 36px 40px;
+  padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
 }
 
 .page-inner { max-width: 520px; }
@@ -891,4 +911,14 @@ body.has-chrome { --sv-chrome: 36px; }
     -webkit-overflow-scrolling: touch;
     touch-action: pan-y;
   }
+  .page {
+    padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (max-height: 500px) {
+  .page {
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  .topbar { height: 40px; }
 }

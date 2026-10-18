@@ -177,7 +177,7 @@ sv_addr_is_wifi_client() {
 
 # True if $1 is the LAN L3 device or a bridge port under it (DSA lan1/lan2, eth0…).
 sv_dev_is_lan() {
-	local d="$1" lan="$2" master
+	local d="$1" lan="$2" master port
 	[ -n "$d" ] && [ -n "$lan" ] || return 1
 	[ "$d" = "$lan" ] && return 0
 	[ -e "/sys/class/net/$lan/brif/$d" ] && return 0
@@ -185,14 +185,80 @@ sv_dev_is_lan() {
 		master="$(basename "$(readlink "/sys/class/net/$d/master" 2>/dev/null)" 2>/dev/null)"
 		[ "$master" = "$lan" ] && return 0
 	fi
+	# UCI bridge ports (DSA): list ports 'lan1' 'lan2' …
+	for port in $(uci -q get network.lan.ifname 2>/dev/null) \
+		$(uci -q get network.lan.ports 2>/dev/null) \
+		$(uci -q get "network.$(uci -q get network.lan.device).ports" 2>/dev/null); do
+		[ "$d" = "$port" ] && return 0
+	done
+	case "$d" in
+		lan[0-9]*)
+			# OpenWrt DSA user ports are named lanN and belong to br-lan.
+			[ -d "/sys/class/net/$d" ] || return 1
+			return 0
+			;;
+	esac
 	return 1
+}
+
+sv_dev_is_wan_or_vpn() {
+	local d="$1"
+	[ -n "$d" ] || return 1
+	case "$d" in
+		wan*|pppoe*|pppoa*|tun*|tap*|wg*|svpath*|tailscale*|zt*|vpn*|wwan*|usb*) return 0 ;;
+	esac
+	return 1
+}
+
+# IPv4 $1 in network.lan prefix (uci ipaddr/netmask or ipaddr/CIDR).
+sv_addr_in_lan_subnet() {
+	local addr="$1" ip mask bits
+	addr="$(printf '%s' "$addr" | tr -d ' \t\r\n')"
+	sv_is_ipv4 "$addr" || return 1
+	ip="$(uci -q get network.lan.ipaddr 2>/dev/null | awk '{print $1}')"
+	case "$ip" in
+		*/*)
+			bits="${ip#*/}"
+			ip="${ip%%/*}"
+			;;
+		*)
+			mask="$(uci -q get network.lan.netmask 2>/dev/null)"
+			bits=""
+			;;
+	esac
+	sv_is_ipv4 "$ip" || return 1
+	if [ -n "$bits" ]; then
+		case "$bits" in
+			8) mask=255.0.0.0 ;;
+			16) mask=255.255.0.0 ;;
+			24) mask=255.255.255.0 ;;
+			25) mask=255.255.255.128 ;;
+			26) mask=255.255.255.192 ;;
+			27) mask=255.255.255.224 ;;
+			28) mask=255.255.255.240 ;;
+			29) mask=255.255.255.248 ;;
+			30) mask=255.255.255.252 ;;
+			32) mask=255.255.255.255 ;;
+			*) mask=255.255.255.0 ;;
+		esac
+	fi
+	[ -n "$mask" ] || mask=255.255.255.0
+	sv_is_ipv4 "$mask" || return 1
+	echo "$addr $ip $mask" | awk '{
+		split($1, a, "."); split($2, b, "."); split($3, m, ".");
+		for (i = 1; i <= 4; i++) {
+			if ((a[i] + 0) > 255 || (b[i] + 0) > 255 || (m[i] + 0) > 255) exit 1
+			if (and(a[i] + 0, m[i] + 0) != and(b[i] + 0, m[i] + 0)) exit 1
+		}
+		exit 0
+	}'
 }
 
 # Allow devices directly connected to the LAN, over either cable or Wi-Fi.
 # Private addresses alone are not enough: guest, WAN and VPN use them too.
 # DSA cable ports often appear as "dev lan1" in `ip route get`, not br-lan.
 sv_http_allow_lan() {
-	local addr family lan_dev route scope dev
+	local addr family lan_dev route scope dev neigh_dev
 	addr="$(printf '%s' "${REMOTE_ADDR:-}" | tr 'A-Z' 'a-z')"
 	addr="${addr#::ffff:}"
 	[ -n "$addr" ] || return 1
@@ -224,12 +290,30 @@ sv_http_allow_lan() {
 			case "$addr" in 127.*) return 0 ;; esac
 			;;
 	esac
-	route="$(ip "$family" route get "$addr" 2>/dev/null)" || return 1
-	case "$route" in
-		*" via "*) return 1 ;;
-	esac
-	dev="$(printf '%s\n' "$route" | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
-	sv_dev_is_lan "$dev" "$lan_dev"
+	route="$(ip "$family" route get "$addr" 2>/dev/null)" || route=""
+	if [ -n "$route" ]; then
+		case "$route" in
+			*" via "*) return 1 ;;
+		esac
+		dev="$(printf '%s\n' "$route" | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+		sv_dev_is_lan "$dev" "$lan_dev" && return 0
+		sv_is_wireless_dev "$dev" && return 0
+		# On-link private in LAN subnet, not WAN/VPN — covers odd DSA names.
+		if [ "$family" = "-4" ] && ! sv_dev_is_wan_or_vpn "$dev"; then
+			sv_addr_in_lan_subnet "$addr" && return 0
+		fi
+	fi
+	# Neighbour table fallback (Wi-Fi station / cable FDB).
+	if [ "$family" = "-4" ]; then
+		sv_addr_in_lan_subnet "$addr" || return 1
+		neigh_dev="$(ip -4 neigh show "$addr" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+		[ -n "$neigh_dev" ] || return 1
+		sv_dev_is_wan_or_vpn "$neigh_dev" && return 1
+		sv_dev_is_lan "$neigh_dev" "$lan_dev" && return 0
+		sv_is_wireless_dev "$neigh_dev" && return 0
+		[ "$neigh_dev" = "$lan_dev" ] && return 0
+	fi
+	return 1
 }
 
 # Compatibility with already installed CGI files during a small-file upgrade.

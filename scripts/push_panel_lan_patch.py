@@ -13,6 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 HOST = os.environ.get("OPENWRT_HOST", "192.168.1.1")
 USER = os.environ.get("OPENWRT_USER", "root")
 PASSWORD = os.environ.get("OPENWRT_ROOT_PASSWORD", "")
+if not PASSWORD:
+    for candidate in (
+        Path.home() / ".silent-openwrt-pass",
+        ROOT.parent / ".silent-openwrt-pass",
+    ):
+        if candidate.is_file():
+            PASSWORD = candidate.read_text(encoding="utf-8").strip()
+            break
 REMOTE_DIR = "/tmp/sv-lan-patch"
 
 FILES = [

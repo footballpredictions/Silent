@@ -29,6 +29,7 @@ sh -n "$TMP/common.sh"
 sh -n "$TMP/silent-api"
 sh -n "$TMP/silent-entry"
 grep -q sv_dev_is_lan "$TMP/common.sh" || { echo "patch incomplete: no sv_dev_is_lan"; exit 1; }
+grep -q sv_addr_in_lan_subnet "$TMP/common.sh" || { echo "patch incomplete: no sv_addr_in_lan_subnet"; exit 1; }
 
 cp -a /usr/lib/silent-vpn/common.sh "$BK/common.sh" 2>/dev/null || true
 cp -a /www/cgi-bin/silent-api "$BK/silent-api" 2>/dev/null || true

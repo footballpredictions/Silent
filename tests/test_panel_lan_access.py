@@ -17,6 +17,8 @@ BOUNDARIES = r'''
 uci() {
     case "$*" in
         '-q get network.lan.device') echo "${FIXTURE_LAN_DEV:-br-lan}" ;;
+        '-q get network.lan.ipaddr') echo '192.168.1.1' ;;
+        '-q get network.lan.netmask') echo '255.255.255.0' ;;
         *) return 1 ;;
     esac
 }
@@ -31,16 +33,18 @@ sv_dev_is_lan() {
 }
 ip() {
     case "$*" in
-        '-4 neigh show 192.168.1.173') echo '192.168.1.173 dev br-lan lladdr 32:4f:a9:40:e8:63 REACHABLE' ;;
-        '-4 route get 192.168.1.173') echo "$REMOTE_ADDR dev ${FIXTURE_LAN_DEV:-br-lan} src 192.168.1.1" ;;
-        '-4 route get 192.168.1.195') echo "$REMOTE_ADDR dev lan1 src 192.168.1.1" ;;
-        '-4 route get 192.168.3.9') echo '192.168.3.9 dev br-guest src 192.168.3.1' ;;
-        '-4 route get 79.111.32.7'|'-4 route get 10.0.0.7') echo "$REMOTE_ADDR dev wan src 79.111.37.132" ;;
-        '-4 route get 1.1.1.1') echo '1.1.1.1 via 79.111.32.1 dev wan src 79.111.37.132' ;;
-        '-4 route get 192.168.8.9') echo '192.168.8.9 via 192.168.1.2 dev br-lan src 192.168.1.1' ;;
-        '-4 route get 10.66.0.3') echo '10.66.0.3 dev svpath src 10.66.0.9' ;;
-        '-6 route get fd92:8ac2:23b8::42'|'-6 route get fe80::42%br-lan') echo "$REMOTE_ADDR dev br-lan src fd92:8ac2:23b8::1" ;;
-        '-6 route get 2001:db8:ffff::7') echo '2001:db8:ffff::7 dev wan src 2001:db8:ffff::1' ;;
+        '-4 neigh show 192.168.1.173') echo '192.168.1.173' ;;
+        '-4 neigh show 192.168.1.196') echo '192.168.1.196' ;;
+        '-4 route get 192.168.1.173') echo "$REMOTE_ADDR" ;;
+        '-4 route get 192.168.1.195') echo "$REMOTE_ADDR" ;;
+        '-4 route get 192.168.1.196') echo "$REMOTE_ADDR" ;;
+        '-4 route get 192.168.3.9') echo '192.168.3.9' ;;
+        '-4 route get 79.111.32.7'|'-4 route get 10.0.0.7') echo "$REMOTE_ADDR via 79.111.32.1" ;;
+        '-4 route get 1.1.1.1') echo '1.1.1.1 via 79.111.32.1' ;;
+        '-4 route get 192.168.8.9') echo '192.168.8.9 via 192.168.1.2' ;;
+        '-4 route get 10.66.0.3') echo '10.66.0.3' ;;
+        '-6 route get fd92:8ac2:23b8::42'|'-6 route get fe80::42%br-lan') echo "$REMOTE_ADDR" ;;
+        '-6 route get 2001:db8:ffff::7') echo '2001:db8:ffff::7 via 2001:db8::1' ;;
         *) return 1 ;;
     esac
 }
@@ -54,6 +58,52 @@ iw() {
 silent-vpn-ctl() { echo '{"session":false,"fixture":true}'; }
 sv_mkdir() { :; }
 '''
+
+# Expand short fixtures with real route/neigh lines (keeps the case arms readable above).
+BOUNDARIES = (
+    BOUNDARIES
+    .replace(
+        "'-4 neigh show 192.168.1.173') echo '192.168.1.173' ;;",
+        "'-4 neigh show 192.168.1.173') echo '192.168.1.173 "
+        "dev br-lan lladdr 32:4f:a9:40:e8:63 REACHABLE' ;;",
+    )
+    .replace(
+        "'-4 neigh show 192.168.1.196') echo '192.168.1.196' ;;",
+        "'-4 neigh show 192.168.1.196') echo '192.168.1.196 "
+        "dev br-lan lladdr aa:bb:cc:dd:ee:ff REACHABLE' ;;",
+    )
+    .replace(
+        "'-4 route get 192.168.1.173') echo \"$REMOTE_ADDR\" ;;",
+        "'-4 route get 192.168.1.173') echo \"$REMOTE_ADDR "
+        "dev ${FIXTURE_LAN_DEV:-br-lan} src 192.168.1.1\" ;;",
+    )
+    .replace(
+        "'-4 route get 192.168.1.195') echo \"$REMOTE_ADDR\" ;;",
+        "'-4 route get 192.168.1.195') echo \"$REMOTE_ADDR "
+        "dev lan1 src 192.168.1.1\" ;;",
+    )
+    .replace(
+        "'-4 route get 192.168.1.196') echo \"$REMOTE_ADDR\" ;;",
+        "'-4 route get 192.168.1.196') echo \"$REMOTE_ADDR "
+        "dev oddport0 src 192.168.1.1\" ;;",
+    )
+    .replace(
+        "'-4 route get 192.168.3.9') echo '192.168.3.9' ;;",
+        "'-4 route get 192.168.3.9') echo '192.168.3.9 "
+        "dev br-guest src 192.168.3.1' ;;",
+    )
+    .replace(
+        "'-4 route get 10.66.0.3') echo '10.66.0.3' ;;",
+        "'-4 route get 10.66.0.3') echo '10.66.0.3 "
+        "dev svpath src 10.66.0.9' ;;",
+    )
+    .replace(
+        "'-6 route get fd92:8ac2:23b8::42'|'-6 route get fe80::42%br-lan') echo \"$REMOTE_ADDR\" ;;",
+        "'-6 route get fd92:8ac2:23b8::42'|'-6 route get fe80::42%br-lan') "
+        "echo \"$REMOTE_ADDR "
+        "dev br-lan src fd92:8ac2:23b8::1\" ;;",
+    )
+)
 
 
 @unittest.skipUnless(SHELL, "POSIX shell required for CGI LAN access scenarios")
@@ -87,8 +137,10 @@ class PanelLanAccessTests(unittest.TestCase):
         self.assert_access("192.168.1.173", True)
 
     def test_wired_pc_on_dsa_lan_port_allowed(self):
-        # OpenWrt DSA: route get for a cable PC often says "dev lan1", not br-lan.
         self.assert_access("192.168.1.195", True)
+
+    def test_wired_odd_ifname_in_lan_subnet_allowed(self):
+        self.assert_access("192.168.1.196", True)
 
     def test_configured_lan_device_allowed(self):
         self.assert_access("192.168.1.173", True, "br-home")

@@ -214,6 +214,7 @@ class SilentRepository @Inject constructor(
         vpnNetwork: Network? = null,
         connectTimeoutSec: Long? = null,
         readTimeoutSec: Long? = null,
+        requireNativeUpstream: Boolean = false,
     ): SilentApi {
         val nipHost = DEFAULT_SERVER_HOST
         val builder = OkHttpClient.Builder()
@@ -235,7 +236,12 @@ class SilentRepository @Inject constructor(
                 ApiHostHeaderPolicy.nipIoHostHeader(req.url.host, nipHost)?.let { hostHdr ->
                     req = req.newBuilder().header("Host", hostHdr).build()
                 }
-                chain.proceed(req)
+                val response = chain.proceed(req)
+                if (requireNativeUpstream && response.header("X-Silent-Upstream") != "1") {
+                    response.close()
+                    throw java.io.IOException("VPN session route not ready")
+                }
+                response
             }
             .hostnameVerifier { _, _ -> true }
             .sslSocketFactory(TrustAllCerts.sslSocketFactory(), TrustAllCerts.trustManager())
@@ -1146,13 +1152,14 @@ class SilentRepository @Inject constructor(
             return
         }
         val changed = com.silent.vpn.policy.SessionsSyncPolicy.deviceListChanged(
-            currentIds = current.devices.map { it.id }.toSet(),
+            currentDevices = current.devices,
             currentCount = current.devices_count,
-            incomingIds = incoming.devices.map { it.id }.toSet(),
+            incomingDevices = incoming.devices,
             incomingCount = incoming.devices_count,
         )
         // Checkout estimates also arrive with config sync, even when device IDs are unchanged.
-        if (!changed && incoming.payment_previews == current.payment_previews) return
+        if (!changed && incoming.connected_count == current.connected_count &&
+            incoming.payment_previews == current.payment_previews) return
         val merged = current.copy(
             devices = incoming.devices,
             devices_count = incoming.devices_count,
@@ -3364,14 +3371,16 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
     }
 
     /** Обновить access_token по refresh_token (401 на /hashes и т.п.). */
-    private suspend fun refreshAccessToken(): Boolean {
+    private suspend fun refreshAccessToken(api: SilentApi? = null): Boolean {
         val refresh = getRefreshToken()?.takeIf { it.isNotBlank() } ?: return false
+        val access = getAccessToken()
         return try {
             val url = getServerUrl().trimEnd('/')
             val network = resolveVpnNetworkForApi(url)
-            val res = buildApi("$url/", vpnNetwork = network).refresh(RefreshRequest(refresh))
+            val res = (api ?: buildApi("$url/", vpnNetwork = network)).refresh(RefreshRequest(refresh))
             if (!res.isSuccessful) return false
             val body = res.body() ?: return false
+            if (getAccessToken() != access || getRefreshToken() != refresh) return false
             saveTokens(body.access_token, body.refresh_token)
             true
         } catch (e: Exception) {
@@ -3664,6 +3673,44 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
     suspend fun fetchProfileLiveViaUser(): Result<UserProfile> = runCatching {
         withUserBackendApi { fetchProfileInternal() }
     }
+
+    /** Sessions share the native WG relay even when this app is excluded by a whitelist.
+     * A separate client avoids changing the API base used by concurrent sync/payment calls. */
+    private val sessionsTokenRefreshMutex = Mutex()
+
+    private suspend fun <T> withSessionsApi(call: suspend (SilentApi) -> Response<T>): Response<T> {
+        suspend fun execute(api: SilentApi): Response<T> {
+            val token = getAccessToken()
+            var response = call(api)
+            if (response.code() == 401) {
+                val refreshed = sessionsTokenRefreshMutex.withLock {
+                    if (getAccessToken() != token) true else refreshAccessToken(api)
+                }
+                if (refreshed) response = call(api)
+            }
+            if (TunnelHttpPolicy.isTunnelBackendFailure(response)) error("VPN upstream failed")
+            return response
+        }
+        if (isMainVpnTunnelUp()) {
+            check(com.silent.vpn.vpn.BrowserScopedTunnel.isRunning()) { "VPN session route not ready" }
+            val api = buildApi("${com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL}/",
+                connectTimeoutSec = 2, readTimeoutSec = 8, requireNativeUpstream = true)
+            return execute(api)
+        }
+        return withUserBackendApi { execute(getApi()) }
+    }
+
+    suspend fun fetchSessionsProfileLive(): Result<UserProfile> = runCatching {
+        val response = withSessionsApi { it.getProfile() }
+        if (!response.isSuccessful) error("profile HTTP ${response.code()}")
+        response.body() ?: error("profile empty")
+    }
+
+    suspend fun renameSession(deviceId: String, name: String): Response<Map<String, String>> =
+        withSessionsApi { it.renameDevice(deviceId, DeviceRenameRequest(name)) }
+
+    suspend fun deleteSession(deviceId: String): Response<Map<String, String>> =
+        withSessionsApi { it.deleteDevice(deviceId) }
 
     private suspend fun fetchProfileInternal(): UserProfile {
         var res = getApi().getProfile()

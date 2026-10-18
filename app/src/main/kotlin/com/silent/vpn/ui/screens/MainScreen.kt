@@ -285,6 +285,7 @@ fun MainScreen(
     theme: ThemeData?,
     repo: com.silent.vpn.data.SilentRepository,
     sessionDeviceId: String? = null,
+    sessionsError: String? = null,
     vpnError: String?,
     subscriptionProbeActive: Boolean = false,
     onToggle: () -> Unit,
@@ -905,6 +906,7 @@ fun MainScreen(
                             borderColor = palette.border,
                             onlineColor = statusGreen,
                             offlineColor = palette.muted,
+                            sessionsError = sessionsError,
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSupport(
                             theme = theme,
@@ -1498,6 +1500,7 @@ private fun MenuDevices(
     borderColor: Color = Color(0xFFF3F4F6),
     onlineColor: Color = Color(0xFF16A34A),
     offlineColor: Color = Color(0xFFD1D5DB),
+    sessionsError: String? = null,
     onBack: () -> Unit,
 ) {
     var renameTarget by remember { mutableStateOf<DeviceInfo?>(null) }
@@ -1593,8 +1596,8 @@ private fun MenuDevices(
             Text("← Назад", fontSize = 12.sp, color = fg.copy(alpha = 0.4f))
         }
         Text("Сессии", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        sessionsError?.let { Text(it, fontSize = 12.sp, color = palette.muted, modifier = Modifier.padding(vertical = 8.dp)) }
         val maxSlotsLabel = profile?.deviceLimitLabel() ?: "3"
-        val maxSlots = profile?.max_devices?.takeIf { it > 0 } ?: Int.MAX_VALUE
         val slotsUsed = profile?.devices_count ?: profile?.devices?.size ?: 0
         val localOnline = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
         fun deviceOnline(d: DeviceInfo): Boolean {
@@ -1605,14 +1608,8 @@ private fun MenuDevices(
         }
         val devices = profile?.devices.orEmpty()
         val listOnline = devices.count { deviceOnline(it) }
-        val serverOnline = profile?.connected_count ?: listOnline
-        val onlineCount = if (profile?.is_admin == true || (profile?.max_devices ?: 3) <= 0) {
-            serverOnline
-        } else {
-            serverOnline.coerceIn(0, maxSlots)
-        }
         Text(
-            "VPN онлайн: $onlineCount из $maxSlotsLabel",
+            "VPN онлайн: $listOnline из $slotsUsed",
             fontSize = 11.sp,
             color = fg.copy(alpha = 0.45f),
             modifier = Modifier.padding(bottom = 4.dp),

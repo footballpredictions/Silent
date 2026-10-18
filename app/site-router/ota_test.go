@@ -156,6 +156,12 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 			io.WriteString(w, `{"available":true,"version":"1.0.999"}`)
 		case "/api/vpn/routing-policy":
 			io.WriteString(w, `{"schema_version":1,"revision":"policy-through-existing-wg"}`)
+		case "/api/users/me", "/api/users/devices/fixture-device", "/api/auth/refresh":
+			if r.Header.Get("Authorization") != "Bearer fixture" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			io.WriteString(w, `{"devices":[{"id":"other","is_connected":true}]}`)
 		case "/api/updates/download/android":
 			w.Write(payload)
 		case "/ordinary":
@@ -230,6 +236,22 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 	if err != nil || resp.StatusCode != 200 || !bytes.Contains(routingPolicy, []byte("policy-through-existing-wg")) || resp.Header.Get("X-Silent-Upstream") != "1" {
 		t.Fatalf("Routing policy did not use existing encrypted WG: %d %s %v", resp.StatusCode, routingPolicy, err)
 	}
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/users/me"}, {"PATCH", "/api/users/devices/fixture-device"},
+		{"DELETE", "/api/users/devices/fixture-device"}, {"POST", "/api/auth/refresh"},
+	} {
+		request, _ := http.NewRequest(tc.method, local.URL+tc.path, strings.NewReader(`{"fixture":true}`))
+		request.Header.Set("Authorization", "Bearer fixture")
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != 200 || response.Header.Get("X-Silent-Upstream") != "1" || !bytes.Contains(body, []byte(`"other"`)) {
+			t.Fatalf("Session %s failed over existing encrypted WG: %s %v", tc.method, body, err)
+		}
+	}
 	var acknowledgement bytes.Buffer
 	if err := applyTargetUpdates(strings.NewReader("{\"revision\":1,\"targets\":[\"203.0.113.7\"]}\n"), adapter.policy, &acknowledgement); err != nil {
 		t.Fatal(err)
@@ -260,7 +282,7 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 			t.Fatal("Proxy allowed writes")
 		}
 	}
-	if resp, err := client.Get(local.URL + "/api/users/me"); err != nil {
+	if resp, err := client.Get(local.URL + "/api/admin/users"); err != nil {
 		t.Fatal(err)
 	} else {
 		resp.Body.Close()

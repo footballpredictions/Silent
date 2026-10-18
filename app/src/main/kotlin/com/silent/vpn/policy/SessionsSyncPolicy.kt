@@ -7,13 +7,10 @@ package com.silent.vpn.policy
 object SessionsSyncPolicy {
     fun shouldFetchLiveProfile(screenActive: Boolean): Boolean = screenActive
 
-    fun useTunnelProfileFetch(onMobileData: Boolean, mainVpnUp: Boolean): Boolean =
-        onMobileData && mainVpnUp
-
-    fun deviceListChanged(
-        currentIds: Set<String>,
+    fun <T> deviceListChanged(
+        currentDevices: List<T>,
         currentCount: Int,
-        incomingIds: Set<String>,
+        incomingDevices: List<T>,
         incomingCount: Int,
-    ): Boolean = currentIds != incomingIds || currentCount != incomingCount
+    ): Boolean = currentDevices != incomingDevices || currentCount != incomingCount
 }

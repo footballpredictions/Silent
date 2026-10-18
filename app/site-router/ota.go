@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +26,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 )
 
-// Read-only updates and routing policy over the ALREADY running WireGuard device.
+// Updates, routing policy and authenticated sessions over the running WG device.
 // No second WG handshake/key, Android bind, overlay, or application route change.
 type otaStack struct {
 	stack   *stack.Stack
@@ -147,6 +148,11 @@ func otaHandler(transport http.RoundTripper) http.Handler {
 	upstream, _ := url.Parse("http://10.66.66.1:8000")
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.Transport = transport
+	director := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		director(r)
+		r.Host = upstream.Host
+	}
 	// Only an upstream response proves the encrypted path. Local proxy errors do not.
 	proxy.ModifyResponse = func(r *http.Response) error {
 		r.Header.Set("X-Silent-Upstream", "1")
@@ -154,9 +160,21 @@ func otaHandler(transport http.RoundTripper) http.Handler {
 	}
 	proxy.FlushInterval = -1
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || (r.URL.Path != "/api/updates/check" && r.URL.Path != "/api/updates/download/android" && r.URL.Path != "/api/vpn/routing-policy") {
-			http.Error(w, "Read-only endpoint only", http.StatusForbidden)
+		readOnly := r.Method == http.MethodGet && (r.URL.Path == "/api/updates/check" || r.URL.Path == "/api/updates/download/android" || r.URL.Path == "/api/vpn/routing-policy")
+		sessionRead := r.Method == http.MethodGet && r.URL.Path == "/api/users/me"
+		refresh := r.Method == http.MethodPost && r.URL.Path == "/api/auth/refresh"
+		id := strings.TrimPrefix(r.URL.Path, "/api/users/devices/")
+		deviceWrite := id != r.URL.Path && len(id) > 0 && len(id) <= 128 && strings.Trim(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == "" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete)
+		if !readOnly && !sessionRead && !refresh && !deviceWrite {
+			http.Error(w, "Endpoint not allowed", http.StatusForbidden)
 			return
+		}
+		if !readOnly {
+			if r.Header.Get("Authorization") == "" {
+				http.Error(w, "Authentication required", http.StatusUnauthorized)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, 65536)
 		}
 		proxy.ServeHTTP(w, r)
 	})

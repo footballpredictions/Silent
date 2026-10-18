@@ -237,6 +237,9 @@ class MainViewModel @Inject constructor(
     private var profilePollJob: Job? = null
     private var vpnProfilePollJob: Job? = null
     @Volatile private var sessionsFetchInFlight = false
+    private var sessionsProfileVersion = 0L
+    private val _sessionsError = MutableStateFlow<String?>(null)
+    val sessionsError: StateFlow<String?> = _sessionsError
     /** One-shot: пользователь уже нажал CONNECT, ждём обновление подписки и повторяем автоматически. */
     private var pendingConnectAfterSubscriptionRefresh = false
     /** Splash отозвал подписку: CONNECTED только после GETCONF, не из WG-кеша. */
@@ -2531,6 +2534,7 @@ class MainViewModel @Inject constructor(
      * LTE тоже: раньше `isOnMobileData()` полностью отключал запрос — второй телефон не был виден.
      */
     fun setSessionsScreenActive(active: Boolean) {
+        sessionsProfileVersion++
         profilePollJob?.cancel()
         profilePollJob = null
         if (!SessionsSyncPolicy.shouldFetchLiveProfile(active)) return
@@ -2538,11 +2542,11 @@ class MainViewModel @Inject constructor(
             while (true) {
                 if (!sessionsFetchInFlight) {
                     sessionsFetchInFlight = true
-                    val ok = runCatching { fetchSessionsProfile() }.getOrDefault(false)
-                    if (!ok && repo.isOnMobileData() && SilentVpnService.isRunning) {
-                        DebugLog.w("MainViewModel", "sessions poll: live fetch failed (mobile+VPN)")
+                    try {
+                        fetchSessionsProfile()
+                    } finally {
+                        sessionsFetchInFlight = false
                     }
-                    sessionsFetchInFlight = false
                 }
                 delay(SESSIONS_POLL_MS)
             }
@@ -2550,18 +2554,19 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun fetchSessionsProfile(): Boolean {
-        val viaTunnel = SessionsSyncPolicy.useTunnelProfileFetch(
-            onMobileData = repo.isOnMobileData(),
-            mainVpnUp = repo.isMainVpnTunnelUp(),
-        )
-        val result = if (viaTunnel) repo.fetchProfileLiveViaUser() else repo.fetchProfileLive()
+        val version = sessionsProfileVersion
+        val result = repo.fetchSessionsProfileLive()
         return result.fold(
             onSuccess = { p ->
+                if (version != sessionsProfileVersion) return@fold false
+                _sessionsError.value = null
+                repo.saveCachedProfile(p)
                 applyServerProfile(p, force = true)
                 p.vk_user_id?.let { repo.saveVkUserId(it) }
                 true
             },
             onFailure = { e ->
+                if (version == sessionsProfileVersion) _sessionsError.value = "Не удалось обновить сессии. Показаны последние данные."
                 DebugLog.w("MainViewModel", "sessions profile: ${e.message}")
                 false
             },
@@ -5147,10 +5152,10 @@ class MainViewModel @Inject constructor(
 
     fun renameDevice(deviceId: String, name: String, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
+            sessionsProfileVersion++
             runCatching {
-                val res = repo.withUserBackendApi {
-                    repo.getApi().renameDevice(deviceId, com.silent.vpn.data.DeviceRenameRequest(name))
-                }
+                val res = repo.renameSession(deviceId, name)
+                sessionsProfileVersion++
                 if (res.isSuccessful) {
                     renameDeviceInLocalProfile(deviceId, name)
                     onResult(true, null)
@@ -5158,6 +5163,7 @@ class MainViewModel @Inject constructor(
                     onResult(false, parseError(res.errorBody()?.string() ?: "") ?: "Ошибка переименования")
                 }
             }.onFailure {
+                sessionsProfileVersion++
                 onResult(false, it.message ?: "Ошибка")
             }
         }
@@ -5165,52 +5171,31 @@ class MainViewModel @Inject constructor(
 
     fun deleteDevice(deviceId: String, onResult: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
-            suspend fun call(): Pair<Boolean, String?> {
-                val res = repo.getApi().deleteDevice(deviceId)
-                if (com.silent.vpn.policy.TunnelHttpPolicy.isTunnelBackendFailure(res)) {
-                    error("VPN upstream failed")
-                }
+            sessionsProfileVersion++
+            runCatching {
+                // Keep the existing VPN-off mobile bootstrap. A live main VPN uses the relay.
+                val res = if (!repo.isMainVpnTunnelUp() && !SilentVpnService.isRunning && repo.isOnMobileData()) {
+                    var response: retrofit2.Response<Map<String, String>>? = null
+                    runEphemeralApiBootstrap(appContext, force = true) {
+                        response = repo.deleteSession(deviceId)
+                        true
+                    }
+                    response ?: error("Не удалось достучаться до сервера")
+                } else repo.deleteSession(deviceId)
+                sessionsProfileVersion++
                 if (res.isSuccessful) {
-                    val isCurrentSession = deviceId == repo.getSessionDeviceId()
-                    if (isCurrentSession) return true to "__logout__"
-                    removeDeviceFromLocalProfile(deviceId)
-                    return true to null
+                    if (deviceId == repo.getSessionDeviceId()) onResult(true, "__logout__")
+                    else {
+                        removeDeviceFromLocalProfile(deviceId)
+                        onResult(true, null)
+                    }
+                } else {
+                    onResult(false, parseError(res.errorBody()?.string() ?: "") ?: "Ошибка удаления")
                 }
-                return false to (parseError(res.errorBody()?.string() ?: "") ?: "Ошибка удаления")
+            }.onFailure {
+                sessionsProfileVersion++
+                onResult(false, repo.humanizeHashFetchError(it.message))
             }
-            val vpnHeld = repo.isMainVpnTunnelUp() || SilentVpnService.isRunning
-            if (vpnHeld) {
-                if (WdttTunnelManager.isBootstrapMode()) {
-                    runCatching { withEphemeralBackendApi { call() } }
-                        .onSuccess { onResult(it.first, it.second) }
-                        .onFailure { onResult(false, repo.humanizeHashFetchError(it.message)) }
-                    return@launch
-                }
-                DebugLog.i("MainViewModel", "delete session: short bootstrap then restore main VPN")
-                runCatching { runPromoShortBootstrap(appContext) { call() } }
-                    .onSuccess { onResult(it.first, it.second) }
-                    .onFailure { onResult(false, repo.humanizeHashFetchError(it.message)) }
-                return@launch
-            }
-            if (repo.isOnMobileData()) {
-                var pair: Pair<Boolean, String?>? = null
-                val ok = runEphemeralApiBootstrap(appContext, force = true) {
-                    runCatching { call() }.fold(
-                        onSuccess = { pair = it; true },
-                        onFailure = { e ->
-                            pair = false to repo.humanizeHashFetchError(e.message)
-                            false
-                        },
-                    )
-                }
-                if (pair != null) onResult(pair!!.first, pair!!.second)
-                else if (!ok) onResult(false, "Не удалось достучаться до сервера")
-                else onResult(false, "Ошибка удаления")
-                return@launch
-            }
-            runCatching { repo.withUserBackendApi { call() } }
-                .onSuccess { onResult(it.first, it.second) }
-                .onFailure { onResult(false, it.message ?: "Ошибка") }
         }
     }
 

@@ -10,27 +10,33 @@ class SessionsSyncPolicyTest {
     fun `sessions screen polls on lte too`() {
         assertTrue(SessionsSyncPolicy.shouldFetchLiveProfile(true))
         assertFalse(SessionsSyncPolicy.shouldFetchLiveProfile(false))
-        assertTrue(SessionsSyncPolicy.useTunnelProfileFetch(onMobileData = true, mainVpnUp = true))
-        assertFalse(SessionsSyncPolicy.useTunnelProfileFetch(onMobileData = true, mainVpnUp = false))
     }
 
     @Test
     fun `device list change is detected`() {
         assertTrue(
             SessionsSyncPolicy.deviceListChanged(
-                currentIds = setOf("a"),
+                currentDevices = listOf("a"),
                 currentCount = 1,
-                incomingIds = setOf("a", "b"),
+                incomingDevices = listOf("a", "b"),
                 incomingCount = 2,
             ),
         )
         assertFalse(
             SessionsSyncPolicy.deviceListChanged(
-                currentIds = setOf("a"),
+                currentDevices = listOf("a"),
                 currentCount = 1,
-                incomingIds = setOf("a"),
+                incomingDevices = listOf("a"),
                 incomingCount = 1,
             ),
         )
+    }
+
+    @Test
+    fun `online and name changes are detected without adding devices`() {
+        data class Session(val id: String, val name: String, val online: Boolean)
+        val old = Session("a", "Phone", false)
+        assertTrue(SessionsSyncPolicy.deviceListChanged(listOf(old), 1, listOf(old.copy(online = true)), 1))
+        assertTrue(SessionsSyncPolicy.deviceListChanged(listOf(old), 1, listOf(old.copy(name = "TV")), 1))
     }
 }

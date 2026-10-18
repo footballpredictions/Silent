@@ -43,6 +43,7 @@ fun MainActivityRoot(
 ) {
     val screen by vm.screen.collectAsState()
     val profile by vm.profile.collectAsState()
+    val sessionsError by vm.sessionsError.collectAsState()
     val vpnState by vm.vpnState.collectAsState()
     val theme by vm.theme.collectAsState()
     val authLoading by vm.authLoading.collectAsState()
@@ -173,6 +174,7 @@ fun MainActivityRoot(
                         theme = theme,
                         repo = vm.repository,
                         sessionDeviceId = sessionDeviceId,
+                        sessionsError = sessionsError,
                         vpnError = vpnError,
                         subscriptionProbeActive = subscriptionProbeActive,
                         onToggle = {

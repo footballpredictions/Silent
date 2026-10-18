@@ -34,9 +34,13 @@ cp -a /usr/lib/silent-vpn/common.sh "$BK/common.sh" 2>/dev/null || true
 cp -a /www/cgi-bin/silent-api "$BK/silent-api" 2>/dev/null || true
 cp -a /www/cgi-bin/silent-entry "$BK/silent-entry" 2>/dev/null || true
 
-install -m 0644 "$TMP/common.sh" /usr/lib/silent-vpn/common.sh
-install -m 0755 "$TMP/silent-api" /www/cgi-bin/silent-api
-install -m 0755 "$TMP/silent-entry" /www/cgi-bin/silent-entry
+# BusyBox OpenWrt often has no `install` applet — use cp/chmod.
+cp "$TMP/common.sh" /usr/lib/silent-vpn/common.sh
+chmod 644 /usr/lib/silent-vpn/common.sh
+cp "$TMP/silent-api" /www/cgi-bin/silent-api
+chmod 755 /www/cgi-bin/silent-api
+cp "$TMP/silent-entry" /www/cgi-bin/silent-entry
+chmod 755 /www/cgi-bin/silent-entry
 
 echo "VERSION=$(cat /usr/lib/silent-vpn/VERSION 2>/dev/null || echo unknown)"
 echo "has_sv_dev_is_lan=$(grep -c sv_dev_is_lan /usr/lib/silent-vpn/common.sh)"

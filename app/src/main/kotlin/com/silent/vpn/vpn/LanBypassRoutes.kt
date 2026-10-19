@@ -48,7 +48,9 @@ object LanBypassRoutes {
                 if (prefix !in 1..32) continue
                 normalizeLanCidr("$host/$prefix")?.let { out.add(it) }
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Public DHCP getter was added in API 30. Calling it on Android 10
+            // raises NoSuchMethodError (not Exception) and terminates VPN startup.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 props.dhcpServerAddress?.hostAddress?.let { dhcp ->
                     normalizeLanCidr("$dhcp/32")?.let { out.add(it) }
                 }
@@ -57,25 +59,6 @@ object LanBypassRoutes {
                 val gw = route.gateway as? Inet4Address ?: return@forEach
                 val g = gw.hostAddress ?: return@forEach
                 normalizeLanCidr("$g/32")?.let { out.add(it) }
-            }
-        }
-        return out.toList()
-    }
-
-    /** Router DNS from underlay — so `{lan}.silent.vpn` resolves while VPN is up. */
-    fun underlayLanDnsServers(context: Context): List<String> {
-        val out = LinkedHashSet<String>()
-        forEachUnderlayLan(context) { props ->
-            for (server in props.dnsServers) {
-                val ip = (server as? Inet4Address)?.hostAddress ?: continue
-                if (normalizeLanCidr("$ip/32") != null) out.add(ip)
-            }
-            props.routes.orEmpty().forEach { route ->
-                val dest = route.destination
-                val isDefault = dest == null || dest.prefixLength == 0
-                if (!isDefault) return@forEach
-                val gw = (route.gateway as? Inet4Address)?.hostAddress ?: return@forEach
-                if (normalizeLanCidr("$gw/32") != null) out.add(gw)
             }
         }
         return out.toList()
@@ -110,31 +93,22 @@ object LanBypassRoutes {
     fun normalizeLanCidr(raw: String): String? {
         val hole = normalizeHoleCidr(raw) ?: return null
         val ip = hole.substringBefore('/')
-        if (!isPrivateLan(ip)) return null
-        if (isWgOverlay(ip)) return null
-        // Never punch the whole 10/8 — would steal 10.66.66.1 from the tunnel.
-        if (ip == "10.0.0.0" && hole.endsWith("/8")) return null
-        return hole
-    }
-
-    private fun isPrivateLan(ip: String): Boolean {
-        val o = ip.split(".").mapNotNull { it.toIntOrNull() }
-        if (o.size != 4) return false
-        val a = o[0]
-        val b = o[1]
-        return when {
-            a == 10 -> true
-            a == 172 && b in 16..31 -> true
-            a == 192 && b == 168 -> true
-            else -> false
+        val octets = ip.split('.').map { it.toInt() }
+        if (octets.any { it !in 0..255 }) return null
+        val prefix = hole.substringAfter('/').toInt()
+        val privatePrefix = when {
+            octets[0] == 10 -> 8
+            octets[0] == 172 && octets[1] in 16..31 -> 12
+            octets[0] == 192 && octets[1] == 168 -> 16
+            else -> return null
         }
-    }
-
-    /** Silent WG client/API plane — must stay inside the tunnel. */
-    private fun isWgOverlay(ip: String): Boolean {
-        val o = ip.split(".").mapNotNull { it.toIntOrNull() }
-        if (o.size != 4) return false
-        return o[0] == 10 && o[1] == 66
+        if (prefix < privatePrefix) return null
+        // LinkProperties supplies host/prefix, e.g. 10.1.2.3/8. Compare the
+        // whole prefix with 10.66/16, not just the host or literal 10.0.0.0/8.
+        val address = octets.fold(0L) { value, octet -> (value shl 8) or octet.toLong() }
+        val mask = (0xffffffffL shl (32 - minOf(prefix, 16))) and 0xffffffffL
+        if (address and mask == 0x0a420000L and mask) return null
+        return hole
     }
 
     private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")

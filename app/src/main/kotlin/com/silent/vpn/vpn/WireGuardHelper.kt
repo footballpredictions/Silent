@@ -185,14 +185,6 @@ class WireGuardHelper(context: Context) {
             } else {
                 configString
             }
-            if (!apiOverlayMode && !isBootstrap) {
-                val lanDns = LanBypassRoutes.underlayLanDnsServers(appContext)
-                if (lanDns.isNotEmpty()) {
-                    configToApply = prependDnsServers(configToApply, lanDns).also {
-                        DebugLog.i(TAG, "LAN DNS prepended for panel: ${lanDns.joinToString(",")}")
-                    }
-                }
-            }
             val siteState = com.silent.vpn.data.SiteExclusionsStore.load(SilentPrefs.open(appContext))
             val russian = com.silent.vpn.data.RussianServices.config(appContext)
             val ruDirect = russian.getBoolean("enabled") && !isBootstrap && !apiOverlayMode && !includeAppOverlay
@@ -275,7 +267,7 @@ class WireGuardHelper(context: Context) {
 
             val semanticKey =
                 wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}" +
-                    "|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}|ru=$ruDirect:${russian.getString("revision")}"
+                    "|routes=$excludeRouteKey|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}|ru=$ruDirect:${russian.getString("revision")}"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -393,7 +385,7 @@ class WireGuardHelper(context: Context) {
                 }
                 BrowserScopedTunnel.start(
                     appContext, finalConfig, resolveAppTunnelPolicy(appContext),
-                    excludeIPs, siteTargets, siteDomains, siteWhitelist, semanticKey, russian,
+                    excludeRouteCidrs, siteTargets, siteDomains, siteWhitelist, semanticKey, russian,
                 )
                 lastAppliedSemanticKey = semanticKey
                 lastExcludeRouteKey = excludeRouteKey
@@ -558,24 +550,6 @@ class WireGuardHelper(context: Context) {
             return lines.joinToString("\n")
         }
         return conf
-    }
-
-    /** Router DNS first so local `*.silent.vpn` resolves; keep existing public DNS after. */
-    private fun prependDnsServers(conf: String, servers: Collection<String>): String {
-        val prepend = servers.map { it.trim() }.filter { IPV4.matches(it) }.distinct()
-        if (prepend.isEmpty()) return conf
-        val lines = conf.lines().toMutableList()
-        for (i in lines.indices) {
-            val trim = lines[i].trimStart()
-            if (!trim.startsWith("DNS", ignoreCase = true) || !trim.contains("=")) continue
-            val indent = lines[i].takeWhile { it == ' ' || it == '\t' }
-            val current = trim.substringAfter('=').trim()
-            val existing = current.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            val merged = (prepend + existing).distinct().joinToString(", ")
-            lines[i] = indent + "DNS = $merged"
-            return lines.joinToString("\n")
-        }
-        return patchDnsServers(conf, prepend.joinToString(", "))
     }
 
     private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")

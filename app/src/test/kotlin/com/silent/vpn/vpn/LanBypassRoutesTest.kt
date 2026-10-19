@@ -40,4 +40,15 @@ class LanBypassRoutesTest {
         assertTrue(out.contains("192.168.0.0/16"))
         assertFalse(out.contains("10.66.66.0/24"))
     }
+
+    @Test
+    fun hostAddressPrefixesCannotExcludeTheTunnelApiOrPublicNetworks() {
+        assertEquals(
+            listOf("10.65.1.2/16", "10.67.1.2/16"),
+            LanBypassRoutes.sanitizeLanCidrs(listOf(
+                "10.1.2.3/8", "10.64.1.2/14", "10.65.1.2/16", "10.67.1.2/16",
+                "192.168.1.1/1", "172.16.1.1/4",
+            )),
+        )
+    }
 }

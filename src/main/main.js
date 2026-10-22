@@ -2410,13 +2410,14 @@ function assertValidUpdatePayload(destPath, expectedSize) {
   }
   const fd = fs.openSync(destPath, 'r')
   try {
-    const buf = Buffer.alloc(4)
-    fs.readSync(fd, buf, 0, 4, 0)
+    const buf = Buffer.alloc(72)
+    fs.readSync(fd, buf, 0, buf.length, 0)
     if (process.platform === 'linux') {
-      // ELF
-      if (!(buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46)) {
+      try {
+        require('./linuxUpdate').linuxUpdateFormat(buf)
+      } catch (error) {
         try { fs.unlinkSync(destPath) } catch { /* ignore */ }
-        throw new Error('Файл повреждён (это не Linux AppImage)')
+        throw error
       }
       return
     }
@@ -3067,28 +3068,14 @@ function scheduleLinuxUpdateAfterExit(filePath) {
   }
   const logPath = path.join(app.getPath('temp'), 'silent-ota-launch.log')
   const shPath = path.join(app.getPath('temp'), `silent-ota-launch-${Date.now()}.sh`)
-  const current = String(process.env.APPIMAGE || '').replace(/"/g, '')
-  const setup = abs.replace(/"/g, '')
-  const lines = [
-    '#!/bin/sh',
-    `echo "$(date -Iseconds) waiting" > "${logPath.replace(/"/g, '')}"`,
-    'sleep 3',
-    `chmod +x "${setup}"`,
-  ]
-  if (current) {
-    lines.push(
-      `if [ -f "${current}" ]; then cp -f "${setup}" "${current}" && chmod +x "${current}"; fi`,
-      `echo "$(date -Iseconds) starting" >> "${logPath.replace(/"/g, '')}"`,
-      `nohup "${current}" >/dev/null 2>&1 &`,
-    )
-  } else {
-    lines.push(
-      `echo "$(date -Iseconds) starting" >> "${logPath.replace(/"/g, '')}"`,
-      `nohup "${setup}" >/dev/null 2>&1 &`,
-    )
-  }
-  lines.push('rm -f "$0"', '')
-  fs.writeFileSync(shPath, lines.join('\n'), { encoding: 'utf8', mode: 0o755 })
+  const { readLinuxUpdateFormat, linuxUpdateScript } = require('./linuxUpdate')
+  const current = String(process.env.APPIMAGE || '')
+  const script = linuxUpdateScript({
+    format: readLinuxUpdateFormat(abs), setup: abs, current, logPath,
+    elevated: typeof process.getuid === 'function' && process.getuid() === 0,
+    previousLauncher: current || process.execPath,
+  })
+  fs.writeFileSync(shPath, script, { encoding: 'utf8', mode: 0o755 })
   sendLog(`[Update] scheduled linux launcher: ${shPath}`)
   const child = spawn('sh', [shPath], { detached: true, stdio: 'ignore' })
   child.unref()

@@ -28,6 +28,7 @@ HELPER_SOCK = os.path.join(RUN_DIR, "helper.sock")
 DNS_STATE = os.path.join(RUN_DIR, "dns-state.json")
 IPV6_STATE = os.path.join(RUN_DIR, "ipv6-state.json")
 STATE_FILE = os.path.join(RUN_DIR, "state")
+LAN_PROTECT_STATE = os.path.join(RUN_DIR, "lan-protect.json")
 HOSTS_MARK_BEGIN = "# silent-vpn-hosts-begin"
 HOSTS_MARK_END = "# silent-vpn-hosts-end"
 ADMIN_NIP_MARK = "silent-vpn-admin-nip"
@@ -878,15 +879,64 @@ def cmd_hosts_restore(_: list[str]) -> None:
         print(f"WARN hosts-restore: {e}")
 
 
+def scoped_default_gateway(iface: str) -> str:
+    result = run(["route", "-n", "get", "-ifscope", iface, "default"], check=False, capture=True)
+    output = result.stdout or ""
+    gateway = re.search(r"^\s*gateway:\s*(\S+)", output, re.M)
+    interface = re.search(r"^\s*interface:\s*(\S+)", output, re.M)
+    if result.returncode == 0 and gateway and interface and interface.group(1) == iface and "IFSCOPE" in output:
+        return gateway.group(1)
+    return ""
+
+
+def lan_protect_state() -> dict:
+    try:
+        with open(LAN_PROTECT_STATE, encoding="utf-8") as source:
+            state = json.load(source)
+        if isinstance(state, dict) and _IPV4.fullmatch(state.get("gateway", "")) and _IFACE.fullmatch(state.get("interface", "")):
+            return state
+    except (OSError, ValueError, TypeError):
+        pass
+    return {}
+
+
 def cmd_protect_on(args: list[str]) -> None:
-    # Linux: fwmark policy. Darwin: реальный protect в wdtt-client (IP_BOUND_IF),
-    # helper только фиксирует gw/iface для логов / SILENT_LAN_IFACE с Electron.
-    if len(args) < 2:
+    if len(args) != 2 or not _IPV4.fullmatch(args[0]) or not _IFACE.fullmatch(args[1]):
         die("protect-on <gw> <iface>")
-    print(f"OK protect-on darwin-bound-if via {args[0]} dev {args[1]}")
+    gateway, interface = args
+    state = lan_protect_state()
+    if state and (state["gateway"], state["interface"]) != (gateway, interface):
+        cmd_protect_off([])
+    existing = scoped_default_gateway(interface)
+    if existing and existing != gateway:
+        die("physical scoped default belongs to another gateway")
+    if not existing:
+        result = run(["route", "-n", "add", "-ifscope", interface, "default", gateway], check=False, capture=True)
+        if result.returncode != 0:
+            if scoped_default_gateway(interface) != gateway:
+                die("cannot create physical scoped default")
+        else:
+            try:
+                os.makedirs(RUN_DIR, exist_ok=True)
+                temporary = LAN_PROTECT_STATE + ".tmp"
+                with open(temporary, "w", encoding="utf-8") as destination:
+                    json.dump({"gateway": gateway, "interface": interface}, destination)
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, LAN_PROTECT_STATE)
+            except OSError:
+                run(["route", "-n", "delete", "-ifscope", interface, "default", gateway], check=False, capture=True)
+                die("cannot save physical scoped default ownership")
+    print(f"OK protect-on darwin-bound-if via {gateway} dev {interface}")
 
 
 def cmd_protect_off(_: list[str]) -> None:
+    state = lan_protect_state()
+    if state and scoped_default_gateway(state["interface"]) == state["gateway"]:
+        result = run(["route", "-n", "delete", "-ifscope", state["interface"], "default", state["gateway"]], check=False, capture=True)
+        if result.returncode != 0 and scoped_default_gateway(state["interface"]) == state["gateway"]:
+            die("cannot remove owned physical scoped default")
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(LAN_PROTECT_STATE)
     print("OK protect-off")
 
 

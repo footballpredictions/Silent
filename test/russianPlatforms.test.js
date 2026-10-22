@@ -65,3 +65,7 @@ with patch('os.makedirs'), patch('os.listdir',side_effect=[[],['utun9.policy.soc
 `
   execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', script, path.join(__dirname, '../resources/mac/silent-wg-helper')])
 })
+
+test('Mac scoped physical default is created, refreshed and cleaned up without changing other routes', () => {
+  execFileSync(process.platform === 'win32' ? 'python' : 'python3', [path.join(__dirname, 'mac_scoped_route_test.py')])
+})

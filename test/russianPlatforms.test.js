@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
 
 for (const platform of ['win32', 'linux', 'darwin']) {
   test(`Russian services supported on ${platform}`, () => {
@@ -46,3 +47,21 @@ for (const platform of ['Linux', 'Darwin']) {
     assert.equal(calls.length, before + 1, 'DNS must not change without native ACK')
   })
 }
+
+test('Mac helper selects utun interface even when policy socket is listed first', () => {
+  const script = `
+import sys, types
+from unittest.mock import patch, mock_open
+namespace = {'__name__':'fixture'}
+exec(compile(open(sys.argv[1],encoding='utf-8').read(),sys.argv[1],'exec'),namespace)
+selected = []
+namespace['cmd_gateway'] = lambda args: print('192.0.2.1 en0')
+namespace['iface_exists'] = lambda name: name == 'utun9'
+namespace['set_iface'] = selected.append
+with patch('os.makedirs'), patch('os.listdir',side_effect=[[],['utun9.policy.sock','utun9.sock']]), patch('builtins.open',mock_open()), patch('subprocess.Popen',return_value=types.SimpleNamespace(pid=42)) as spawn:
+    assert namespace['start_userspace']('/app/wireguard-go') == 'utun9'
+    assert selected == ['utun9']
+    assert spawn.call_args.kwargs['env']['SILENT_LAN_IFACE'] == 'en0'
+`
+  execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', script, path.join(__dirname, '../resources/mac/silent-wg-helper')])
+})

@@ -1,4 +1,18 @@
-# Windows browser site routing
+# Desktop packet routing
+
+Linux and macOS build this module as `resources/<platform>/wireguard-go`.
+The existing privileged helper starts it in the foreground, records its PID,
+passes the physical interface in `SILENT_LAN_IFACE`, and configures WireGuard
+through its normal UAPI socket. The separate `<interface>.policy.sock` is mode
+0600 and accepts live Russian-service policy updates. Manual process/site
+exclusions on these platforms continue using their existing implementation.
+
+The opt-in `TestUnixKernelRouting` requires isolated mount, PID and network
+namespaces, a private `/run`, and a sysfs mount for that network namespace.
+Set `SILENT_ROUTER_KERNEL=isolated`, `SILENT_ROUTER_HELPER` to the Linux helper,
+and `SILENT_ROUTER_BINARY` to the built routing engine. It creates an isolated
+WAN namespace and an encrypted WireGuard fixture, then checks real kernel TCP
+and DNS traffic for OFF/ON, VPN overrides, and refresh without a VPN restart.
 
 When site IP snapshots are applied, Windows removes matching legacy global site
 routes left by old clients: only ActiveStore routes with the old metric 0/1 on

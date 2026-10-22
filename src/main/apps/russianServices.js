@@ -112,7 +112,7 @@ function configure(directory) {
 }
 module.exports = {
   RussianServices, validPolicy, DELIVERY, configure,
-  supported: () => process.platform === 'win32',
-  enabled: () => process.platform === 'win32' && current?.enabled() === true,
+  supported: () => ['win32', 'linux', 'darwin'].includes(process.platform),
+  enabled: () => ['win32', 'linux', 'darwin'].includes(process.platform) && current?.enabled() === true,
   snapshot: () => current?.snapshot() || { ...bundled, enabled: false, delivery: DELIVERY.WAITING },
 }

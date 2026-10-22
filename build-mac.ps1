@@ -35,28 +35,12 @@ $env:CGO_ENABLED = '0'
 $env:GOTOOLCHAIN = 'local'
 $env:GOPROXY = 'https://proxy.golang.org,direct'
 $wgOut = Join-Path (Get-Location) 'resources\mac\wireguard-go'
-$modRoot = Join-Path (go env GOPATH) 'pkg\mod\golang.zx2c4.com'
-$wgMod = Get-ChildItem $modRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'wireguard@*' } | Sort-Object Name -Descending | Select-Object -First 1
-if (-not $wgMod) {
-  go install golang.zx2c4.com/wireguard@0.0.20230223 2>$null
-  $wgMod = Get-ChildItem $modRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'wireguard@*' } | Sort-Object Name -Descending | Select-Object -First 1
-}
-if ($wgMod) {
-  Push-Location $wgMod.FullName
-  go build -ldflags='-s -w' -trimpath -o $wgOut .
-  Pop-Location
-}
-if (-not (Test-Path $wgOut)) {
-  # Fallback: module mode from empty dir
-  $tmp = Join-Path $env:TEMP "wg-go-build-$Arch"
-  New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-  Push-Location $tmp
-  go mod init tmpwg 2>$null
-  go get golang.zx2c4.com/wireguard@0.0.20230223
-  go build -ldflags='-s -w' -trimpath -o $wgOut golang.zx2c4.com/wireguard
-  Pop-Location
-}
-if (-not (Test-Path $wgOut)) { throw 'wireguard-go darwin build FAILED' }
+$env:GOTOOLCHAIN = 'auto'
+Push-Location site-router
+go build -ldflags='-s -w -checklinkname=0' -trimpath -o $wgOut .
+$wgBuildCode = $LASTEXITCODE
+Pop-Location
+if ($wgBuildCode -ne 0) { throw 'WireGuard routing engine darwin build FAILED' }
 
 if (-not (Test-Path 'resources\mac\silent-wg-helper')) {
   throw 'resources/mac/silent-wg-helper missing'

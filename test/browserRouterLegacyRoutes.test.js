@@ -18,7 +18,7 @@ test('real browser policy removes stale physical site routes before native ACK, 
       const message=JSON.parse(line); events.push({ack:message.policy.targets});
       const p=current.pending.get(message.id);clearTimeout(p.timer);current.pending.delete(message.id);p.resolve({ok:true});
     }}}};`, {
-    module, events, setTimeout, clearTimeout,
+    module, events, setTimeout, clearTimeout, process: { platform: 'win32' },
     require(name) { return name === 'child_process' ? { execFile } : require(name) },
   })
   await module.exports.updatePolicy({ whitelist:true, targets:['188.40.167.81/32','192.177.26.38/32'], domains:['2ip.io'] })

@@ -255,8 +255,13 @@ def start_userspace(wg_go: str) -> str:
     # Лог wireguard-go — иначе data-plane (rx=92) невидима.
     wg_log = os.path.join(RUN_DIR, "wireguard-go.log")
     log_f = open(wg_log, "ab", buffering=0)
+    gateway = io.StringIO()
+    with contextlib.redirect_stdout(gateway):
+        cmd_gateway([])
+    child_env = dict(os.environ, SILENT_LAN_IFACE=gateway.getvalue().strip().split()[-1])
     proc = subprocess.Popen(
         [wg_go, "utun"],
+        env=child_env,
         stdout=log_f,
         stderr=log_f,
         start_new_session=True,
@@ -955,7 +960,28 @@ def cmd_competitors_off(_: list[str]) -> None:
     print("OK competitors-off " + (",".join(seen) if seen else "noop"))
 
 
+def cmd_russian_policy(args: list[str]) -> None:
+    if len(args) != 1 or len(args[0]) > 500_000:
+        die("invalid policy")
+    policy = json.loads(args[0])
+    if not isinstance(policy, dict) or not isinstance(policy.get("russian"), dict):
+        die("invalid policy")
+    iface = current_iface()
+    if not re.fullmatch(r"utun[0-9]+", iface):
+        die("tunnel missing")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(8)
+        client.connect(f"/var/run/wireguard/{iface}.policy.sock")
+        client.sendall((json.dumps(policy) + "\n").encode("utf-8"))
+        with client.makefile("r", encoding="utf-8") as reply:
+            result = json.loads(reply.readline(4096))
+    if result.get("ok") is not True:
+        die("policy rejected")
+    print(json.dumps(result))
+
+
 COMMANDS = {
+    "russian-policy": cmd_russian_policy,
     "up": cmd_up,
     "reload": cmd_reload,
     "down": cmd_down,
@@ -1020,7 +1046,10 @@ def validate_args(args: list[str]) -> str | None:
     if cmd not in COMMANDS:
         return f"unknown command: {cmd}"
     rest = args[1:]
-    if cmd == "up":
+    if cmd == "russian-policy":
+        if len(rest) != 1 or len(rest[0]) > 500_000:
+            return "invalid policy"
+    elif cmd == "up":
         if not rest:
             return "up needs conf"
         if not conf_path_ok(rest[0]):

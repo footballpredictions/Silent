@@ -42,21 +42,12 @@ $env:GOTOOLCHAIN = 'local'
 $env:GOPROXY = 'https://proxy.golang.org,direct'
 Remove-Item Env:GOBIN -ErrorAction SilentlyContinue
 $wgOut = Join-Path (Get-Location) 'resources\linux\wireguard-go'
-try {
-  go get golang.zx2c4.com/wireguard@latest 2>$null
-} catch {
-  Write-Host 'go get wireguard skipped (no module in cwd) - using module cache / existing binary'
-}
-$modRoot = Join-Path (go env GOPATH) 'pkg\mod\golang.zx2c4.com'
-$wgMod = Get-ChildItem $modRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'wireguard@*' } | Sort-Object Name -Descending | Select-Object -First 1
-if ($wgMod) {
-  Push-Location $wgMod.FullName
-  go build -ldflags='-s -w' -trimpath -o $wgOut .
-  Pop-Location
-}
-if (-not (Test-Path $wgOut)) {
-  Write-Host 'WARN: wireguard-go build failed - helper will use kernel WireGuard + wg' -ForegroundColor Yellow
-}
+$env:GOTOOLCHAIN = 'auto'
+Push-Location site-router
+go build -ldflags='-s -w -checklinkname=0' -trimpath -o $wgOut .
+$wgBuildCode = $LASTEXITCODE
+Pop-Location
+if ($wgBuildCode -ne 0) { throw 'WireGuard routing engine linux build FAILED' }
 
 Write-Host '[2b/4] integrity hashes...'
 node scripts\gen_integrity_hashes.js

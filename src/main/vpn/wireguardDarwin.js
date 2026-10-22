@@ -49,6 +49,7 @@ let wgApplyEpoch = 0
 let lastHelperPath = null
 let lastWgGo = 'auto'
 let daemonStartPromise = null
+let russianDnsEnabled = false
 
 function beginWgApply() {
   wgApplyEpoch += 1
@@ -710,7 +711,7 @@ async function removeHostBypassRoutes(excludeIPs, send, epoch = null) {
 
 async function applyWgDns(send, dnsValue = WG_DNS) {
   // Как на Windows/сервере: 1.1.1.1 + Яндекс 77.88.8.8 (не роутер — костыль после en0-бага).
-  const servers = pickDnsServers(dnsValue)
+  const servers = pickDnsServers(russianDnsEnabled ? '10.66.66.53' : dnsValue)
     .split(',')
     .map(s => s.trim())
     .filter(Boolean)
@@ -805,6 +806,16 @@ async function restoreIpv6(send) {
 }
 
 let lastAppliedDns = WG_DNS
+
+async function updateRussianPolicy(policy) {
+  const epoch = wgApplyEpoch
+  const dns = pickDnsServers(lastAppliedDns).split(',').map(server => server.trim()).filter(Boolean)
+  const result = JSON.parse(await helperOut(['russian-policy', JSON.stringify({ russian: policy.russian || { enabled: false }, dns })], 12000))
+  if (result.ok !== true || epoch !== wgApplyEpoch) throw new Error('Применение обхода отменено')
+  await helperOut(['dns-set', TUNNEL_NAME, policy.russian?.enabled === true ? '10.66.66.53' : pickDnsServers(lastAppliedDns)], 12000)
+  if (epoch !== wgApplyEpoch) throw new Error('Применение обхода отменено')
+  russianDnsEnabled = policy.russian?.enabled === true
+}
 
 /** Периодически: NM может вернуть IPv6 RA / переписать resolv.conf. */
 async function refreshTunnelGuards(send) {
@@ -937,6 +948,7 @@ async function forceStopWireGuard(isDev, dirname, send) {
       send?.('[WG] stop отменён — уже новый connect')
       return
     }
+    russianDnsEnabled = false
     if (!(await isWgStillPresentAsync())) return
     send?.('[WG] Остановка туннеля...')
     prepareRuntimeDir(isDev, dirname, send)
@@ -1002,6 +1014,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     send('[WG] Нет silent-wg-helper — пересоберите Silent VPN для Mac')
     return false
   }
+  await maybeUpgradeSystemHelper(send)
 
   // Phase1 всегда 10.66.66.0/24: лог 10:46 hs ok + rx=92 на full /1.
   // Сначала доказать data-plane к Улью без 0/1, потом expand (как iOS: bootstrap → attach).
@@ -1381,6 +1394,7 @@ async function probeInternetFromMain(send) {
 }
 
 module.exports = {
+  updateRussianPolicy,
   TUNNEL_CONF_NAME,
   TUNNEL_NAME,
   FALLBACK_BACKEND_IP,

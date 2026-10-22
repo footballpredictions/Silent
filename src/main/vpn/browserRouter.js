@@ -77,6 +77,12 @@ async function updatePolicy(patch) {
 }
 async function updatePolicyUnlocked(patch) {
   const next = { ...policy, ...patch }
+  if (process.platform === 'linux' || process.platform === 'darwin') {
+    const tunnel = process.platform === 'darwin' ? require('./wireguardDarwin') : require('./wireguardLinux')
+    await tunnel.updateRussianPolicy(next)
+    policy = next
+    return { ok: true }
+  }
   const session = current
   if (isActive()) {
     try {

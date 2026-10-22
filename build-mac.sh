@@ -32,20 +32,11 @@ mkdir -p resources/mac
 
 build_wireguard_go() {
   local arch="$1" out_wg="$2"
-  local ver="${WG_GO_VERSION:-0.0.20230223}"
-  local tmp
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/silent-wg-$arch.XXXXXX")"
   (
-    cd "$tmp"
+    cd site-router
     export GOOS=darwin GOARCH="$arch" CGO_ENABLED=0 GOPROXY=https://proxy.golang.org,direct GOTOOLCHAIN=auto
-    go mod init tmpwg >/dev/null
-    go get "golang.zx2c4.com/wireguard@${ver}"
-    go get golang.org/x/sys@v0.30.0 golang.org/x/net@v0.35.0
-    go build -ldflags='-s -w -checklinkname=0' -trimpath -o "$out_wg" golang.zx2c4.com/wireguard
+    go build -ldflags='-s -w -checklinkname=0' -trimpath -o "$out_wg" .
   )
-  local rc=$?
-  rm -rf "$tmp"
-  return $rc
 }
 
 echo "[1/3] helper..."

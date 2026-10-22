@@ -19,12 +19,12 @@ echo '[1/4] wdtt-client (linux/amd64)...'
 chmod +x resources/linux/wdtt-client
 
 echo '[2/4] wireguard-go...'
-export GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org,direct
-if go build -ldflags='-s -w' -trimpath -o resources/linux/wireguard-go golang.zx2c4.com/wireguard@0.0.20230223; then
-  chmod +x resources/linux/wireguard-go
-else
-  echo 'WARN: wireguard-go build failed — kernel WireGuard + wg'
-fi
+export GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=auto GOPROXY=https://proxy.golang.org,direct
+(
+  cd site-router
+  go build -ldflags='-s -w -checklinkname=0' -trimpath -o ../resources/linux/wireguard-go .
+)
+chmod +x resources/linux/wireguard-go
 chmod +x resources/linux/silent-wg-helper
 
 echo '[2b/4] integrity hashes...'

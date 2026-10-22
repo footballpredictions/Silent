@@ -917,7 +917,7 @@ function ensureVpnReadyEvent(sendLogFn) {
     maybeWarmupTelegram(sendLogFn, { logDefer: true })
     scheduleTelegramWarmupRetries(sendLogFn)
   }
-  if (!vpnBootstrapMode && process.platform === 'win32') void syncRussianPolicyDelivery({ forceRefresh: true })
+  if (!vpnBootstrapMode) void syncRussianPolicyDelivery({ forceRefresh: true })
 }
 
 let telegramWarmupTimers = []
@@ -1293,7 +1293,7 @@ ipcMain.handle('get-russian-services', () => {
   }
 })
 ipcMain.handle('set-russian-services', async (_, enabled) => {
-  if (!russianServices.supported()) return { ok: false, detail: 'Режим пока поддерживается в Windows-клиенте' }
+  if (!russianServices.supported()) return { ok: false, detail: 'Режим не поддерживается на этой платформе' }
   if (typeof enabled !== 'boolean' || russianModeChanging) return { ok: false, detail: 'Дождитесь применения режима' }
   const store = russianServices.configure(app.getPath('userData'))
   const previous = store.enabled()
@@ -1778,7 +1778,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         return
       }
       if (ok) {
-        if (process.platform === 'win32' && !vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
+        if (!vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
         wgCredPhase = false
         sendLog(`[WG] Полный туннель активен, DNS = ${sessionDnsOverride || '1.1.1.1 + 77.88.8.8'}`)
         // После reinstall маршруты мигают → EACCES/ECONNABORTED на API.
@@ -1926,7 +1926,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
       }
     }
     if (ok) {
-      if (process.platform === 'win32' && !vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
+      if (!vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
       wgApplied = true
       wgAttempted = true
       clearWgRetries()

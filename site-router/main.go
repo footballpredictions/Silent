@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +54,7 @@ type routedTun struct {
 	owner     func(flow) string
 	routesMu  sync.Mutex
 	resetTCP  func(flow) error
+	dnsProxy  *tunnelDNS
 }
 
 func (t *routedTun) choose(f flow, packet []byte) bool {
@@ -183,6 +185,7 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 			if t.policy.Load().russian.handleDNS(t.ctx, packet, t.writePacket) {
 				continue
 			}
+			t.dnsProxy.outbound(packet)
 			f, _, ok := packetFlow(packet)
 			direct := false
 			if ok {
@@ -222,6 +225,7 @@ func (t *routedTun) Read(buffers [][]byte, sizes []int, offset int) (int, error)
 func (t *routedTun) Write(buffers [][]byte, offset int) (int, error) {
 	for _, packet := range buffers {
 		t.policy.Load().russian.observe(packet[offset:])
+		t.dnsProxy.inbound(packet[offset:])
 	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
@@ -311,6 +315,9 @@ func parseConfig(text string) (string, string, int, error) {
 }
 
 func run() error {
+	if runtime.GOOS != "windows" {
+		return runUnix()
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 4096), 2*1024*1024)
 	if !scanner.Scan() {

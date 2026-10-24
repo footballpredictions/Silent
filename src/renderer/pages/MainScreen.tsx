@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { promotionalPriceLabel } from '../promoPricing'
 import { Menu, X, ChevronRight, Pencil } from 'lucide-react'
 import api, {
   clearTokens,
@@ -147,7 +148,7 @@ interface Profile {
   devices: DeviceInfo[]
   devices_count: number
   max_devices: number
-  payment_previews?: Record<string, { message: string; calculated_at?: string }>
+  payment_previews?: Record<string, { message: string; calculated_at?: string; amount?: number; promo_code?: string | null }>
 }
 
 type MenuPage = null | 'devices' | 'subscription' | 'exceptions' | 'bypass' | 'hashes' | 'dns' | 'bonuses' | 'support' | 'about'
@@ -284,6 +285,9 @@ export default function MainScreen({
   const [updateProgress, setUpdateProgress] = useState(0)
   const [hashSyncKey, setHashSyncKey] = useState(0)
   const profileFetchVersionRef = useRef(0)
+  const promoCheckVersionRef = useRef(0)
+  const [pricingNow, setPricingNow] = useState(Date.now)
+  useEffect(() => () => { promoCheckVersionRef.current++ }, [])
   const [sessionsError, setSessionsError] = useState('')
 
   const applyServerProfile = useCallback((p: Profile) => {
@@ -310,6 +314,7 @@ export default function MainScreen({
     }
 
     setProfile(p)
+    setPricingNow(Date.now())
     saveCachedProfile(p)
     if (isBootstrapVpnActive()) return
     const vpnActive = connected || connecting || disconnecting
@@ -507,9 +512,12 @@ export default function MainScreen({
   }, [fetchProfile])
 
   useEffect(() => {
-    if (menuPage !== 'devices') return
+    if (!['devices', 'subscription', 'bonuses'].includes(menuPage || '')) return
     fetchProfile()
-    const id = window.setInterval(() => fetchProfile(), 10_000)
+    const id = window.setInterval(() => {
+      setPricingNow(Date.now())
+      void fetchProfile()
+    }, menuPage === 'devices' ? 10_000 : 30_000)
     return () => clearInterval(id)
   }, [menuPage, fetchProfile])
 
@@ -1264,6 +1272,7 @@ export default function MainScreen({
   const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = () => {
+    promoCheckVersionRef.current++
     profileFetchVersionRef.current++
     if (logoutBusyRef.current) return
     logoutBusyRef.current = true
@@ -1883,7 +1892,7 @@ export default function MainScreen({
                       className="w-full flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-semibold transition-opacity hover:opacity-90"
                       style={{ background: palette.primaryBtnBg, color: palette.primaryBtnFg }}>
                       <span>{plan.label}</span>
-                      <span>{paymentBusyPlan === plan.id ? 'Открываем…' : plan.price}</span>
+                      <span>{paymentBusyPlan === plan.id ? 'Открываем…' : promotionalPriceLabel(plan.price, profile?.payment_previews?.[plan.id], pricingNow)}</span>
                     </button>
                   ))}
                   <p className="text-[10px] leading-relaxed" style={{ color: muted }}>
@@ -2031,10 +2040,18 @@ export default function MainScreen({
                   ['--field-ph' as any]: palette.fieldPlaceholder,
                 } as any} />
               <button onClick={async () => {
+                const version = ++promoCheckVersionRef.current
                 try {
                   const res = await api.post('/api/payments/promo/check', { code: promoCode, plan_type: 'monthly' })
+                  if (version !== promoCheckVersionRef.current) return
+                  setProfile(current => current ? { ...current, payment_previews: {} } : current)
+                  setPricingNow(Date.now())
+                  await fetchProfile()
+                  if (version !== promoCheckVersionRef.current) return
                   setPromoMsg(`Скидка ${res.data.discount_percent}%!`)
-                } catch (e: any) { setPromoMsg(e.response?.data?.detail || 'Не найден') }
+                } catch (e: any) {
+                  if (version === promoCheckVersionRef.current) setPromoMsg(e.response?.data?.detail || 'Не найден')
+                }
               }} className="mt-2 w-full rounded-xl py-2 text-xs font-semibold transition-colors"
                 style={{ background: fg, color: bg }}>
                 Проверить

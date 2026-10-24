@@ -59,10 +59,20 @@ router = APIRouter(prefix="/vpn", tags=["vpn"])
 
 
 @router.get("/routing-policy")
-async def get_routing_policy(db: AsyncSession = Depends(get_db)):
+async def get_routing_policy(profile: str | None = None, db: AsyncSession = Depends(get_db)):
     """Non-secret shared policy; also available through cell public failover."""
     from app.services.routing_policy import load_policy
-    return await load_policy(db)
+    policy = await load_policy(db)
+    if profile is None:
+        return policy
+    if profile != 'catalog-test':
+        raise HTTPException(status_code=400, detail='Unknown routing profile')
+    from app.services.whitelist_catalog import load_catalog
+    from app.services.whitelist_test_policy import build_catalog_test_policy
+    try:
+        return build_catalog_test_policy(load_catalog(), policy)
+    except (ValueError, KeyError, TypeError, OSError):
+        raise HTTPException(status_code=503, detail='Test catalog temporarily unavailable')
 
 
 def _olcrtc_disabled_payload() -> dict:

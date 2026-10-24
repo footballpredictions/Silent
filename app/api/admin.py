@@ -700,6 +700,13 @@ async def get_routing_policy(_: bool = Depends(get_admin_credentials), db: Async
     return await load_policy(db)
 
 
+@router.get("/settings/routing-policy/sources")
+async def get_routing_policy_sources(_: bool = Depends(get_admin_credentials)):
+    from app.services.whitelist_catalog import catalog_summary, load_catalog
+
+    return catalog_summary(load_catalog())
+
+
 @router.post("/settings/routing-policy")
 async def set_routing_policy(req: RoutingPolicyRequest, _: bool = Depends(get_admin_credentials),
                              db: AsyncSession = Depends(get_db)):

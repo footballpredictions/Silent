@@ -538,6 +538,12 @@ async def lifespan(app: FastAPI):
             agent_specs.append(("availability_watchdog", availability_loop))
         except Exception as e:
             logger.error("availability agent skipped (остальные агенты работают): %s", e)
+        try:
+            from ai.whitelist_sources import whitelist_sources_loop
+
+            agent_specs.append(("whitelist_sources", whitelist_sources_loop))
+        except Exception as e:
+            logger.error("whitelist sources skipped (остальные агенты работают): %s", e)
         # VK-only mode: all olcrtc background agents are disabled.
 
         agents_task = start_when_leader("silent_background_agents", agent_specs)

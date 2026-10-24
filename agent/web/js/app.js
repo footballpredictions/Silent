@@ -1,5 +1,6 @@
 import { api, openPaymentUrl } from "./api.js?v=1.0.169-r11";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
+import { promotionalPriceLabel } from "./promo-pricing.js";
 import { applyPalette, palette } from "./theme.js";
 import { dockKind, formatExpireDate, hasVpnAccess, isUnlimitedLike, planLabel } from "./subscription.js";
 import { mountToggleSnake, SNAKE_MIN_VISIBLE_MS, toggleMarkup } from "./toggle.js";
@@ -146,14 +147,16 @@ function canRestoreSession() {
 }
 
 let sessionVersion = 0;
+let pricingVersion = 0;
+let promoRequestVersion = 0;
 let connectionVersion = 0;
 let profileRequest = null;
 let devicesVersion = 0;
 let deviceMutation = false;
 
 function loadProfile(version = sessionVersion, knownStatus = null) {
-  if (profileRequest?.version === version && profileRequest.revision === devicesVersion) return profileRequest.promise;
-  const request = { version, revision: devicesVersion };
+  if (profileRequest?.version === version && profileRequest.revision === devicesVersion && profileRequest.pricing === pricingVersion) return profileRequest.promise;
+  const request = { version, revision: devicesVersion, pricing: pricingVersion };
   const connection = connectionVersion;
   request.promise = (async () => {
     try {
@@ -161,7 +164,7 @@ function loadProfile(version = sessionVersion, knownStatus = null) {
         api.profile(), knownStatus ? Promise.resolve(knownStatus) : api.status().catch(() => null),
       ]);
       if (!profile?.email) throw new Error(detailText(profile?.detail) || "Не удалось загрузить аккаунт");
-      if (version !== sessionVersion || request.revision !== devicesVersion) return false;
+      if (version !== sessionVersion || request.revision !== devicesVersion || request.pricing !== pricingVersion) return false;
       if (status && connection === connectionVersion && !state.connecting && !state.disconnecting) {
         state.connected = !!status.connected;
       }
@@ -514,7 +517,7 @@ function subscriptionPage(t) {
     </div>
     <h2>${esc(t.subscription_choose_plan_title || "Выберите тариф")}</h2>
     ${plans.map(([id, label, price]) => `
-      <button class="card-btn" data-act="pay" data-plan="${id}" ${state.paymentBusy ? "disabled" : ""}><span>${label}</span><span>${price}</span></button>
+      <button class="card-btn" data-act="pay" data-plan="${id}" ${state.paymentBusy ? "disabled" : ""}><span>${label}</span><span>${esc(promotionalPriceLabel(price, state.profile?.payment_previews?.[id]))}</span></button>
     `).join("")}
     <p class="hint" style="margin-top:10px">Оплата откроется в браузере (YuMoney). После оплаты вернитесь сюда.</p>
     ${state.error ? `<p class="err">${esc(state.error)}</p>` : ""}`;
@@ -1142,10 +1145,18 @@ async function copyRef() {
 }
 
 async function checkPromo() {
+  const version = sessionVersion;
+  const request = ++promoRequestVersion;
   try {
     const res = await api.promo(state.promoCode);
+    if (version !== sessionVersion || request !== promoRequestVersion) return;
+    pricingVersion++;
+    if (state.profile) state.profile = { ...state.profile, payment_previews: {} };
+    await loadProfile(version);
+    if (version !== sessionVersion || request !== promoRequestVersion) return;
     state.promoMsg = res.discount_percent != null ? `Скидка ${res.discount_percent}%` : (res.detail || "Ок");
   } catch (e) {
+    if (version !== sessionVersion || request !== promoRequestVersion) return;
     state.promoMsg = e.message || "Не найден";
   }
   render();
@@ -1259,7 +1270,7 @@ async function boot() {
 
 // Refresh only while the list is visible; never accumulate parallel CGI requests.
 setInterval(() => {
-  if (!document.hidden && state.page === "devices") void refreshProfile();
+  if (!document.hidden && ["devices", "subscription", "bonuses"].includes(state.page)) void refreshProfile();
 }, 30_000);
 setInterval(() => { void pollUpdate(); }, 2_000);
 setInterval(() => { if (!document.hidden && state.session) void checkUpdate(); }, 15 * 60_000);

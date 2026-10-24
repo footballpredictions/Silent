@@ -19,12 +19,14 @@ object AppTunnelRouting {
         includeAppInTunnel: Boolean,
         vkPackages: Set<String>,
         installedPackages: Set<String> = emptySet(),
+        russianBypass: Boolean = false,
     ): Policy {
         val excluded = LinkedHashSet<String>()
         if (!includeAppInTunnel) {
             excluded.add(selfPackage)
         }
         excluded.addAll(vkPackages)
+        if (russianBypass && !includeAppInTunnel) excluded.add("ru.oneme.app")
 
         if (intent.whitelist) {
             val keep = LinkedHashSet(intent.userPackages)

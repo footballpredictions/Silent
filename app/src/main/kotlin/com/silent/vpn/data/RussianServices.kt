@@ -2,6 +2,7 @@ package com.silent.vpn.data
 
 import android.content.Context
 import android.os.SystemClock
+import com.silent.vpn.BuildConfig
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
@@ -15,7 +16,7 @@ import org.json.JSONObject
 /** Independent override: never rewrites either saved app/site list or its mode. */
 object RussianServices {
     const val ENABLED_KEY = "ru_direct"
-    private const val CACHE_KEY = "russian_routing_policy_v1"
+    private val CACHE_KEY = if (BuildConfig.WHITELIST_CATALOG_TEST) "catalog_test_routing_policy_v1" else "russian_routing_policy_v1"
     private val fetching = AtomicBoolean(false)
     @Volatile private var attemptedAt = 0L
     @Volatile private var bundled: String? = null
@@ -55,7 +56,11 @@ object RussianServices {
         val policy = JSONObject(raw)
         require(policy.getInt("schema_version") == 1)
         require(policy.getString("revision").matches(Regex("[0-9a-f]{64}")))
-        for (key in listOf("direct_domains", "vpn_domains")) {
+        if (BuildConfig.WHITELIST_CATALOG_TEST) require(policy.getString("profile") == "catalog-test")
+        else require(!policy.has("profile") && !policy.has("direct_exact_domains"))
+        val keys = if (BuildConfig.WHITELIST_CATALOG_TEST) listOf("direct_domains", "direct_exact_domains", "vpn_domains")
+            else listOf("direct_domains", "vpn_domains")
+        for (key in keys) {
             val domains = policy.getJSONArray(key)
             require(domains.length() <= 2000)
             for (index in 0 until domains.length()) {
@@ -69,7 +74,8 @@ object RussianServices {
 
     fun config(context: Context): JSONObject {
         val cached = SilentPrefs.open(context).getString(CACHE_KEY, null)?.let(::valid)
-        val fallback = bundled ?: context.assets.open("russian-services-policy.json").bufferedReader().use { it.readText() }
+        val asset = if (BuildConfig.WHITELIST_CATALOG_TEST) "catalog-test-policy.json" else "russian-services-policy.json"
+        val fallback = bundled ?: context.assets.open(asset).bufferedReader().use { it.readText() }
             .also { bundled = it }
         return (cached ?: checkNotNull(valid(fallback)) { "Некорректная политика российских сервисов" })
             .put("enabled", enabled(context))
@@ -103,7 +109,8 @@ object RussianServices {
     }
 
     private fun downloadPolicy(): JSONObject? {
-        val connection = URL("${BrowserScopedTunnel.OTA_BASE_URL}/api/vpn/routing-policy")
+        val query = if (BuildConfig.WHITELIST_CATALOG_TEST) "?profile=catalog-test" else ""
+        val connection = URL("${BrowserScopedTunnel.OTA_BASE_URL}/api/vpn/routing-policy$query")
             .openConnection(Proxy.NO_PROXY) as HttpURLConnection
         return try {
             connection.connectTimeout = 1_000

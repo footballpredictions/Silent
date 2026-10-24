@@ -31,8 +31,12 @@ class RussianServicesDeviceTest {
         RussianServices.setEnabled(context, true)
         try {
             val active = resolveAppTunnelPolicy(context)
-            assertFalse(active.whitelist)
-            assertEquals(setOf(context.packageName), active.packages)
+            if (com.silent.vpn.BuildConfig.WHITELIST_CATALOG_TEST) {
+                assertEquals(before, active)
+            } else {
+                assertFalse(active.whitelist)
+                assertEquals(setOf(context.packageName), active.packages)
+            }
             assertEquals(bootstrap, resolveBootstrapExcludedApps(context))
             assertEquals(overlay, resolveAppTunnelPolicy(context, includeAppInTunnel = true))
             repo.saveExcludedApps(emptySet(), false)

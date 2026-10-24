@@ -65,6 +65,8 @@ val releaseCertSha = releaseCertSha256Hex()
 val releaseAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 val forbiddenReleaseLibs = setOf("libolcrtc.so", "libolcrtc2.so", "libhev-socks5-tunnel.so")
 
+val whitelistCatalogTest = providers.gradleProperty("whitelistCatalogTest").orNull == "true"
+
 android {
     namespace = "com.silent.vpn"
     compileSdk = 35
@@ -100,6 +102,7 @@ android {
 
     buildTypes {
         release {
+            buildConfigField("boolean", "WHITELIST_CATALOG_TEST", "false")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -119,8 +122,9 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            applicationIdSuffix = ".debug"
-            resValue("string", "app_name", "Silent VPN (debug)")
+            applicationIdSuffix = if (whitelistCatalogTest) ".catalogtest" else ".debug"
+            resValue("string", "app_name", if (whitelistCatalogTest) "Silent VPN (каталог-тест)" else "Silent VPN (debug)")
+            buildConfigField("boolean", "WHITELIST_CATALOG_TEST", whitelistCatalogTest.toString())
             buildConfigField("String", "BOOTSTRAP_VK_HASH", "\"$debugBootstrapVkHash\"")
             // Debug: пустые pins → AppIntegrity пропускает проверки
             buildConfigField("String", "RELEASE_CERT_SHA256", "\"\"")
@@ -156,6 +160,9 @@ android {
         }
     }
     sourceSets {
+        getByName("debug") {
+            if (whitelistCatalogTest) assets.srcDir("src/catalogTest/assets")
+        }
         getByName("main") {
             jniLibs.srcDirs("src/main/jniLibs")
         }

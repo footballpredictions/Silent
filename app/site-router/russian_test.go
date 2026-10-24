@@ -12,6 +12,39 @@ import (
 	"time"
 )
 
+func TestCatalogExactRulesDoNotIncludeSubdomains(t *testing.T) {
+	config := russianConfig{Enabled: true, DirectExact: []string{"exact.ru"}, Direct: []string{"suffix.ru"}, VPN: []string{"blocked.suffix.ru"}}
+	for name, expected := range map[string]bool{"EXACT.RU.": true, "sub.exact.ru": false, "suffix.ru": true, "sub.suffix.ru": true, "unknown.ru": false} {
+		if config.matchesDirect(name) != expected {
+			t.Fatalf("unexpected exact/suffix match for %s", name)
+		}
+	}
+	router := newRussianRouter(config)
+	ip := netip.MustParseAddr("203.0.113.9")
+	router.observe(ruFixture("exact.ru", true, ip.As4()))
+	if !router.direct(ip) {
+		t.Fatal("exact host was not learned as DIRECT")
+	}
+	epoch := router.epoch()
+	config.DirectExact = []string{"other.ru"}
+	router.update(config)
+	if router.epoch() == epoch || router.direct(ip) {
+		t.Fatal("exact rule update did not invalidate learned route")
+	}
+	router.observe(ruFixture("sub.exact.ru", true, ip.As4()))
+	if router.direct(ip) {
+		t.Fatal("exact rule leaked into a subdomain")
+	}
+	router.observe(ruFixture("sub.suffix.ru", true, ip.As4()))
+	router.observe(ruFixture("blocked.suffix.ru", true, ip.As4()))
+	if router.direct(ip) || !router.mustVPN(ip) {
+		t.Fatal("VPN override lost priority on a shared IP")
+	}
+	if router.handleDNS(context.Background(), ruFixture("blocked.suffix.ru", false, [4]byte{}), func([]byte) error { return nil }) {
+		t.Fatal("VPN override query escaped to physical DNS")
+	}
+}
+
 func TestPhysicalDNSUpdateReachesLookupBeforeNetworkAck(t *testing.T) {
 	r := newRussianRouter(russianConfig{Enabled: true, Direct: []string{"flashscore.com"}})
 	first := ""

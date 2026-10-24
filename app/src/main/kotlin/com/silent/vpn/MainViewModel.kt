@@ -2497,6 +2497,7 @@ class MainViewModel @Inject constructor(
 
     /** Tunnel ready / sync bypass cooldown and queue a retry if public discovery is still running. */
     fun checkForAppUpdate(inOverlaySession: Boolean = false, force: Boolean = false) {
+        if (com.silent.vpn.BuildConfig.WHITELIST_CATALOG_TEST) return
         if (!otaCheckGate.tryStart(SystemClock.elapsedRealtime(), force || inOverlaySession)) return
         viewModelScope.launch {
             try {

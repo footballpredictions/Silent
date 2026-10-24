@@ -6,6 +6,41 @@ import org.junit.Test
 
 class AppTunnelRoutingTest {
 
+    @Test fun `russian mode combines manual blacklist with full MAX exclusion`() {
+        val policy = AppTunnelRouting.fromIntent(
+            intent = AppExclusionsPersist.TunnelIntent(false, setOf("ru.ozon.app.android")),
+            selfPackage = "com.silent.vpn.catalogtest",
+            includeAppInTunnel = false,
+            vkPackages = emptySet(),
+            russianBypass = true,
+        )
+        assertTrue("ru.oneme.app" in policy.packages)
+        assertTrue("ru.ozon.app.android" in policy.packages)
+        assertTrue("com.silent.vpn.catalogtest" in policy.packages)
+        assertFalse("org.telegram.messenger" in policy.packages)
+    }
+
+    @Test fun `russian MAX exclusion overrides saved whitelist without altering selection`() {
+        val selected = setOf("ru.oneme.app", "org.telegram.messenger")
+        val intent = AppExclusionsPersist.TunnelIntent(true, selected)
+        val policy = AppTunnelRouting.fromIntent(intent, self, false, vk, installed + selected, russianBypass = true)
+        assertTrue(policy.whitelist)
+        assertTrue("ru.oneme.app" in policy.packages)
+        assertFalse("org.telegram.messenger" in policy.packages)
+        assertTrue(youtube in policy.packages)
+        assertTrue(intent.userPackages == selected)
+        val restored = AppTunnelRouting.fromIntent(intent, self, false, vk, installed + selected)
+        assertFalse("ru.oneme.app" in restored.packages)
+    }
+
+    @Test fun `overlay ignores automatic russian application exclusions`() {
+        val policy = AppTunnelRouting.fromIntent(
+            AppExclusionsPersist.TunnelIntent(false, emptySet()), self, true, vk, russianBypass = true,
+        )
+        assertFalse("ru.oneme.app" in policy.packages)
+        assertFalse(self in policy.packages)
+    }
+
     private val self = "com.silent.vpn"
     private val vk = setOf("com.vkontakte.android", "com.vk.calls")
     private val telegram = "org.telegram.messenger"

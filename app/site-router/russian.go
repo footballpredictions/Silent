@@ -16,9 +16,10 @@ import (
 // Same contract on Android, Windows and the iOS packet engine. Manual app/site
 // exclusions are deliberately outside this mode. Unknown destinations keep WG.
 type russianConfig struct {
-	Enabled bool     `json:"enabled"`
-	Direct  []string `json:"direct_domains"`
-	VPN     []string `json:"vpn_domains"`
+	Enabled     bool     `json:"enabled"`
+	Direct      []string `json:"direct_domains"`
+	DirectExact []string `json:"direct_exact_domains"`
+	VPN         []string `json:"vpn_domains"`
 }
 
 var russianServiceNetwork = netip.MustParsePrefix("10.66.66.0/24")
@@ -82,10 +83,14 @@ func russianDomain(name string, rules []string) bool {
 	}
 	return false
 }
+func (c russianConfig) matchesDirect(name string) bool {
+	name = strings.TrimSuffix(strings.ToLower(name), ".")
+	return slices.Contains(c.DirectExact, name) || russianDomain(name, c.Direct)
+}
 func (r *russianRouter) update(c russianConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.config.Enabled != c.Enabled || !slices.Equal(r.config.Direct, c.Direct) || !slices.Equal(r.config.VPN, c.VPN) {
+	if r.config.Enabled != c.Enabled || !slices.Equal(r.config.Direct, c.Direct) || !slices.Equal(r.config.DirectExact, c.DirectExact) || !slices.Equal(r.config.VPN, c.VPN) {
 		r.generation++
 	}
 	r.config = c
@@ -101,7 +106,7 @@ func (r *russianRouter) update(c russianConfig) {
 				if until.After(answer.vpn) {
 					answer.vpn = until
 				}
-			} else if russianDomain(name, c.Direct) && until.After(answer.direct) {
+			} else if c.matchesDirect(name) && until.After(answer.direct) {
 				answer.direct = until
 			}
 		}
@@ -188,7 +193,7 @@ func (r *russianRouter) observe(packet []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	vpn := russianDomain(name, r.config.VPN)
-	if !vpn && !russianDomain(name, r.config.Direct) {
+	if !vpn && !r.config.matchesDirect(name) {
 		return
 	}
 	now := time.Now()
@@ -311,7 +316,7 @@ func (r *russianRouter) handleDNS(ctx context.Context, packet []byte, write func
 	}
 	name := message.Questions[0].Name.String()
 	r.mu.RLock()
-	direct := r.config.Enabled && russianDomain(name, r.config.Direct) && !russianDomain(name, r.config.VPN)
+	direct := r.config.Enabled && r.config.matchesDirect(name) && !russianDomain(name, r.config.VPN)
 	r.mu.RUnlock()
 	if !direct {
 		return false

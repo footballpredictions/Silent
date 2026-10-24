@@ -348,6 +348,7 @@ data class PaymentInitRequest(val plan_type: String, val promo_code: String? = n
 data class PaymentPreview(
     val amount: Double, val expires_at: String, val message: String,
     val calculated_at: String? = null,
+    val promo_code: String? = null,
 ) {
     fun isFresh(nowMillis: Long = System.currentTimeMillis()): Boolean = runCatching {
         val stamp = calculated_at ?: return false

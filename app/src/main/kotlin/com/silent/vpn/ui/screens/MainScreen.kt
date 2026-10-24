@@ -1052,6 +1052,13 @@ private fun MenuSubscription(
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
 ) {
+    var pricingNow by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(profile?.id, profile?.payment_previews) {
+        while (true) {
+            pricingNow = System.currentTimeMillis()
+            kotlinx.coroutines.delay(30_000)
+        }
+    }
     val muted = fg.copy(alpha = 0.5f)
     val green = Color(0xFF16A34A)
     val red = Color(0xFFEF4444)
@@ -1244,7 +1251,9 @@ private fun MenuSubscription(
                                         Text("Открываем…", fontSize = 12.sp, color = textCol.copy(alpha = 0.9f))
                                     }
                                 } else {
-                                    Text(plan.priceLabel, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textCol)
+                                    Text(com.silent.vpn.policy.PromotionalPrice.label(plan.priceLabel,
+                                        profile?.payment_previews?.get(plan.id), pricingNow),
+                                        fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textCol)
                                 }
                             }
                         }

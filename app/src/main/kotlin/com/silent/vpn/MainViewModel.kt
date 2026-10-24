@@ -5057,6 +5057,8 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun checkPromoApi(code: String): String {
+        val requestGeneration = logoutGeneration
+        val accountId = _profile.value?.id
         val normalized = code.trim().replace(Regex("\\s+"), "")
         val res = repo.getApi().checkPromo(PromoCheckRequest(normalized, "monthly"))
         if (com.silent.vpn.policy.TunnelHttpPolicy.isTunnelBackendFailure(res)) {
@@ -5064,6 +5066,18 @@ class MainViewModel @Inject constructor(
         }
         if (res.isSuccessful) {
             val body = res.body() ?: error("empty promo response")
+            if (requestGeneration == logoutGeneration && repo.isLoggedIn()) {
+                _profile.value = _profile.value?.copy(payment_previews = emptyMap())
+                runCatching {
+                    val response = repo.getApi().getProfile()
+                    val fresh = response.body()?.takeIf { response.isSuccessful }
+                    if (fresh != null && requestGeneration == logoutGeneration && repo.isLoggedIn() &&
+                        (accountId == null || fresh.id == accountId)) {
+                        applyServerProfile(fresh)
+                        repo.saveCachedProfile(fresh)
+                    }
+                }
+            }
             return "Скидка ${body.discount_percent}%!"
         }
         return parseError(res.errorBody()?.string() ?: "") ?: "Не найден"
@@ -5525,6 +5539,10 @@ class MainViewModel @Inject constructor(
     }
 
     private fun applyServerProfile(profile: UserProfile, force: Boolean = false) {
+        val current = _profile.value
+        if (current?.id == profile.id && current.payment_previews != profile.payment_previews) {
+            _profile.value = current.copy(payment_previews = profile.payment_previews)
+        }
         if (!force && shouldDeferProfileUntilSync()) {
             repo.saveCachedProfile(profile)
             return

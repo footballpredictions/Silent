@@ -233,6 +233,12 @@ final class MainViewModel: ObservableObject {
 
     func loadPlans() async {
         plans = (try? await api.getPlans()) ?? plans
+        let version = sessionsVersion
+        let account = profile?.id
+        if api.isLoggedIn, let fresh = try? await api.getProfile(), version == sessionsVersion,
+           api.isLoggedIn, account == nil || fresh.id == account {
+            profile = fresh
+        }
     }
 
     func buy(_ planId: String) async {
@@ -318,16 +324,25 @@ final class MainViewModel: ObservableObject {
     }
 
     func checkPromo() async {
+        let version = sessionsVersion
+        let account = profile?.id
         let code = promoCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else { return }
         do {
             let res = try await api.checkPromo(code: code, plan: tier == 5 ? "monthly_5" : "monthly")
+            guard version == sessionsVersion, api.isLoggedIn else { return }
+            profile?.payment_previews = [:]
+            if let fresh = try? await api.getProfile(), version == sessionsVersion,
+               api.isLoggedIn, account == nil || fresh.id == account {
+                profile = fresh
+            }
+            guard version == sessionsVersion, api.isLoggedIn else { return }
             var text = "Скидка \(Int(res.discount_percent))%"
             if res.extra_days > 0 { text += ", +\(res.extra_days) дн." }
-            text += " · \(Int(res.discounted_price)) ₽ вместо \(Int(res.original_price)) ₽"
+            text += " · \(ShopPlan.currencyLabel(res.discounted_price)) вместо \(ShopPlan.currencyLabel(res.original_price))"
             promoMsg = text
         } catch {
-            promoMsg = error.localizedDescription
+            if version == sessionsVersion { promoMsg = error.localizedDescription }
         }
     }
 

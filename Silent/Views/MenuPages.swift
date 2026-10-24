@@ -94,7 +94,12 @@ private struct SubscriptionPage: View {
                                     }
                                     Spacer()
                                     if vm.busyPlan == plan.id { ProgressView() }
-                                    else { Text(plan.priceLabel).font(AppFont.text(14, weight: .medium)) }
+                                    else {
+                                        TimelineView(.periodic(from: .now, by: 30)) { _ in
+                                            Text(plan.priceLabel(preview: vm.profile?.payment_previews?[plan.id]))
+                                                .font(AppFont.text(14, weight: .medium))
+                                        }
+                                    }
                                 }
                                 .foregroundColor(p.bg)
                                 .padding(.horizontal, 16).padding(.vertical, 14)

@@ -30,7 +30,7 @@ struct UserProfile: Decodable {
     var devices_count: Int
     var connected_count: Int
     let max_devices: Int
-    let payment_previews: [String: PaymentPreview]?
+    var payment_previews: [String: PaymentPreview]?
 
     private enum CodingKeys: String, CodingKey {
         case id, email, display_id, is_admin, subscription, devices, devices_count, connected_count, max_devices, payment_previews
@@ -77,8 +77,24 @@ struct ShopPlan: Decodable, Identifiable {
     let devices: Int
 
     var priceLabel: String {
-        if price.rounded() == price { return "\(Int(price)) ₽" }
-        return String(format: "%.0f ₽", price)
+        Self.currencyLabel(price)
+    }
+
+    func priceLabel(preview: PaymentPreview?, now: Date = Date()) -> String {
+        guard let preview, let code = preview.promo_code,
+              !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              preview.isFresh(at: now), preview.amount.isFinite, preview.amount >= 0 else { return priceLabel }
+        return Self.currencyLabel(preview.amount)
+    }
+
+    static func currencyLabel(_ amount: Double) -> String {
+        guard amount.isFinite, amount >= 0 else { return "—" }
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.usesGroupingSeparator = false
+        formatter.minimumFractionDigits = amount.rounded() == amount ? 0 : 2
+        formatter.maximumFractionDigits = 2
+        return (formatter.string(from: NSNumber(value: amount)) ?? "—") + " ₽"
     }
 }
 
@@ -94,8 +110,13 @@ struct PaymentPreview: Decodable {
     let expires_at: String
     let message: String
     let calculated_at: String?
+    let promo_code: String?
 
     var isFresh: Bool {
+        isFresh(at: Date())
+    }
+
+    func isFresh(at now: Date) -> Bool {
         guard let stamp = calculated_at else { return false }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -105,7 +126,7 @@ struct PaymentPreview: Decodable {
             date = formatter.date(from: stamp)
         }
         guard let date else { return false }
-        let age = Date().timeIntervalSince(date)
+        let age = now.timeIntervalSince(date)
         return age >= 0 && age <= 300
     }
 }

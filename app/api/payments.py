@@ -151,7 +151,7 @@ async def check_promo(
     from datetime import datetime
     result = await db.execute(
         select(PromoCode).where(
-            PromoCode.code == req.code.upper(),
+            PromoCode.code == req.code.strip().upper(),
             PromoCode.is_active == True,
         )
     )
@@ -160,8 +160,12 @@ async def check_promo(
         raise HTTPException(status_code=404, detail="Промокод не найден или уже использован")
     if promo.use_count >= promo.max_uses:
         raise HTTPException(status_code=400, detail="Промокод исчерпан")
-    if promo.expires_at and promo.expires_at < datetime.utcnow():
+    if promo.expires_at and promo.expires_at <= datetime.utcnow():
         raise HTTPException(status_code=400, detail="Промокод истёк")
+    if promo.first_payment_only:
+        from app.services.promo_service import has_completed_payment
+        if await has_completed_payment(db, user.id):
+            raise HTTPException(status_code=400, detail="Промокод доступен только для первой оплаты")
 
     price_map = {
         "monthly": settings.PRICE_MONTHLY,
@@ -172,8 +176,12 @@ async def check_promo(
         "two_months_5": settings.PRICE_TWO_MONTHS_5,
         "quarterly_5": settings.PRICE_QUARTERLY_5,
     }
-    original = price_map.get(req.plan_type, 0)
+    if req.plan_type not in price_map:
+        raise HTTPException(status_code=400, detail="Неизвестный тариф")
+    original = price_map[req.plan_type]
     discounted = round(original * (1 - promo.discount_percent / 100), 2)
+    user.pending_promo_code = promo.code
+    await db.commit()
 
     return {
         "code": promo.code,

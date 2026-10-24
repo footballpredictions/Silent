@@ -135,6 +135,10 @@ async def payment_plan_amount(
             )
         )
         promo = result.scalar_one_or_none()
+        if promo and getattr(promo, "first_payment_only", False):
+            from app.services.promo_service import has_completed_payment
+            if await has_completed_payment(db, user.id):
+                promo = None
         if promo and promo.use_count < promo.max_uses:
             if promo.expires_at is None or promo.expires_at > datetime.utcnow():
                 amount = amount * (1 - promo.discount_percent / 100)
@@ -174,7 +178,8 @@ async def profile_payment_previews(db: AsyncSession, user: User) -> dict:
     ))
     subscriptions = list(result.scalars().all())
     from app.services.subscription_kinds import PAID_STACK_SKIP_PLANS
-    if not any(s.plan_type not in PAID_STACK_SKIP_PLANS for s in subscriptions) or any(s.plan_type == "unlimited" for s in subscriptions):
+    if (not any(s.plan_type not in PAID_STACK_SKIP_PLANS for s in subscriptions) and
+            not getattr(user, "pending_promo_code", None)) or any(s.plan_type == "unlimited" for s in subscriptions):
         return {}
     previews = {}
     for plan in build_shop_plans(include_five_device=True):
@@ -190,6 +195,16 @@ async def create_payment_intent(
 ) -> dict:
     renewal = await preview_payment(db, user, plan_type, promo_code)
     amount, applied_code = renewal["amount"], renewal["promo_code"]
+    if applied_code:
+        from app.services.promo_service import reserve_first_payment_promo
+        existing = await reserve_first_payment_promo(db, user, applied_code, plan_type, amount)
+        if existing:
+            await db.commit()
+            return {
+                "url": build_payment_url(existing.plan_type, existing.yumoney_label, float(existing.amount), existing.wallet),
+                "wallet": existing.wallet, "label": existing.yumoney_label,
+                "amount": float(existing.amount), "renewal": renewal,
+            }
     label = f"silent_{secrets.token_hex(16)}"
     wallet = _pick_wallet()["wallet"]
 
@@ -409,7 +424,7 @@ async def process_payment_notification(db: AsyncSession, data: dict) -> dict:
 
     if payment.promo_code:
         promo_result = await db.execute(
-            select(PromoCode).where(PromoCode.code == payment.promo_code)
+            select(PromoCode).where(PromoCode.code == payment.promo_code).with_for_update()
         )
         promo = promo_result.scalar_one_or_none()
         if promo:
@@ -504,7 +519,12 @@ async def get_payment_status(db: AsyncSession, user: User, label: str) -> dict:
     if payment.status == "pending":
         created = payment.created_at or datetime.utcnow()
         ttl = timedelta(minutes=settings.YUMONEY_PAYMENT_TTL_MINUTES)
-        if datetime.utcnow() - created > ttl:
+        first_payment_promo = False
+        if getattr(payment, "promo_code", None):
+            result = await db.execute(select(PromoCode).where(PromoCode.code == payment.promo_code))
+            promo = result.scalar_one_or_none()
+            first_payment_promo = bool(promo and getattr(promo, "first_payment_only", False))
+        if datetime.utcnow() - created > ttl and not first_payment_promo:
             payment.status = "expired"
             await db.commit()
 

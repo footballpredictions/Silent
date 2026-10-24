@@ -1844,6 +1844,7 @@ class PromoCreateRequest(BaseModel):
     extra_days: int = 0
     max_uses: int = 1
     expires_at: Optional[datetime] = None
+    first_payment_only: bool = False
 
 
 class BuildConfigRequest(BaseModel):
@@ -1864,6 +1865,7 @@ async def create_promo(
         extra_days=req.extra_days,
         max_uses=req.max_uses,
         expires_at=req.expires_at,
+        first_payment_only=req.first_payment_only,
     )
     db.add(promo)
     await db.commit()
@@ -1882,6 +1884,7 @@ async def list_promos(
             "id": str(p.id),
             "code": p.code,
             "discount_percent": p.discount_percent,
+            "first_payment_only": p.first_payment_only,
             "extra_days": p.extra_days,
             "max_uses": p.max_uses,
             "use_count": p.use_count,

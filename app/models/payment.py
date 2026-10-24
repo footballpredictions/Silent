@@ -45,3 +45,4 @@ class PromoCode(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    first_payment_only: Mapped[bool] = mapped_column(default=False, server_default="false")

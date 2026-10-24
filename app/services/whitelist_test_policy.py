@@ -18,6 +18,8 @@ def build_catalog_test_policy(catalog: dict, active_policy: dict) -> dict:
             suffix.add(domain)
         else:
             raise ValueError('InvalidCatalogRule')
+    suffix.update(domain for domain in normalize_domains(active_policy['direct_domains'])
+                  if domain not in {'ru', 'su', 'xn--p1ai'})
     payload = {
         'schema_version': 1,
         'profile': 'catalog-test',

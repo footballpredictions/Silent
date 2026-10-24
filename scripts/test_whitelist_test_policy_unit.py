@@ -21,7 +21,7 @@ class TestCatalogPolicy(unittest.TestCase):
         before = copy.deepcopy((self.catalog, self.active))
         result = build_catalog_test_policy(self.catalog, self.active)
         self.assertEqual(result['direct_exact_domains'], ['api.max.ru'])
-        self.assertEqual(result['direct_domains'], ['max.ru'])
+        self.assertEqual(result['direct_domains'], ['existing.ru', 'max.ru'])
         self.assertEqual(result['vpn_domains'], ['blocked.max.ru'])
         self.assertEqual(result['profile'], 'catalog-test')
         self.assertEqual((self.catalog, self.active), before)
@@ -33,6 +33,24 @@ class TestCatalogPolicy(unittest.TestCase):
         self.active['vpn_domains'] = []
         third = build_catalog_test_policy(self.catalog, self.active)['revision']
         self.assertEqual(len({first, second, third}), 3)
+
+    def test_manual_direct_updates_are_merged_without_countrywide_rules(self):
+        self.active['direct_domains'] = ['ru', 'su', 'xn--p1ai', 'sweb.ru', 'max.ru']
+        before = copy.deepcopy(self.active)
+        policy = build_catalog_test_policy(self.catalog, self.active)
+        self.assertEqual(policy['direct_domains'], ['max.ru', 'sweb.ru'])
+        self.assertEqual(policy['direct_exact_domains'], ['api.max.ru'])
+        self.assertEqual(self.active, before)
+        self.active['direct_domains'].append('manual.ru')
+        updated = build_catalog_test_policy(self.catalog, self.active)
+        self.assertIn('manual.ru', updated['direct_domains'])
+        self.assertNotEqual(policy['revision'], updated['revision'])
+
+    def test_manual_vpn_override_preserved_when_domain_is_in_both_lists(self):
+        self.active['direct_domains'] = ['blocked.max.ru']
+        policy = build_catalog_test_policy(self.catalog, self.active)
+        self.assertIn('blocked.max.ru', policy['direct_domains'])
+        self.assertIn('blocked.max.ru', policy['vpn_domains'])
 
     def test_empty_broad_unknown_and_oversized_fail_closed(self):
         for entries in ([], [{'kind': 'suffix', 'value': 'ru'}], [{'kind': 'suffix', 'value': 'timeweb.cloud'}],

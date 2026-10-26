@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const version = "1.0.169"
+const version = "1.0.171"
 const tunnelAPI = "http://10.66.66.1:8000"
 const bootstrapHash = "T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc"
 const iface = "svkeen"

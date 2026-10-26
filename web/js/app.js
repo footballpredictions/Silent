@@ -1,4 +1,4 @@
-import { api, openPaymentUrl } from "./api.js?v=1.0.170-r10";
+import { api, openPaymentUrl } from "./api.js?v=1.0.171-r10";
 import { displayVpnServers, normalizeSlot, selectedTitle } from "./servers.js";
 import { promotionalPriceLabel } from "./promo-pricing.js";
 import { applyPalette, palette } from "./theme.js";

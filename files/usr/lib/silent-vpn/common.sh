@@ -4,7 +4,7 @@ SV_LIB="${SV_LIB:-/usr/lib/silent-vpn}"
 SV_VAR="${SV_VAR:-/etc/silent-vpn}"
 SV_RUN="${SV_RUN:-/var/run/silent-vpn}"
 SV_CONF="${SV_CONF:-/etc/config/silent-vpn}"
-SV_VERSION="${SV_VERSION:-1.0.170}"
+SV_VERSION="${SV_VERSION:-1.0.171}"
 # The installed payload is authoritative, including after an in-place update.
 if [ -r "$SV_LIB/VERSION" ]; then
 	SV_VERSION="$(cat "$SV_LIB/VERSION")"

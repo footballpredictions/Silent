@@ -65,7 +65,15 @@ func pickWorkerIndex(seq, nw int) int {
 	if nw <= 0 {
 		return 0
 	}
-	return (seq * 11) % nw
+	// 11 is prime, but a pool of 11/22/... ready workers shares that
+	// divisor. The old stride then selected only nw/11 relays (and ACKs
+	// pinned downloads there). Use Android's sequential walk for those
+	// pool sizes, retaining the existing interleave everywhere else.
+	stride := 11
+	if nw%stride == 0 {
+		stride = 1
+	}
+	return ((seq % nw) * stride) % nw
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
@@ -92,6 +100,8 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 
 func (d *Dispatcher) Shutdown() {
 	d.cancel()
+	// Cancellation alone does not unblock an idle UDP ReadFrom.
+	_ = d.localConn.Close()
 	d.wg.Wait()
 }
 

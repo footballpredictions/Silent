@@ -7,6 +7,12 @@ import org.junit.Test
 
 class QrLoginPayloadTest {
     @Test
+    fun malformedExternalEncodingIsRejectedWithoutCrash() {
+        assertNull(parseQrPayload("silentvpn://qr?k=s&c=%"))
+        assertNull(parseQrPayload("silentvpn://qr?k=%GG&c=abcdefgh"))
+    }
+
+    @Test
     fun roundtripSession() {
         val uri = buildQrPayload(QrLoginPayload.KIND_SESSION, "Abc_123-token")
         assertEquals("silentvpn://qr?k=s&c=Abc_123-token", uri)

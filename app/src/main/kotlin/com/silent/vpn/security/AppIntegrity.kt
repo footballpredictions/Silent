@@ -61,6 +61,11 @@ object AppIntegrity {
         if (BuildConfig.DEBUG) return true
         if (!checked) {
             runCatching { verifyBlocking(context.applicationContext) }
+                .onFailure { e ->
+                    ok = false
+                    failReason = "Ошибка проверки сборки: ${e.javaClass.simpleName}"
+                    DebugLog.e("AppIntegrity", failReason!!)
+                }
             checked = true
         }
         return ok

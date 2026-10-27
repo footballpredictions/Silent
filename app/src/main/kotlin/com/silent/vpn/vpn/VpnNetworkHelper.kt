@@ -177,6 +177,10 @@ object VpnNetworkHelper {
             val fromInfo = info?.let { NetworkRecoveryPolicy.ratBucketFromNetworkType(it.subtype) }.orEmpty()
             if (fromInfo.isNotEmpty()) return fromInfo
         }
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.READ_PHONE_STATE,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return ""
         return runCatching {
             val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
                 ?: return@runCatching ""

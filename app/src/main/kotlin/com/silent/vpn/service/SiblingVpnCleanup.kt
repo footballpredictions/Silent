@@ -2,6 +2,7 @@ package com.silent.vpn.service
 
 import android.content.Context
 import android.content.Intent
+import android.app.PendingIntent
 import com.silent.vpn.policy.SiblingVpnPolicy
 import com.silent.vpn.util.DebugLog
 import com.silent.vpn.vpn.VpnNetworkHelper
@@ -27,6 +28,14 @@ object SiblingVpnCleanup {
         DebugLog.i(TAG, "request teardown → $sibling")
         runCatching {
             val intent = Intent(SiblingVpnPolicy.ACTION_SIBLING_TEARDOWN).setPackage(sibling)
+            val proof = PendingIntent.getBroadcast(
+                appCtx,
+                0,
+                Intent(appCtx, SiblingVpnTeardownReceiver::class.java)
+                    .setAction("com.silent.vpn.action.SIBLING_PROOF_ONLY"),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            intent.putExtra(SiblingVpnPolicy.EXTRA_SENDER_PROOF, proof)
             appCtx.sendBroadcast(intent)
         }.onFailure { e ->
             DebugLog.w(TAG, "broadcast failed: ${e.message}")

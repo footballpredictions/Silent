@@ -65,6 +65,8 @@ val releaseCertSha = releaseCertSha256Hex()
 val releaseAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 val forbiddenReleaseLibs = setOf("libolcrtc.so", "libolcrtc2.so", "libhev-socks5-tunnel.so")
 
+val androidAuditTest = providers.gradleProperty("androidAuditTest").orNull == "true"
+
 val whitelistCatalogTest = providers.gradleProperty("whitelistCatalogTest").orNull == "true"
 
 android {
@@ -73,6 +75,12 @@ android {
 
     defaultConfig {
         applicationId = "com.silent.vpn"
+        buildConfigField("boolean", "PRIVATE_AUDIT_TEST", androidAuditTest.toString())
+        if (androidAuditTest) {
+            applicationIdSuffix = ".audit"
+            versionNameSuffix = "-audit-20261027"
+            resValue("string", "app_name", "Silent VPN (тест)")
+        }
         minSdk = 24
         targetSdk = 35
         versionCode = 171

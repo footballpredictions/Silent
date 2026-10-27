@@ -9,6 +9,11 @@ object SiblingVpnPolicy {
     const val RELEASE_PACKAGE = "com.silent.vpn"
     const val DEBUG_PACKAGE = "com.silent.vpn.debug"
     const val ACTION_SIBLING_TEARDOWN = "com.silent.vpn.action.SIBLING_TEARDOWN"
+    const val EXTRA_SENDER_PROOF = "com.silent.vpn.extra.SIBLING_SENDER_PROOF"
+
+    /** creatorPackage is supplied by Android, never from a caller-provided string. */
+    fun isTrustedTeardownCreator(ourPackage: String, creatorPackage: String?): Boolean =
+        creatorPackage != null && creatorPackage == siblingPackage(ourPackage)
 
     /** Ждём, пока чужой TUN исчезнет после teardown / revoke. */
     const val FOREIGN_VPN_WAIT_MS = 8_000L

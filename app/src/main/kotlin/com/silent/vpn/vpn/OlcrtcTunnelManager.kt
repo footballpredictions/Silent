@@ -1,5 +1,8 @@
 package com.silent.vpn.vpn
 
+import com.silent.vpn.util.isAliveCompat
+import com.silent.vpn.util.waitForCompat
+import com.silent.vpn.util.destroyForciblyCompat
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.IpPrefix
@@ -616,13 +619,13 @@ object OlcrtcTunnelManager {
         if (proc == null) return
         try {
             proc.destroy()
-            if (!proc.waitFor(1_200, TimeUnit.MILLISECONDS)) {
-                proc.destroyForcibly()
-                proc.waitFor(800, TimeUnit.MILLISECONDS)
+            if (!proc.waitForCompat(1_200, TimeUnit.MILLISECONDS)) {
+                proc.destroyForciblyCompat()
+                proc.waitForCompat(800, TimeUnit.MILLISECONDS)
             }
         } catch (e: Exception) {
             DebugLog.w("Olcrtc", "kill $label: ${e.message}")
-            runCatching { proc.destroyForcibly() }
+            runCatching { proc.destroyForciblyCompat() }
         }
     }
 

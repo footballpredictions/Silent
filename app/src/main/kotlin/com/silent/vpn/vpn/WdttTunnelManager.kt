@@ -1,5 +1,8 @@
 package com.silent.vpn.vpn
 
+import com.silent.vpn.util.isAliveCompat
+import com.silent.vpn.util.waitForCompat
+import com.silent.vpn.util.destroyForciblyCompat
 import android.content.Context
 import androidx.compose.runtime.Stable
 import com.silent.vpn.BuildConfig
@@ -555,7 +558,7 @@ object WdttTunnelManager {
                     val policyProcess = process
                     if (!isBootstrapMode) russianPolicyJob = scope.launch {
                         var nextRefreshAt = 0L
-                        while (isActive && process === policyProcess && policyProcess?.isAlive == true) {
+                        while (isActive && process === policyProcess && policyProcess?.isAliveCompat() == true) {
                             val changeVersion = com.silent.vpn.data.RussianServices.changes.value
                             var waitMs = 1_000L
                             if (!com.silent.vpn.data.RussianServices.enabled(appContext)) {
@@ -566,7 +569,7 @@ object WdttTunnelManager {
                                 // Fetch only after the native encrypted API relay is ready. Never
                                 // replace WG or enter a payment/bootstrap overlay for this read.
                                 com.silent.vpn.data.RussianServices.refresh(appContext)
-                                if (!isActive || process !== policyProcess || policyProcess?.isAlive != true) break
+                                if (!isActive || process !== policyProcess || policyProcess?.isAliveCompat() != true) break
                                 val applied = com.silent.vpn.data.RussianServices.hasReceivedPolicy() &&
                                     com.silent.vpn.data.RussianServices.enabled(appContext) &&
                                     BrowserScopedTunnel.applyRussianPolicy(appContext)
@@ -1309,7 +1312,7 @@ object WdttTunnelManager {
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 val msg = e.message.orEmpty()
-                if (process?.isAlive == true && msg.contains("Stream closed", true)) {
+                if (process?.isAliveCompat() == true && msg.contains("Stream closed", true)) {
                     return@launch
                 }
                 if (!msg.contains("interrupted", true)) {
@@ -1317,7 +1320,7 @@ object WdttTunnelManager {
                 }
             } finally {
                 val proc = process
-                val alive = proc?.isAlive == true
+                val alive = proc?.isAliveCompat() == true
                 if (!alive) {
                     val code = runCatching { proc?.exitValue() }.getOrNull()
                     if (code != null) {
@@ -1536,7 +1539,7 @@ object WdttTunnelManager {
             delay(10_000)
             while (isActive && running.value) {
                 val proc = process
-                if (proc == null || !proc.isAlive) {
+                if (proc == null || !proc.isAliveCompat()) {
                     libclientCrashRestarts++
                     dumpStderrRingOnCrash()
                     appendLibclientCrashLog(lastContext)
@@ -1637,7 +1640,7 @@ object WdttTunnelManager {
                         !ManlCaptchaWebViewManager.isCaptchaPending
                     ) {
                         val trafficMb = parseTrafficMb(stats.value)
-                        if (tunnelReady.value && process?.isAlive == true) {
+                        if (tunnelReady.value && process?.isAliveCompat() == true) {
                             val skipNow = System.currentTimeMillis()
                             if (skipNow - lastWatchdogSkipLogAt > 60_000L) {
                                 lastWatchdogSkipLogAt = skipNow
@@ -1712,7 +1715,7 @@ object WdttTunnelManager {
     fun restartTransport(forceNetwork: Boolean = false, reason: String = ""): Boolean {
         if (isBootstrapMode && forceNetwork) {
             updateLog("network_restart_skip", "[СЕТЬ] Bootstrap — мягкое восстановление", 50)
-            if (!running.value || process?.isAlive != true) {
+            if (!running.value || process?.isAliveCompat() != true) {
                 val params = lastParams ?: return false
                 val ctx = lastContext ?: return false
                 scope.launch { start(ctx, params, isSwitching = true) }
@@ -1821,7 +1824,7 @@ object WdttTunnelManager {
         if (overlayRestoreSuppressed) return
         val params = lastParams ?: return
         val ctx = lastContext ?: return
-        if (running.value && process?.isAlive == true) return
+        if (running.value && process?.isAliveCompat() == true) return
         running.value = true
         scope.launch { start(ctx, params, isSwitching = true, expectedSession = params) }
     }
@@ -1885,14 +1888,14 @@ object WdttTunnelManager {
         if (!tunnelReady.value) return false
         val proc = process ?: return false
         // Воркеры могут мигать (VK flood) при живом WG — не считаем туннель мёртвым.
-        return proc.isAlive
+        return proc.isAliveCompat()
     }
 
     /** Долго нет активных воркеров при живом процессе — вероятно «завис» после doze/смены сети. */
     fun isTransportStale(thresholdMs: Long): Boolean {
         if (!tunnelReady.value || !running.value) return false
         val proc = process ?: return false
-        if (!proc.isAlive) return false
+        if (!proc.isAliveCompat()) return false
         val last = lastActiveAtMs
         if (last <= 0L) return false
         return activeWorkers.value <= 0 && System.currentTimeMillis() - last > thresholdMs
@@ -2162,12 +2165,12 @@ object WdttTunnelManager {
                 proc.outputStream.write("STOP\n".toByteArray(Charsets.UTF_8))
                 proc.outputStream.flush()
             }
-            runCatching { proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }
-            if (proc.isAlive) {
+            runCatching { proc.waitForCompat(2, java.util.concurrent.TimeUnit.SECONDS) }
+            if (proc.isAliveCompat()) {
                 runCatching { proc.destroy() }
-                runCatching { proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+                runCatching { proc.waitForCompat(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
             }
-            if (proc.isAlive) runCatching { proc.destroyForcibly() }
+            if (proc.isAliveCompat()) runCatching { proc.destroyForciblyCompat() }
         }
     }
 
@@ -2367,7 +2370,7 @@ object WdttTunnelManager {
     private fun writeCaptchaResult(session: Int, result: String) {
         if (session != captchaSession.get()) return
         val proc = process ?: return
-        if (!proc.isAlive) return
+        if (!proc.isAliveCompat()) return
         runCatching {
             proc.outputStream.write("CAPTCHA_RESULT|$result\n".toByteArray(Charsets.UTF_8))
             proc.outputStream.flush()

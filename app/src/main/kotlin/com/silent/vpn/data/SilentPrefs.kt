@@ -36,7 +36,7 @@ object SilentPrefs {
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
         } catch (e: Exception) {
-            if (e is AEADBadTagException || e.cause is android.security.KeyStoreException) {
+            if (e is AEADBadTagException || e.cause?.javaClass?.name == "android.security.KeyStoreException") {
                 Log.w(TAG, "Encrypted prefs corrupt — reset and use regular prefs")
                 context.deleteSharedPreferences(NAME)
             } else {

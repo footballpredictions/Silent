@@ -553,6 +553,13 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             WdttTunnelManager.tunnelReady.collect { ready ->
+                if (logoutTransitionActive) {
+                    _bootstrapReady.value = false
+                    return@collect
+                }
+                if (!ready && bootstrapVpnMode && !repo.isLoggedIn()) {
+                    refreshBootstrapCountdownNow()
+                }
                 if (promoBootstrapHeld) {
                     DebugLog.i("MainViewModel", "promo bootstrap tunnelReady=$ready")
                     return@collect
@@ -583,6 +590,9 @@ class MainViewModel @Inject constructor(
                     } else if (silentBootstrapSync) {
                         // Ephemeral API sync — runEphemeralApiBootstrap polls tunnelReady itself.
                     } else if (SilentVpnService.isRunning) {
+                        if (!repo.isLoggedIn() && _screen.value == AppScreen.LOGIN &&
+                            !WdttTunnelManager.isBootstrapMode()
+                        ) return@collect
                         if (!repo.isLoggedIn() && _screen.value == AppScreen.LOGIN) {
                             bootstrapVpnMode = true
                             bootstrapContext = bootstrapContext ?: appContext
@@ -616,6 +626,7 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             WdttTunnelManager.activeWorkers.collect {
+                if (logoutTransitionActive) return@collect
                 if (promoBootstrapHeld) return@collect
                 if (
                     bootstrapRequiresActiveWorkers() &&
@@ -2342,6 +2353,7 @@ class MainViewModel @Inject constructor(
     @Volatile private var olcrtcSessionRoomDbId: String? = null
     private var logoutJob: Job? = null
     @Volatile private var logoutGeneration = 0
+    private var logoutTransitionActive = false
     /** До завершения VpnBackendSync не дергаем overlay из polling. */
     private var backendSyncCompleted: Boolean
         get() = VpnSessionState.backendSyncCompleted
@@ -2497,7 +2509,9 @@ class MainViewModel @Inject constructor(
 
     /** Tunnel ready / sync bypass cooldown and queue a retry if public discovery is still running. */
     fun checkForAppUpdate(inOverlaySession: Boolean = false, force: Boolean = false) {
-        if (com.silent.vpn.BuildConfig.WHITELIST_CATALOG_TEST) return
+        if (com.silent.vpn.BuildConfig.WHITELIST_CATALOG_TEST ||
+            com.silent.vpn.BuildConfig.PRIVATE_AUDIT_TEST
+        ) return
         if (!otaCheckGate.tryStart(SystemClock.elapsedRealtime(), force || inOverlaySession)) return
         viewModelScope.launch {
             try {
@@ -2697,6 +2711,7 @@ class MainViewModel @Inject constructor(
 
     /** Автоподключение bootstrap VPN на экране входа (хеш зашит в BuildConfig). */
     fun ensureBootstrapForAuthFlow(context: Context) {
+        if (logoutTransitionActive) return
         if (_bootstrapExpired.value) return
         reconcileLoginBootstrapSession(context)
         if (!isHashReady()) return
@@ -2711,6 +2726,10 @@ class MainViewModel @Inject constructor(
      * ViewModel может пересоздаться, а FGS+туннель остаются — без этого UI «отключается».
      */
     fun reconcileLoginBootstrapSession(context: Context) {
+        if (logoutTransitionActive) {
+            _bootstrapReady.value = false
+            return
+        }
         if (_bootstrapExpired.value) return
         if (repo.isLoggedIn()) {
             _bootstrapReady.value = false
@@ -2721,7 +2740,7 @@ class MainViewModel @Inject constructor(
         val tunnelUp = WdttTunnelManager.tunnelReady.value
         val bootstrapTunnel = WdttTunnelManager.isBootstrapMode()
 
-        if (serviceUp && tunnelUp && isHashReady() && (bootstrapTunnel || _screen.value == AppScreen.LOGIN)) {
+        if (serviceUp && tunnelUp && isHashReady() && bootstrapTunnel) {
             bootstrapVpnMode = true
             bootstrapContext = ctx
             if (_vpnState.value != VpnState.CONNECTED) {
@@ -2753,7 +2772,8 @@ class MainViewModel @Inject constructor(
     private fun updateBootstrapReadyFlag() {
         val workersOk = !bootstrapRequiresActiveWorkers() ||
             WdttTunnelManager.activeWorkers.value >= 1
-        _bootstrapReady.value = !repo.isLoggedIn() &&
+        _bootstrapReady.value = !logoutTransitionActive && !repo.isLoggedIn() &&
+            WdttTunnelManager.isBootstrapMode() &&
             bootstrapVpnMode &&
             SilentVpnService.isRunning &&
             WdttTunnelManager.tunnelReady.value &&
@@ -3559,6 +3579,9 @@ class MainViewModel @Inject constructor(
     private fun startBootstrapSessionTimeout(context: Context, forceNewDeadline: Boolean = false) {
         if (!bootstrapVpnMode) return
         val now = System.currentTimeMillis()
+        if (logoutTransitionActive || !WdttTunnelManager.isBootstrapMode() ||
+            !SilentVpnService.isRunning || !WdttTunnelManager.tunnelReady.value
+        ) return
         if (forceNewDeadline || bootstrapDeadlineMs <= now) {
             bootstrapDeadlineMs = now + com.silent.vpn.util.DevicePlatform.bootstrapSessionMs(appContext)
         }
@@ -3579,7 +3602,10 @@ class MainViewModel @Inject constructor(
     }
 
     private fun refreshBootstrapCountdownNow() {
-        if (!bootstrapVpnMode || bootstrapDeadlineMs <= 0L) {
+        if (logoutTransitionActive || !bootstrapVpnMode || bootstrapDeadlineMs <= 0L ||
+            !SilentVpnService.isRunning || !WdttTunnelManager.tunnelReady.value ||
+            !WdttTunnelManager.isBootstrapMode()
+        ) {
             _bootstrapSecondsLeft.value = null
             updateBootstrapReadyFlag()
             return
@@ -3903,6 +3929,7 @@ class MainViewModel @Inject constructor(
     }
 
     private fun invalidatePendingLogout() {
+        logoutTransitionActive = false
         logoutGeneration++
         logoutJob?.cancel()
         logoutJob = null
@@ -3912,6 +3939,10 @@ class MainViewModel @Inject constructor(
         if (_screen.value == AppScreen.LOGIN) return
         abandonPaymentForManualVpnAction()
         val gen = ++logoutGeneration
+        logoutTransitionActive = true
+        _bootstrapReady.value = false
+        _vpnState.value = VpnState.DISCONNECTING
+        cancelBootstrapSessionTimeout()
         logoutJob?.cancel()
         logoutJob = viewModelScope.launch {
             try {
@@ -3925,7 +3956,9 @@ class MainViewModel @Inject constructor(
                 cancelBootstrapSessionTimeout()
                 resetBootstrapDeadline()
 
-                if (_vpnState.value == VpnState.CONNECTED || _vpnState.value == VpnState.CONNECTING) {
+                if (SilentVpnService.isRunning || WdttTunnelManager.running.value ||
+                    OlcrtcTunnelManager.running.value
+                ) {
                     if (repo.isOlcrtcBypass()) {
                         leaveOlcrtcSessionAndStopHeartbeat()
                     }
@@ -3936,7 +3969,13 @@ class MainViewModel @Inject constructor(
 
                 if (fp != null && accessToken != null) {
                     runCatching {
-                        val res = repo.getApi().logoutSession(DisconnectRequest(fp))
+                        val res = withTimeoutOrNull(5_000) {
+                            repo.getApi().logoutSession(DisconnectRequest(fp))
+                        }
+                        if (res == null) {
+                            Log.w("MainViewModel", "logout API timeout; continue local logout")
+                            return@runCatching
+                        }
                         if (!res.isSuccessful) {
                             Log.w("MainViewModel", "logout API ${res.code()}")
                         }
@@ -3985,6 +4024,7 @@ class MainViewModel @Inject constructor(
                     VpnBackendSync.stop()
                     VpnSessionState.resetBackendSync()
                     if (gen == logoutGeneration) {
+                        logoutTransitionActive = false
                         ensureBootstrapForAuthFlow(ctx)
                     }
                 }
@@ -3992,6 +4032,8 @@ class MainViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 Log.w("MainViewModel", "logout: ${e.message}")
+            } finally {
+                if (gen == logoutGeneration) logoutTransitionActive = false
             }
         }
     }

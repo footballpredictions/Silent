@@ -21,7 +21,7 @@ data class QrLoginPayload(
 }
 
 fun buildQrPayload(kind: String, code: String): String {
-    val encoded = URLEncoder.encode(code, StandardCharsets.UTF_8).replace("+", "%20")
+    val encoded = URLEncoder.encode(code, StandardCharsets.UTF_8.name()).replace("+", "%20")
     return "${QrLoginPayload.PREFIX}?k=$kind&c=$encoded"
 }
 
@@ -49,8 +49,8 @@ fun parseQrPayload(raw: String?): QrLoginPayload? {
     for (part in query.split('&')) {
         val key = part.substringBefore('=')
         val value = part.substringAfter('=', missingDelimiterValue = "")
-        if (key == "k") kind = URLDecoder.decode(value, StandardCharsets.UTF_8).trim()
-        if (key == "c") code = URLDecoder.decode(value, StandardCharsets.UTF_8).trim()
+        if (key == "k") kind = runCatching { URLDecoder.decode(value, StandardCharsets.UTF_8.name()).trim() }.getOrNull() ?: return null
+        if (key == "c") code = runCatching { URLDecoder.decode(value, StandardCharsets.UTF_8.name()).trim() }.getOrNull() ?: return null
     }
     if (kind != QrLoginPayload.KIND_SESSION && kind != QrLoginPayload.KIND_USER) return null
     if (!code.matches(Regex("^[A-Za-z0-9_-]{8,128}$"))) return null

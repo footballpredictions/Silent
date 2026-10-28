@@ -170,7 +170,8 @@ install_files() {
 	cp -a "$ROOT/files/etc/init.d/silent-vpn-policy" /etc/init.d/silent-vpn-policy
 	cp -a "$ROOT/files/etc/init.d/silent-vpn-dns" /etc/init.d/silent-vpn-dns
 	chmod 0755 /etc/init.d/silent-vpn-dns
-	if [ "${SILENT_OPENWRT_UPDATE:-0}" != 1 ] || [ ! -f /etc/config/silent-vpn ]; then
+	# Reinstallation after --keep-data must retain the saved user configuration.
+	if [ ! -f /etc/config/silent-vpn ]; then
 		cp -a "$ROOT/files/etc/config/silent-vpn" /etc/config/silent-vpn
 	fi
 	uci -q set "silent-vpn.main.app_version=$(cat "$ROOT/VERSION")"

@@ -25,10 +25,18 @@ wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv
 4. Откройте `http://192.168.1.1.silent.vpn` или IP своего роутера.
 Войдите в аккаунт. В «Исключениях» включите «Российские сервисы мимо VPN», затем включите VPN.
 
-5. Для удаления:
+5. Удаление.
+
+С сохранением данных входа и настроек:
 
 ```sh
-sh /usr/sbin/silent-vpn-uninstall
+wget -O /tmp/sv-rm.sh https://silentvpn3.github.io/openwrt-uninstall.sh && sh /tmp/sv-rm.sh --keep-data
+```
+
+Полностью, вместе с данными входа и настройками:
+
+```sh
+wget -O /tmp/sv-rm.sh https://silentvpn3.github.io/openwrt-uninstall.sh && sh /tmp/sv-rm.sh --purge
 ```
 
 ## Сборка и публикация

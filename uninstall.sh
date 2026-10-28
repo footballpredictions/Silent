@@ -7,6 +7,21 @@ if [ "$(id -u 2>/dev/null || echo 1)" != 0 ]; then
 	exit 1
 fi
 
+# Preserve the legacy no-argument full removal; keeping data is explicit.
+SV_KEEP_DATA=0
+if [ "$#" -gt 1 ]; then
+	echo "usage: sh silent-vpn-uninstall [--keep-data|--purge]" >&2
+	exit 2
+fi
+case "${1:-}" in
+	""|--purge) ;;
+	--keep-data) SV_KEEP_DATA=1 ;;
+	*)
+		echo "usage: sh silent-vpn-uninstall [--keep-data|--purge]" >&2
+		exit 2
+		;;
+esac
+
 echo "Silent VPN — удаление"
 
 if [ -f /usr/lib/silent-vpn/update.sh ]; then
@@ -87,11 +102,15 @@ uci -q commit uhttpd
 
 rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl /usr/sbin/silent-vpn-policy /usr/sbin/silent-vpn-update \
 	/usr/bin/spass /usr/bin/svpass /usr/bin/svcloak /usr/bin/wdtt-client /www/silent-vpn \
-	/www/cgi-bin/silent-entry /www/cgi-bin/silent-api /etc/silent-vpn \
-	/etc/init.d/silent-vpn /etc/init.d/silent-vpn-policy /etc/init.d/silent-vpn-dns /etc/config/silent-vpn \
+	/www/cgi-bin/silent-entry /www/cgi-bin/silent-api \
+	/etc/init.d/silent-vpn /etc/init.d/silent-vpn-policy /etc/init.d/silent-vpn-dns \
 	/etc/hotplug.d/iface/99-silent-vpn /etc/uci-defaults/99-silent-vpn \
 	/var/run/silent-vpn /tmp/dnsmasq.d/silent-vpn.conf /tmp/dnsmasq.d/silent-ru.conf \
 	/var/log/silent-cloak.log /var/log/silent-vpn.log /var/log/silent-vpn.log.tmp /tmp/sv-fw.log
+
+if [ "$SV_KEEP_DATA" != 1 ]; then
+	rm -rf /etc/silent-vpn /etc/config/silent-vpn
+fi
 
 /etc/init.d/firewall reload >/dev/null 2>&1 || true
 /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
@@ -108,5 +127,9 @@ if [ "$(readlink /usr/bin/ip 2>/dev/null)" = /usr/libexec/ip-full ] && [ ! -x /u
 	ln -sf /bin/busybox /usr/bin/ip
 fi
 
-echo "Готово. Silent VPN снят."
+if [ "$SV_KEEP_DATA" = 1 ]; then
+	echo "Готово. Silent VPN снят. Данные входа и настройки сохранены."
+else
+	echo "Готово. Silent VPN снят вместе с данными входа и настройками."
+fi
 exec rm -f /tmp/sv-rm.sh /usr/sbin/silent-vpn-uninstall

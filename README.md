@@ -31,8 +31,16 @@ wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv
 
 Удаление:
 
+С сохранением данных входа и настроек:
+
 ```sh
-sh /usr/sbin/silent-vpn-uninstall
+wget -O /tmp/sv-rm.sh https://silentvpn3.github.io/openwrt-uninstall.sh && sh /tmp/sv-rm.sh --keep-data
+```
+
+Полностью, вместе с данными входа и настройками:
+
+```sh
+wget -O /tmp/sv-rm.sh https://silentvpn3.github.io/openwrt-uninstall.sh && sh /tmp/sv-rm.sh --purge
 ```
 
 После установки версии с поддержкой OTA новые версии проверяются при открытии

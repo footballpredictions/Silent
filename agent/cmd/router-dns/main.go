@@ -29,6 +29,7 @@ type adapter struct {
 	policy           routerpolicy.Policy
 	checked          time.Time
 	loaded           bool
+	policyInfo       os.FileInfo
 	learned          map[string]map[string]bool
 	sink             func(context.Context, string, []string) error
 	slots            chan struct{}
@@ -59,9 +60,12 @@ func addresses(value string) ([]string, error) {
 func (a *adapter) getPolicy() (routerpolicy.Policy, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.loaded && time.Since(a.checked) < 5*time.Second {
+	info, _ := os.Stat(a.policyFile)
+	if a.loaded && info != nil && a.policyInfo != nil && os.SameFile(info, a.policyInfo) &&
+		info.Size() == a.policyInfo.Size() && info.ModTime() == a.policyInfo.ModTime() {
 		return a.policy, nil
 	}
+	a.policyInfo = info
 	a.checked = time.Now()
 	file, err := os.Open(a.policyFile)
 	if err == nil {
@@ -72,7 +76,7 @@ func (a *adapter) getPolicy() (routerpolicy.Policy, error) {
 			var p routerpolicy.Policy
 			p, err = routerpolicy.Parse(raw)
 			if err == nil {
-				if !a.loaded || p.Revision != a.policy.Revision {
+				if !a.loaded || (p.Revision != a.policy.Revision && !routerpolicy.PreservesLearned(a.policy, p)) {
 					a.learned = map[string]map[string]bool{}
 				}
 				a.policy = p
@@ -214,6 +218,20 @@ func (a *adapter) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
 	}
 	_ = w.WriteMsg(answer)
 }
+func (a *adapter) restoreOnce(ctx context.Context) {
+	_, _ = a.getPolicy()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for set, values := range a.learned {
+		ips := make([]string, 0, len(values))
+		for ip := range values {
+			ips = append(ips, ip)
+		}
+		timeout, cancel := context.WithTimeout(ctx, 3*time.Second)
+		_ = a.sink(timeout, set, ips)
+		cancel()
+	}
+}
 func (a *adapter) restore(ctx context.Context) {
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
@@ -222,23 +240,13 @@ func (a *adapter) restore(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, _ = a.getPolicy()
-			a.mu.Lock()
-			for set, values := range a.learned {
-				ips := make([]string, 0, len(values))
-				for ip := range values {
-					ips = append(ips, ip)
-				}
-				timeout, cancel := context.WithTimeout(ctx, 3*time.Second)
-				_ = a.sink(timeout, set, ips)
-				cancel()
-			}
-			a.mu.Unlock()
+			a.restoreOnce(ctx)
 		}
 	}
 }
 func run() error {
 	policy := flag.String("policy", "/etc/silent-vpn/routing-policy.json", "validated policy cache")
+	previous := flag.String("preserves-policy", "", "check whether cached IP routes can be retained from this policy")
 	source := flag.String("source", "", "WireGuard IPv4 source")
 	upstream := flag.String("upstream", "1.1.1.1,1.0.0.1", "VPN DNS servers")
 	direct := flag.String("direct-dns", "77.88.8.8,77.88.8.1", "direct DNS servers")
@@ -246,6 +254,32 @@ func run() error {
 	ready := flag.String("ready", "/var/run/silent-vpn/catalog-dns.ready", "readiness marker")
 	check := flag.Bool("check", false, "validate inputs without starting")
 	flag.Parse()
+	if *previous != "" {
+		read := func(path string) (routerpolicy.Policy, error) {
+			file, err := os.Open(path)
+			if err != nil {
+				return routerpolicy.Policy{}, err
+			}
+			defer file.Close()
+			raw, err := io.ReadAll(io.LimitReader(file, routerpolicy.MaxSize+1))
+			if err != nil {
+				return routerpolicy.Policy{}, err
+			}
+			return routerpolicy.Parse(raw)
+		}
+		old, err := read(*previous)
+		if err != nil {
+			return err
+		}
+		next, err := read(*policy)
+		if err != nil {
+			return err
+		}
+		if !routerpolicy.PreservesLearned(old, next) {
+			return errors.New("routing addresses must be invalidated")
+		}
+		return nil
+	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
 		return errors.New("listener must be loopback")

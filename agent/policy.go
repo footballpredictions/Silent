@@ -81,7 +81,9 @@ func (a *Agent) refreshPolicy(ctx context.Context) {
 			return
 		}
 		a.policyMu.Lock()
-		if a.isConnected() {
+		preserve := a.policyRevision != "" && routerpolicy.PreservesLearned(
+			routingPolicy{Schema: 1, Direct: a.domains, Exact: a.exactDomains, VPN: a.vpnDomains}, p)
+		if a.isConnected() && !preserve {
 			for _, set := range []string{"svk_direct", "svk_vpn"} {
 				if err = a.run(ctx, "ipset", "flush", set); err != nil {
 					break
@@ -93,9 +95,11 @@ func (a *Agent) refreshPolicy(ctx context.Context) {
 		}
 		if err == nil {
 			a.domains, a.exactDomains, a.vpnDomains, a.policyRevision = p.Direct, p.Exact, p.VPN, p.Revision
-			a.learnedMu.Lock()
-			a.learnedDirect, a.learnedVPN = nil, nil
-			a.learnedMu.Unlock()
+			if !preserve {
+				a.learnedMu.Lock()
+				a.learnedDirect, a.learnedVPN = nil, nil
+				a.learnedMu.Unlock()
+			}
 		}
 		a.policyMu.Unlock()
 		return

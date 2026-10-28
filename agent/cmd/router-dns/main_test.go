@@ -20,12 +20,13 @@ import (
 func fixtureDNS(t *testing.T, ip string) (string, *atomic.Int32) {
 	t.Helper()
 	tcpCount := new(atomic.Int32)
-	tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+	udp, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	udp, err := net.ListenPacket("udp4", tcp.Addr().String())
+	tcp, err := net.Listen("tcp4", udp.LocalAddr().String())
 	if err != nil {
+		udp.Close()
 		t.Fatal(err)
 	}
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
@@ -130,6 +131,37 @@ func TestMalformedRefreshKeepsLastGoodPolicy(t *testing.T) {
 		t.Fatal("lost last-good policy")
 	}
 }
+
+func TestAdditivePolicyKeepsRoutesForClientsWithCachedDNS(t *testing.T) {
+	a, server, writes, mu, _ := fixtureAdapter(t)
+	_ = lookup(t, server, "cached.service.ru.")
+	raw, err := os.ReadFile(a.policyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p routerpolicy.Policy
+	if err = json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Revision = strings.Repeat("b", 64)
+	p.Direct = append(p.Direct, "newly-added.ru")
+	raw, _ = json.Marshal(p)
+	if err = os.WriteFile(a.policyFile, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	*writes = nil // fw4 recreated its sets; the client still uses its cached address.
+	mu.Unlock()
+	a.mu.Lock()
+	a.checked = time.Time{}
+	a.mu.Unlock()
+	a.restoreOnce(context.Background()) // No new DNS query from the cached client.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*writes) != 1 || (*writes)[0] != "sv_ru:192.0.2.1" {
+		t.Fatalf("unrelated added exclusion discarded an existing route: %v", *writes)
+	}
+}
 func TestNftAdapterRejectsForeignResourcesAndInvalidInput(t *testing.T) {
 	for _, tt := range []struct {
 		set string
@@ -138,5 +170,49 @@ func TestNftAdapterRejectsForeignResourcesAndInvalidInput(t *testing.T) {
 		if nftSink(context.Background(), tt.set, tt.ips) == nil {
 			t.Fatal("accepted invalid nft operation")
 		}
+	}
+}
+
+func TestAddedExclusionAppliesBeforeAnswerWithoutWaitingForRefreshTimer(t *testing.T) {
+	a, server, _, _, _ := fixtureAdapter(t)
+	_ = lookup(t, server, "newly-added.ru.")
+	raw, _ := os.ReadFile(a.policyFile)
+	var p routerpolicy.Policy
+	_ = json.Unmarshal(raw, &p)
+	p.Direct = append(p.Direct, "newly-added.ru")
+	p.Revision = strings.Repeat("b", 64)
+	raw, _ = json.Marshal(p)
+	if err := os.WriteFile(a.policyFile+".new", raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(a.policyFile+".new", a.policyFile); err != nil {
+		t.Fatal(err)
+	}
+	r := lookup(t, server, "newly-added.ru.")
+	if r.Rcode != dns.RcodeSuccess || r.Answer[0].(*dns.A).A.String() != "192.0.2.1" {
+		t.Fatal("new rule was ignored while a DNS cache could store the wrong route", r)
+	}
+}
+
+func TestRestrictiveRefreshDoesNotRestoreRemovedDirectAddress(t *testing.T) {
+	a, server, writes, mu, _ := fixtureAdapter(t)
+	_ = lookup(t, server, "cached.service.ru.")
+	raw, _ := os.ReadFile(a.policyFile)
+	var p routerpolicy.Policy
+	_ = json.Unmarshal(raw, &p)
+	p.Direct = []string{"new.ru"}
+	p.Revision = strings.Repeat("b", 64)
+	raw, _ = json.Marshal(p)
+	if err := os.WriteFile(a.policyFile, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	*writes = nil
+	mu.Unlock()
+	a.restoreOnce(context.Background())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*writes) != 0 {
+		t.Fatal("obsolete direct address was restored", *writes)
 	}
 }

@@ -31,6 +31,9 @@ if [ -x /etc/init.d/silent-vpn ]; then
 	/etc/init.d/silent-vpn stop >/dev/null 2>&1 || true
 	/etc/init.d/silent-vpn disable >/dev/null 2>&1 || true
 fi
+if [ -x /etc/init.d/silent-vpn-dns ]; then
+	/etc/init.d/silent-vpn-dns stop >/dev/null 2>&1 || true
+fi
 
 killall spass >/dev/null 2>&1 || true
 killall svpass >/dev/null 2>&1 || true
@@ -85,7 +88,7 @@ uci -q commit uhttpd
 rm -rf /usr/lib/silent-vpn /usr/sbin/silent-vpn-ctl /usr/sbin/silent-vpn-policy /usr/sbin/silent-vpn-update \
 	/usr/bin/spass /usr/bin/svpass /usr/bin/svcloak /usr/bin/wdtt-client /www/silent-vpn \
 	/www/cgi-bin/silent-entry /www/cgi-bin/silent-api /etc/silent-vpn \
-	/etc/init.d/silent-vpn /etc/init.d/silent-vpn-policy /etc/config/silent-vpn \
+	/etc/init.d/silent-vpn /etc/init.d/silent-vpn-policy /etc/init.d/silent-vpn-dns /etc/config/silent-vpn \
 	/etc/hotplug.d/iface/99-silent-vpn /etc/uci-defaults/99-silent-vpn \
 	/var/run/silent-vpn /tmp/dnsmasq.d/silent-vpn.conf /tmp/dnsmasq.d/silent-ru.conf \
 	/var/log/silent-cloak.log /var/log/silent-vpn.log /var/log/silent-vpn.log.tmp /tmp/sv-fw.log

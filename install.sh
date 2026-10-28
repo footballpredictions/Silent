@@ -153,10 +153,14 @@ install_files() {
 
 	# Keep the large transport binary in /tmp until its one final copy to /usr/bin.
 	for source in "$ROOT/files/usr/lib/silent-vpn/"*; do
-		[ "${source##*/}" = wdtt ] && continue
+		case "${source##*/}" in wdtt|dns) continue ;; esac
 		cp -a "$source" /usr/lib/silent-vpn/
 	done
 	rm -rf /usr/lib/silent-vpn/wdtt
+	if [ -f "$ROOT/files/usr/lib/silent-vpn/dns/silent-dns.$SV_WDTT_SLOT" ]; then
+		cp "$ROOT/files/usr/lib/silent-vpn/dns/silent-dns.$SV_WDTT_SLOT" /usr/lib/silent-vpn/silent-dns
+		chmod 0755 /usr/lib/silent-vpn/silent-dns
+	fi
 	cp -a "$ROOT/files/usr/sbin/silent-vpn-ctl" /usr/sbin/silent-vpn-ctl
 	cp -a "$ROOT/files/usr/sbin/silent-vpn-policy" /usr/sbin/silent-vpn-policy
 	cp -a "$ROOT/files/www/cgi-bin/." /www/cgi-bin/
@@ -164,6 +168,8 @@ install_files() {
 	rm -f /www/silent-vpn/toggle-demo.html
 	cp -a "$ROOT/files/etc/init.d/silent-vpn" /etc/init.d/silent-vpn
 	cp -a "$ROOT/files/etc/init.d/silent-vpn-policy" /etc/init.d/silent-vpn-policy
+	cp -a "$ROOT/files/etc/init.d/silent-vpn-dns" /etc/init.d/silent-vpn-dns
+	chmod 0755 /etc/init.d/silent-vpn-dns
 	if [ "${SILENT_OPENWRT_UPDATE:-0}" != 1 ] || [ ! -f /etc/config/silent-vpn ]; then
 		cp -a "$ROOT/files/etc/config/silent-vpn" /etc/config/silent-vpn
 	fi

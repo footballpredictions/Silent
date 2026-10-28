@@ -449,6 +449,8 @@ sv_path_dns_restart() {
 
 sv_path_dns_restore() {
 	local option value ipb
+	. "$SV_LIB/catalog-dns.sh"
+	sv_catalog_dns_stop || return 1
 	[ -d "$SV_VAR/dns.before" ] || return 0
 	ipb="$(sv_path_ip)"
 	for option in server noresolv; do

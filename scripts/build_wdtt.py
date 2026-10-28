@@ -51,6 +51,12 @@ def main() -> int:
             check=True,
         )
         print(f"  {dest.stat().st_size} bytes")
+        dns_dest = ROOT / "files/usr/lib/silent-vpn/dns" / f"silent-dns.{name}"
+        dns_dest.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run([os.environ.get("GO_BINARY", "go"), "build", "-buildvcs=false", "-trimpath",
+                        "-ldflags=-s -w", "-o", str(dns_dest), "./cmd/router-dns"],
+                       cwd=ROOT.parent / "keenetic/agent", env=env, check=True)
+        print(f"  DNS adapter: {dns_dest.stat().st_size} bytes")
     return 0
 
 

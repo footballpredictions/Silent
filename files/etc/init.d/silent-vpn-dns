@@ -1,0 +1,25 @@
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=99
+STOP=9
+start_service() {
+	. /usr/lib/silent-vpn/common.sh
+	[ -r "$SV_RUN/catalog-dns.source" ] && [ -r "$SV_RUN/catalog-dns.upstream" ] || return 0
+	local source upstream server
+	source="$(cat "$SV_RUN/catalog-dns.source")"
+	sv_is_ipv4 "$source" || return 1
+	upstream="$(cat "$SV_RUN/catalog-dns.upstream")"
+	for server in $upstream; do sv_is_ipv4 "$server" || return 1; done
+	upstream="$(printf '%s' "$upstream" | tr ' ' ',')"
+	/usr/lib/silent-vpn/silent-dns -check -policy "$SV_VAR/routing-policy.json" -source "$source" -upstream "$upstream" || return 1
+	procd_open_instance
+	procd_set_param command /usr/lib/silent-vpn/silent-dns -policy "$SV_VAR/routing-policy.json" -source "$source" -upstream "$upstream" -ready "$SV_RUN/catalog-dns.ready"
+	procd_set_param env GOMEMLIMIT=16MiB GOGC=50
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 0
+	procd_set_param stderr 0
+	procd_close_instance
+}
+stop_service() {
+	rm -f /var/run/silent-vpn/catalog-dns.ready
+}

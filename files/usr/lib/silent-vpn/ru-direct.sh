@@ -2,6 +2,7 @@
 # DNS → nft set sv_ru → fwmark → table 162 (WAN). Rest stays in WG.
 
 . "$SV_LIB/common.sh"
+. "$SV_LIB/catalog-dns.sh"
 
 SV_RU_LIST="${SV_RU_LIST:-$SV_LIB/ru-direct.domains}"
 SV_RU_VPN_LIST="${SV_RU_VPN_LIST:-$SV_LIB/ru-vpn.domains}"
@@ -230,6 +231,14 @@ sv_ru_maintain() {
 
 sv_ru_write_dns() {
 	local d cr
+	if sv_catalog_dns_selected; then
+		sv_catalog_dns_bind || return 1
+		uci -q delete dhcp.silent_ru || true
+		uci -q delete dhcp.silent_ru_vpn || true
+		uci commit dhcp
+		return
+	fi
+	sv_catalog_dns_stop || return 1
 	# Accept Windows domain lists without copying CR into dnsmasq's UCI rules.
 	cr="$(printf '\r')"
 	uci -q delete dhcp.silent_ru || true
@@ -279,6 +288,7 @@ sv_ru_seed_vpn_ips() {
 
 sv_ru_apply_inner() {
 	if ! sv_ru_enabled; then
+		sv_catalog_dns_stop || return 1
 		rm -f "$SV_RU_DNS"
 		uci -q delete dhcp.silent_ru || true
 		uci -q delete dhcp.silent_ru_vpn || true

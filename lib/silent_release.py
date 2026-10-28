@@ -38,6 +38,7 @@ def _is_exec(path: Path) -> bool:
         path.suffix in EXEC_SUFFIXES
         or path.name in EXEC_NAMES
         or path.name.startswith("wdtt-client.")
+        or path.name.startswith("silent-dns.")
         or path.read_bytes().startswith(b"#!")
     )
 
@@ -65,6 +66,8 @@ def iter_release_files(root: Path, arch: str | None = None) -> list[tuple[Path, 
             rel = path.relative_to(root).as_posix()
             if arch and rel.startswith("files/usr/lib/silent-vpn/wdtt/") and path.name != f"wdtt-client.{arch}":
                 continue
+            if arch and rel.startswith("files/usr/lib/silent-vpn/dns/") and path.name != f"silent-dns.{arch}":
+                continue
             rows.append((path, f"silent-vpn/{rel}"))
     return rows
 
@@ -74,6 +77,9 @@ def write_tarball(root: Path, dest: Path, arch: str | None = None) -> Path:
     members = iter_release_files(root, arch)
     if arch:
         validate_binary((root / f"files/usr/lib/silent-vpn/wdtt/wdtt-client.{arch}").read_bytes(), arch)
+        dns = root / f"files/usr/lib/silent-vpn/dns/silent-dns.{arch}"
+        if (root / "files/usr/lib/silent-vpn/dns").is_dir():
+            validate_binary(dns.read_bytes(), arch)
     with tarfile.open(dest, "w:gz", format=tarfile.USTAR_FORMAT) as tar:
         for src, arcname in members:
             data = src.read_bytes()

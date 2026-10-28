@@ -11,6 +11,12 @@ from deploy_stable import _selected_python_paths
 
 
 class SelectionTests(unittest.TestCase):
+    def test_admin_ui_only_never_restarts_or_uploads_backend(self):
+        client=MagicMock()
+        with patch.object(sys,'argv',['deploy_stable.py','--admin-ui-only']), patch.object(deploy_stable,'connect',return_value=client), patch.object(deploy_stable,'_upload_admin_ui') as upload, patch.object(deploy_stable,'_verify_admin_ui') as verify, patch.object(deploy_stable,'_restart_and_verify') as restart, patch.object(deploy_stable,'_upload_py_tree') as tree:
+            deploy_stable.main()
+        upload.assert_called_once();verify.assert_called_once();restart.assert_not_called();tree.assert_not_called();client.close.assert_called_once()
+
     def test_selected_deploy_can_add_new_module_without_backing_up_missing_file(self):
         client = MagicMock()
         sftp = client.open_sftp.return_value.__enter__.return_value

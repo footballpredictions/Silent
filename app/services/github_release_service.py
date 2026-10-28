@@ -68,6 +68,8 @@ def github_asset_filename(platform: str, filename: str, version: str = "") -> st
     m = re.search(r"(\d+\.\d+\.\d+)", safe)
     if not ver and m:
         ver = m.group(1)
+    if platform == "keenetic":
+        return safe
     if platform == "openwrt":
         if ver:
             arch = openwrt_package.filename_arch(safe)
@@ -109,6 +111,7 @@ def _platform_asset_ext(platform: str) -> str:
         "linux": ".deb",
         "mac": ".dmg",
         "openwrt": ".tar.gz",
+        "keenetic": ".tar.gz",
     }.get(platform, "")
 
 
@@ -121,6 +124,9 @@ def _platform_asset_exts(platform: str) -> tuple[str, ...]:
 
 def _asset_name_matches_platform(name: str, platform: str) -> bool:
     n = (name or "").lower()
+    if platform in update_service.ROUTER_PACKAGES:
+        if platform == "openwrt" and n == "silent-vpn-openwrt.tgz": return True
+        return n.startswith("silent-vpn-"+platform+"-") and n.endswith(".tar.gz")
     return any(n.endswith(ext) for ext in _platform_asset_exts(platform))
 
 
@@ -259,7 +265,7 @@ async def _remove_platform_assets(token: str, release: dict, platform: str, *, a
     if not _platform_asset_exts(platform):
         return
     for asset in release.get("assets") or []:
-        if architectures_only and not openwrt_package.filename_arch(asset.get("name") or ""):
+        if architectures_only and not update_service.ROUTER_PACKAGES[platform].filename_arch(asset.get("name") or ""):
             continue
         if _asset_name_matches_platform(asset.get("name") or "", platform):
             await _delete_asset(token, int(asset["id"]))
@@ -362,8 +368,8 @@ def _platform_label(platform: str) -> str:
         return "PC (Linux)"
     if platform == "mac":
         return "PC (Mac)"
-    if platform == "openwrt":
-        return "OpenWrt"
+    if platform in ("openwrt", "keenetic"):
+        return "OpenWrt" if platform == "openwrt" else "Keenetic"
     return "Android"
 
 
@@ -387,15 +393,15 @@ def _landing_entry_from_manifest(
         "size": int(manifest.get("size") or 0),
         "download_url": download_url,
     }
-    if platform not in ("mac", "openwrt"):
+    if platform not in ("mac", "openwrt", "keenetic"):
         return entry
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
     arches: dict[str, dict] = {}
     for arch, slot in files.items():
-        allowed = update_service.MAC_ARCHES if platform == "mac" else update_service.OPENWRT_ARCHES
+        allowed = update_service.MAC_ARCHES if platform == "mac" else update_service.ROUTER_PACKAGES[platform].ARCHES
         if arch not in allowed or not isinstance(slot, dict) or not slot.get("filename"):
             continue
-        if platform == "openwrt" and slot.get("version") != manifest["version"]:
+        if platform in update_service.ROUTER_PACKAGES and slot.get("version") != manifest["version"]:
             continue
         gh_name = github_asset_filename(platform, slot["filename"], str(manifest["version"]))
         url = (slot.get("github_download_url") or "").strip() or asset_download_url(
@@ -409,8 +415,10 @@ def _landing_entry_from_manifest(
             "size": int(slot.get("size") or 0),
             "download_url": url,
         }
-        if platform == "openwrt":
-            arches[arch].update({k: slot[k] for k in ("sha256", "unpacked_size")})
+        if platform in update_service.ROUTER_PACKAGES:
+            arches[arch].update({k: slot[k] for k in ("sha256", "unpacked_size", "build_id")})
+        if platform == "keenetic":
+            arches[arch].update(platform=platform, arch=arch)
     if arches:
         entry["arches"] = arches
     return entry
@@ -552,9 +560,9 @@ async def _build_landing_releases_snapshot(
         local = update_service.get_latest(p)
         if not local:
             continue
-        if p == "openwrt" and local.get("files"):
+        if p in update_service.ROUTER_PACKAGES and local.get("files"):
             try:
-                packages = update_service.openwrt_binaries(local, require_complete=True)
+                packages = update_service.router_binaries(p, local, require_complete=True)
             except ValueError:
                 continue
             # Other platform publications must not advertise staged router packages.
@@ -634,10 +642,10 @@ async def _sync_peer_assets_from_server(
         if platform == skip_platform:
             continue
         latest = update_service.get_latest(platform)
-        if platform in ("mac", "openwrt") and latest and str(latest.get("version")) == str(version):
-            if platform == "openwrt" and latest.get("files"):
+        if platform in ("mac", "openwrt", "keenetic") and latest and str(latest.get("version")) == str(version):
+            if platform in update_service.ROUTER_PACKAGES and latest.get("files"):
                 try:
-                    binaries = update_service.openwrt_binaries(latest, require_complete=True)
+                    binaries = update_service.router_binaries(platform, latest, require_complete=True)
                 except ValueError:
                     continue
             else:
@@ -681,9 +689,9 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
         raise GitHubReleaseError(f"Нет файла обновления для {platform} в update/")
 
     binaries = update_service.mac_binaries(latest) if platform == "mac" else []
-    if platform == "openwrt" and latest.get("files"):
+    if platform in update_service.ROUTER_PACKAGES and latest.get("files"):
         try:
-            binaries = update_service.openwrt_binaries(latest, require_complete=True)
+            binaries = update_service.router_binaries(platform, latest, require_complete=True)
         except ValueError as exc:
             raise GitHubReleaseError(str(exc)) from exc
 
@@ -701,7 +709,7 @@ async def publish_platform(platform: str, *, sync_landing: bool = True, sync_pee
         release = await _create_release(token, tag, version, platform)
         logger.info("GitHub release created: %s (%s)", tag, platform)
     else:
-        await _remove_platform_assets(token, release, platform, architectures_only=platform == "openwrt" and bool(binaries))
+        await _remove_platform_assets(token, release, platform, architectures_only=platform in update_service.ROUTER_PACKAGES and bool(binaries))
 
     arch_urls: dict[str, str] = {}
     if binaries:

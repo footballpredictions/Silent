@@ -160,10 +160,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python-only", nargs="+", metavar="PATH", help="Only existing app/ai Python files; keep UI/compose/cell-agent unchanged")
     parser.add_argument("--with-admin-ui", action="store_true", help="Also publish the built admin UI with --python-only")
+    parser.add_argument("--admin-ui-only", action="store_true", help="Publish and verify only static admin assets without restarting API/VPN")
     parser.add_argument("--with-cell-agent-source", action="store_true", help="Publish the SHIPPED agent source bundle with --python-only")
     parser.add_argument("--with-nginx", action="store_true", help="Publish docker/nginx.conf with --python-only")
     args = parser.parse_args()
     dist = BACKEND_ROOT / "admin-ui" / "dist"
+    if args.admin_ui_only:
+        if args.python_only or args.with_admin_ui or args.with_cell_agent_source or args.with_nginx:
+            parser.error("--admin-ui-only cannot be combined with backend deployment flags")
+        if not (dist / 'index.html').is_file():
+            raise SystemExit("Сначала: cd admin-ui && npm run build")
+        client = connect()
+        try:
+            with client.open_sftp() as sftp:
+                _upload_admin_ui(sftp, client, dist)
+            _verify_admin_ui(client, dist / 'index.html')
+        finally:
+            client.close()
+        print("Done: admin UI only, services unchanged")
+        return
     if (not args.python_only or args.with_admin_ui) and not (dist / 'index.html').is_file():
         raise SystemExit("Сначала: cd admin-ui && npm run build")
     if args.python_only:
@@ -320,6 +335,9 @@ asyncio.run(main())
 
 
 def _restart_and_verify(client, *, expected_admin_index: Path | None = None) -> None:
+    # Every deployment must supply its own helper; /tmp may have been cleaned.
+    with client.open_sftp() as sftp:
+        sftp.putfo(io.BytesIO(FIX_SH.encode()), "/tmp/fix_tunnel_dnat.sh")
     # Код уже на хосте. up -d api --no-deps recreate только если compose изменился;
     # после volume ./app и ./ai recreate безопасен. wdtt не трогаем.
     script = f"""#!/bin/bash

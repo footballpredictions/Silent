@@ -12,7 +12,7 @@ router = APIRouter(prefix="/updates", tags=["updates"])
 
 @router.get("/check")
 async def check_update(
-    platform: str = Query(..., pattern="^(pc|android|linux|mac|openwrt)$"),
+    platform: str = Query(..., pattern="^(pc|android|linux|mac|openwrt|keenetic)$"),
     version: str = Query(..., min_length=1, max_length=32),
     arch: str = Query("", max_length=16),
 ):
@@ -36,7 +36,7 @@ async def download_update_file(platform: str, arch: str = Query("", max_length=1
     latest = update_service.get_latest(p, arch=arch or None)
     if not latest:
         raise HTTPException(status_code=404, detail="No update published")
-    if p == "openwrt" and latest.get("files") and not arch:
+    if p in update_service.ROUTER_PACKAGES and latest.get("files") and not arch:
         raise HTTPException(status_code=400, detail="OpenWrt: specify arch=aarch64, arm, mipsel or x86_64")
 
     filename = latest.get("filename") or ("update.apk" if p == "android" else "update.exe")

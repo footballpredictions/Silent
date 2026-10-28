@@ -2019,7 +2019,7 @@ async def list_updates(_: bool = Depends(get_admin_credentials)):
 
 @router.post("/updates/upload")
 async def upload_update(
-    platform: str = Form(..., pattern="^(pc|android|linux|mac|openwrt)$"),
+    platform: str = Form(..., pattern="^(pc|android|linux|mac|openwrt|keenetic)$"),
     version: Optional[str] = Form(None),
     arch: Optional[str] = Form(None),
     file: UploadFile = File(...),
@@ -2185,8 +2185,8 @@ def _platform_label(platform: str) -> str:
         return "PC (Linux)"
     if platform == "mac":
         return "PC (Mac)"
-    if platform == "openwrt":
-        return "OpenWrt"
+    if platform in ("openwrt", "keenetic"):
+        return "OpenWrt" if platform == "openwrt" else "Keenetic"
     return "Android"
 
 

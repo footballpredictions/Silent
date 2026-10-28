@@ -72,12 +72,16 @@ const platformLabel: Record<string, string> = {
   'mac-x64': 'Mac Intel (x64)',
   'mac-arm64': 'Mac Apple Silicon (arm64)',
   openwrt: 'OpenWrt',
+  keenetic: 'Keenetic (Entware)',
 }
 
-const hasVpsBuild = (platform: string) => platform !== 'mac' && platform !== 'openwrt'
+const hasVpsBuild = (platform: string) => ['pc', 'android', 'linux'].includes(platform)
+const isRouter = (platform: string) => platform === 'openwrt' || platform === 'keenetic'
+const keeneticArches = ['aarch64', 'armv7', 'armv5', 'mipsel', 'mips', 'x86_64', 'i386'] as const
+const routerArches = (platform: string): readonly string[] => platform === 'keenetic' ? keeneticArches : openwrtArches
 const openwrtArches = ['aarch64', 'arm', 'mipsel', 'x86_64'] as const
-const openwrtArchLabel: Record<string, string> = { aarch64: 'aarch64', arm: 'ARMv7', mipsel: 'mipsel', x86_64: 'x86_64' }
-const openwrtComplete = (item: UpdateInfo) => openwrtArches.every(arch =>
+const openwrtArchLabel: Record<string, string> = { aarch64: 'aarch64', arm: 'ARMv7', armv7: 'ARMv7', armv5: 'ARMv5 / ARMv6', mips: 'MIPS big endian', i386: 'i386', mipsel: 'mipsel', x86_64: 'x86_64' }
+const openwrtComplete = (item: UpdateInfo) => routerArches(item.platform).every(arch =>
   item.files?.[arch]?.filename && item.files[arch].version === item.version &&
   item.files[arch].build_id && item.files[arch].build_id === item.files.aarch64?.build_id)
 
@@ -449,8 +453,8 @@ export default function UpdatesPage({ token }: { token: string }) {
                             )
                           })}
                         </>
-                      ) : item.platform === 'openwrt' && item.files ? (
-                        <p className="text-[#aaa]">{openwrtComplete(item) ? 'Все 4 пакета готовы к публикации' : 'Для публикации нужны 4 пакета из одной сборки'}</p>
+                      ) : isRouter(item.platform) && item.files ? (
+                        <p className="text-[#aaa]">{openwrtComplete(item) ? `Все ${routerArches(item.platform).length} пакетов готовы к публикации` : `Для публикации нужны ${routerArches(item.platform).length} пакетов из одной сборки`}</p>
                       ) : (
                         <>
                           <p>Файл: {item.filename}</p>
@@ -549,7 +553,7 @@ export default function UpdatesPage({ token }: { token: string }) {
               </div>
 
               <div className="mt-4 pt-4 border-t border-[#222] flex flex-wrap items-center gap-3">
-                {item.platform !== 'openwrt' && downloadHref(item) && (
+                {!isRouter(item.platform) && downloadHref(item) && (
                   <a
                     href={downloadHref(item)!}
                     download={item.filename || true}
@@ -559,25 +563,25 @@ export default function UpdatesPage({ token }: { token: string }) {
                     Скачать
                   </a>
                 )}
-                {item.platform === 'openwrt' ? (
+                {isRouter(item.platform) ? (
                   <div className="w-full space-y-3">
-                    {openwrtArches.map(arch => {
+                    {routerArches(item.platform).map(arch => {
                       const slot = item.files?.[arch]
-                      const busy = uploading === `openwrt:${arch}`
+                      const busy = uploading === `${item.platform}:${arch}`
                       return (
                         <div key={arch} className="flex flex-wrap items-center gap-3 border-b border-[#222] pb-3 last:border-0">
                           <div className="flex-1 min-w-0 basis-40">
                             <p className="text-sm font-semibold">{openwrtArchLabel[arch]}</p>
                             <p className="text-xs text-[#aaa] break-all mt-1">{slot?.filename ? `${slot.version} · ${formatSize(slot.size)} · ${slot.filename}` : 'Пакет не загружен'}</p>
                           </div>
-                          <input ref={element => { openwrtInputs.current[arch] = element }} type="file" accept=".tar.gz,.tgz" className="hidden" aria-label={`Пакет OpenWrt ${arch}`} onChange={e => {
+                          <input ref={element => { openwrtInputs.current[`${item.platform}:${arch}`] = element }} type="file" accept=".tar.gz,.tgz" className="hidden" aria-label={`Пакет ${platformLabel[item.platform]} ${arch}`} onChange={e => {
                             const file = e.target.files?.[0]
-                            if (file) void upload('openwrt', file, arch)
+                            if (file) void upload(item.platform, file, arch)
                             e.target.value = ''
                           }} />
-                          {slot?.download_url && <a href={slot.download_url} download={slot.filename} className="p-2 text-[#ccc] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Скачать OpenWrt ${arch}`}><Download className="w-4 h-4" /></a>}
-                          <button disabled={!!uploading || !!publishingGithub} onClick={() => openwrtInputs.current[arch]?.click()} className="inline-flex items-center gap-2 bg-white text-black px-3 py-2 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Загрузить OpenWrt ${arch}`}><Upload className="w-4 h-4" />{busy ? `${uploadPct}%` : slot ? 'Заменить' : 'Загрузить'}</button>
-                          {slot && <button onClick={() => void remove('openwrt', arch)} disabled={!!uploading || !!publishingGithub} className="p-2 text-[#aaa] hover:text-red-400 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Удалить OpenWrt ${arch}`}><Trash2 className="w-4 h-4" /></button>}
+                          {slot?.download_url && <a href={slot.download_url} download={slot.filename} className="p-2 text-[#ccc] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Скачать ${platformLabel[item.platform]} ${arch}`}><Download className="w-4 h-4" /></a>}
+                          <button disabled={!!uploading || !!publishingGithub} onClick={() => openwrtInputs.current[`${item.platform}:${arch}`]?.click()} className="inline-flex items-center gap-2 bg-white text-black px-3 py-2 rounded-lg text-sm font-semibold hover:bg-[#e0e0e0] disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Загрузить ${platformLabel[item.platform]} ${arch}`}><Upload className="w-4 h-4" />{busy ? `${uploadPct}%` : slot ? 'Заменить' : 'Загрузить'}</button>
+                          {slot && <button onClick={() => void remove(item.platform, arch)} disabled={!!uploading || !!publishingGithub} className="p-2 text-[#aaa] hover:text-red-400 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400" aria-label={`Удалить ${platformLabel[item.platform]} ${arch}`}><Trash2 className="w-4 h-4" /></button>}
                         </div>
                       )
                     })}
@@ -636,7 +640,7 @@ export default function UpdatesPage({ token }: { token: string }) {
                   </>
                 )}
                 <button
-                  disabled={!item.version || !githubStatus?.configured || !!uploading || publishingGithub === item.platform || (item.platform === 'openwrt' && !openwrtComplete(item))}
+                  disabled={!item.version || !githubStatus?.configured || !!uploading || publishingGithub === item.platform || (isRouter(item.platform) && !openwrtComplete(item))}
                   onClick={() => publishGithub(item.platform)}
                   className="inline-flex items-center gap-2 bg-[#1a1a1a] border border-purple-900/50 text-purple-200 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#221a2a] disabled:opacity-50"
                   title="Загрузить в GitHub Releases + обновить releases.json на silentvpn3.github.io"
@@ -678,8 +682,8 @@ export default function UpdatesPage({ token }: { token: string }) {
                 {item.platform === 'mac' && (
                   <span className="text-xs text-[#666] self-center">Два DMG с MacBook (`./build-mac.sh`): Intel и Apple Silicon. Старые клиенты без архитектуры получают Intel.</span>
                 )}
-                {item.platform === 'openwrt' && (
-                  <span className="text-xs text-[#aaa] self-center">Сборка: python openwrt/scripts/build_release.py. Загрузите 4 архива из openwrt/dist. Установщик сам выберет нужный на GitHub.</span>
+                {isRouter(item.platform) && (
+                  <span className="text-xs text-[#aaa] self-center">{item.platform === 'keenetic' ? 'Сборка: python keenetic/scripts/build.py. Загрузите 7 архивов CPU из keenetic/dist. Общий установщик выберет нужную архитектуру.' : 'Сборка: python openwrt/scripts/build_release.py. Загрузите 4 архива из openwrt/dist. Установщик сам выберет нужный на GitHub.'}</span>
                 )}
               </div>
             </div>

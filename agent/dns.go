@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"silent-keenetic/routerpolicy"
 )
 
 type dnsServer struct{ server *dns.Server }
@@ -57,8 +58,9 @@ func (a *Agent) answerDNS(w dns.ResponseWriter, q *dns.Msg) {
 	a.policyMu.RLock()
 	defer a.policyMu.RUnlock()
 	a.mu.RLock()
-	vpn := a.cfg.Direct && suffixMatch(q.Question[0].Name, a.vpnDomains)
-	direct := a.cfg.Direct && !vpn && suffixMatch(q.Question[0].Name, a.domains)
+	route := (routerpolicy.Policy{Direct: a.domains, Exact: a.exactDomains, VPN: a.vpnDomains}).Match(q.Question[0].Name)
+	vpn := a.cfg.Direct && route == routerpolicy.VPN
+	direct := a.cfg.Direct && route == routerpolicy.Direct
 	upstream := append([]string(nil), a.upstream...)
 	wgIP := a.wgAddress
 	a.mu.RUnlock()

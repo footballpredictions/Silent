@@ -36,6 +36,7 @@ type Agent struct {
 	cancel            context.CancelFunc
 	stopTunnel        func()
 	domains           []string
+	exactDomains      []string
 	vpnDomains        []string
 	policyMu          sync.RWMutex
 	learnedMu         sync.Mutex

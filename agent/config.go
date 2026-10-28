@@ -17,20 +17,21 @@ const bootstrapHash = "T5oeMQkn6iF1XfUfhxGQ0h6j4lHEoJ5wTGEyi1Q_2cc"
 const iface = "svkeen"
 
 type Config struct {
-	LANInterface  string `json:"lan_interface"`
-	LANIP         string `json:"lan_ip"`
-	LANPrefix     string `json:"lan_prefix"`
-	Port          int    `json:"port"`
-	AdminPassword string `json:"admin_password"`
-	Fingerprint   string `json:"fingerprint"`
-	DeviceID      string `json:"device_id,omitempty"`
-	Token         string `json:"access_token,omitempty"`
-	RefreshToken  string `json:"refresh_token,omitempty"`
-	Email         string `json:"email,omitempty"`
-	DNSPreset     string `json:"dns_preset"`
-	DNSCustom     string `json:"dns_custom,omitempty"`
-	Direct        bool   `json:"ru_direct"`
-	Reconnect     bool   `json:"reconnect"`
+	LANInterface   string `json:"lan_interface"`
+	LANIP          string `json:"lan_ip"`
+	LANPrefix      string `json:"lan_prefix"`
+	Port           int    `json:"port"`
+	AdminPassword  string `json:"admin_password"`
+	Fingerprint    string `json:"fingerprint"`
+	DeviceID       string `json:"device_id,omitempty"`
+	Token          string `json:"access_token,omitempty"`
+	RefreshToken   string `json:"refresh_token,omitempty"`
+	Email          string `json:"email,omitempty"`
+	DNSPreset      string `json:"dns_preset"`
+	DNSCustom      string `json:"dns_custom,omitempty"`
+	Direct         bool   `json:"ru_direct"`
+	RoutingProfile string `json:"routing_profile,omitempty"`
+	Reconnect      bool   `json:"reconnect"`
 }
 
 func randomID() string {
@@ -42,6 +43,9 @@ func randomID() string {
 }
 
 func (c Config) validate() error {
+	if c.RoutingProfile != "" && c.RoutingProfile != "standard" && c.RoutingProfile != "catalog-test" {
+		return errors.New("неизвестный профиль исключений")
+	}
 	ip := net.ParseIP(c.LANIP)
 	_, subnet, err := net.ParseCIDR(c.LANPrefix)
 	if err != nil || ip == nil || ip.To4() == nil || !ip.IsPrivate() || !subnet.IP.IsPrivate() || !subnet.Contains(ip) {

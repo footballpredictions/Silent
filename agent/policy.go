@@ -2,59 +2,30 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"silent-keenetic/routerpolicy"
 	"strings"
 	"time"
 )
 
-type routingPolicy struct {
-	Schema   int      `json:"schema_version"`
-	Revision string   `json:"revision"`
-	Direct   []string `json:"direct_domains"`
-	VPN      []string `json:"vpn_domains"`
+type routingPolicy = routerpolicy.Policy
+
+func (a *Agent) routingPolicyPath() string {
+	a.mu.RLock()
+	profile := a.cfg.RoutingProfile
+	a.mu.RUnlock()
+	if profile == "standard" {
+		return "/api/vpn/routing-policy"
+	}
+	return "/api/vpn/routing-policy?profile=catalog-test"
 }
 
-func validDomain(s string) bool {
-	if len(s) == 0 || len(s) > 253 || net.ParseIP(s) != nil {
-		return false
-	}
-	for _, label := range strings.Split(s, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, c := range label {
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-				return false
-			}
-		}
-	}
-	return strings.Contains(s, ".") || s == "ru" || s == "su" || s == "xn--p1ai"
-}
-
-func parsePolicy(raw []byte) (routingPolicy, error) {
-	var p routingPolicy
-	if len(raw) > 262144 || json.Unmarshal(raw, &p) != nil {
-		return p, fmt.Errorf("Некорректная политика обхода")
-	}
-	hash, err := hex.DecodeString(p.Revision)
-	if p.Schema != 1 || err != nil || len(hash) != 32 || p.Revision != strings.ToLower(p.Revision) || p.Direct == nil || p.VPN == nil || len(p.Direct) > 2000 || len(p.VPN) > 2000 {
-		return p, fmt.Errorf("Некорректная политика обхода")
-	}
-	for _, list := range [][]string{p.Direct, p.VPN} {
-		for _, d := range list {
-			if !validDomain(d) {
-				return p, fmt.Errorf("Некорректный домен обхода")
-			}
-		}
-	}
-	return p, nil
-}
+func validDomain(s string) bool                     { return routerpolicy.ValidDomain(s) }
+func parsePolicy(raw []byte) (routingPolicy, error) { return routerpolicy.Parse(raw) }
 
 func writePrivate(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -83,7 +54,7 @@ func (a *Agent) loadPolicy() {
 	a.vpnDomains = packagedDomains(filepath.Join(a.root, "ru-vpn.domains"))
 	if b, err := os.ReadFile(filepath.Join(filepath.Dir(a.path), "routing-policy.json")); err == nil {
 		if p, err := parsePolicy(b); err == nil {
-			a.domains, a.vpnDomains, a.policyRevision = p.Direct, p.VPN, p.Revision
+			a.domains, a.exactDomains, a.vpnDomains, a.policyRevision = p.Direct, p.Exact, p.VPN, p.Revision
 		}
 	}
 }
@@ -98,7 +69,7 @@ func (a *Agent) refreshPolicy(ctx context.Context) {
 	}
 	a.lastPolicy = time.Now()
 	for _, base := range a.apiBases() {
-		raw, err := a.callBases(ctx, []string{base}, "GET", "/api/vpn/routing-policy", nil)
+		raw, err := a.callBases(ctx, []string{base}, "GET", a.routingPolicyPath(), nil)
 		if err != nil {
 			continue
 		}
@@ -121,7 +92,7 @@ func (a *Agent) refreshPolicy(ctx context.Context) {
 			err = writePrivate(filepath.Join(filepath.Dir(a.path), "routing-policy.json"), raw)
 		}
 		if err == nil {
-			a.domains, a.vpnDomains, a.policyRevision = p.Direct, p.VPN, p.Revision
+			a.domains, a.exactDomains, a.vpnDomains, a.policyRevision = p.Direct, p.Exact, p.VPN, p.Revision
 			a.learnedMu.Lock()
 			a.learnedDirect, a.learnedVPN = nil, nil
 			a.learnedMu.Unlock()

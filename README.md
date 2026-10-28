@@ -21,8 +21,11 @@ df -h /tmp /usr; free -m
 Установите (роутеру нужен интернет):
 
 ```sh
-wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
+wget -O /tmp/sv.sh https://silentvpn3.github.io/router-install.sh && sh /tmp/sv.sh
 ```
+
+Для обновления повторите эту же команду. Данные входа и настройки сохранятся;
+установщик заменит файлы и восстановит предыдущую сборку при ошибке.
 
 Подключитесь к локальной сети роутера по Wi-Fi или кабелю. Откройте
 `http://<LAN-IP>.silent.vpn` (панель напрямую: `http://<LAN-IP>/silent-vpn/`). Доступ к панели — только из LAN.

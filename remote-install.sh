@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-shot OpenWrt install: check CPU, deps, panel, wdtt, then wipe /tmp copies.
+# Universal router installation/update: detect platform, select CPU, keep user data.
 set -e
 
 # Keep the published one-command entry point shared by both router platforms.
@@ -209,7 +209,7 @@ if [ ! -f "$WORKDIR/files/usr/lib/silent-vpn/wdtt/wdtt-client.$slot" ]; then
 	exit 1
 fi
 
-sh "$WORKDIR/install.sh"
+SILENT_OPENWRT_STAGE="$STAGE" sh "$WORKDIR/install.sh"
 cd /tmp
 sv_remote_cleanup
 STAGE=""

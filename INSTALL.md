@@ -19,8 +19,11 @@ df -h /tmp /usr; free -m
 3. Установите. Роутеру нужен интернет:
 
 ```sh
-wget -O /tmp/sv.sh https://silentvpn3.github.io/openwrt-install.sh && sh /tmp/sv.sh
+wget -O /tmp/sv.sh https://silentvpn3.github.io/router-install.sh && sh /tmp/sv.sh
 ```
+
+Для обновления повторите эту же команду. Данные входа и настройки сохранятся;
+установщик заменит файлы и восстановит предыдущую сборку при ошибке.
 
 4. Откройте `http://192.168.1.1.silent.vpn` или IP своего роутера.
 Войдите в аккаунт. В «Исключениях» включите «Российские сервисы мимо VPN», затем включите VPN.

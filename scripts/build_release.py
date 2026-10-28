@@ -31,7 +31,7 @@ def main() -> int:
     manifest = ROOT / "dist" / "openwrt-packages.json"
     manifest.write_text(json.dumps({"version": version, "arches": packages}, indent=2) + "\n", encoding="utf-8")
     (ROOT / "dist" / "SHA256SUMS").write_text("".join(f"{p['sha256']}  {p['filename']}\n" for p in packages.values()), encoding="ascii")
-    for source, target in (("remote-install.sh", "openwrt-install.sh"), ("uninstall.sh", "openwrt-uninstall.sh")):
+    for source, target in (("remote-install.sh", "router-install.sh"), ("remote-install.sh", "openwrt-install.sh"), ("uninstall.sh", "openwrt-uninstall.sh")):
         (ROOT / "dist" / target).write_bytes((ROOT / source).read_bytes().replace(b"\r\n", b"\n"))
     return 0
 

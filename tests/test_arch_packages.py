@@ -55,11 +55,13 @@ class ArchPackageTests(unittest.TestCase):
                 write_tarball(root / "source", root / "bad.tgz", "arm")
 
     def test_public_bootstrap_is_identical(self):
-        mirror = ROOT.parent / "landing/openwrt-install.sh"
-        if not mirror.is_file():
+        landing = ROOT.parent / "landing"
+        if not landing.is_dir():
             self.skipTest("Landing checkout is optional in a standalone OpenWrt checkout")
-        self.assertEqual((ROOT / "remote-install.sh").read_bytes(),
-                         mirror.read_bytes())
+        for name in ("router-install.sh", "openwrt-install.sh"):
+            with self.subTest(name=name):
+                self.assertEqual((ROOT / "remote-install.sh").read_bytes().replace(b"\r\n", b"\n"),
+                                 (landing / name).read_bytes().replace(b"\r\n", b"\n"))
 
 
 @unittest.skipUnless(SHELL, "POSIX shell required")

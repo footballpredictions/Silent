@@ -129,10 +129,17 @@ install_deps() {
 	install_dns_nftset
 }
 
+install_binary() {
+	# Renaming also works if a previous process has not exited its old executable yet.
+	if ! cp "$1" "$2.new" || ! chmod 0755 "$2.new" || ! mv -f "$2.new" "$2"; then
+		rm -f "$2.new"
+		return 1
+	fi
+}
+
 install_wdtt() {
 	rm -f /usr/bin/wdtt-client /usr/bin/svcloak /usr/bin/svpass
-	cp -a "$SV_WDTT_SRC" /usr/bin/spass
-	chmod 0755 /usr/bin/spass
+	install_binary "$SV_WDTT_SRC" /usr/bin/spass
 	echo "обход: /usr/bin/spass ($SV_WDTT_SLOT)"
 }
 
@@ -158,8 +165,7 @@ install_files() {
 	done
 	rm -rf /usr/lib/silent-vpn/wdtt
 	if [ -f "$ROOT/files/usr/lib/silent-vpn/dns/silent-dns.$SV_WDTT_SLOT" ]; then
-		cp "$ROOT/files/usr/lib/silent-vpn/dns/silent-dns.$SV_WDTT_SLOT" /usr/lib/silent-vpn/silent-dns
-		chmod 0755 /usr/lib/silent-vpn/silent-dns
+		install_binary "$ROOT/files/usr/lib/silent-vpn/dns/silent-dns.$SV_WDTT_SLOT" /usr/lib/silent-vpn/silent-dns
 	fi
 	cp -a "$ROOT/files/usr/sbin/silent-vpn-ctl" /usr/sbin/silent-vpn-ctl
 	cp -a "$ROOT/files/usr/sbin/silent-vpn-policy" /usr/sbin/silent-vpn-policy
@@ -215,18 +221,27 @@ install_files() {
 	echo "Войдите аккаунтом Silent и включите тумблер."
 }
 
+install_client() {
+	require_arch
+	if [ "${SILENT_OPENWRT_UPDATE:-0}" != 1 ] && [ -x /usr/sbin/silent-vpn-ctl ]; then
+		. "$ROOT/files/usr/lib/silent-vpn/install-upgrade.sh"
+		sv_install_upgrade "${1:-0}"
+	else
+		[ "${1:-0}" = 1 ] || install_deps
+		install_files
+	fi
+}
+
 cmd="${1:-all}"
 case "$cmd" in
 	deps)
 		install_deps
 		;;
 	install|--skip-deps)
-		install_files
+		install_client 1
 		;;
 	all|"")
-		require_arch
-		install_deps
-		install_files
+		install_client 0
 		;;
 	uninstall)
 		sh "$ROOT/uninstall.sh"

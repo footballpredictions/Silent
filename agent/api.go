@@ -108,9 +108,6 @@ func (a *Agent) fpQuery() string {
 func (a *Agent) login(ctx context.Context, body map[string]any) (any, error) {
 	a.op.Lock()
 	defer a.op.Unlock()
-	if a.isConnected() {
-		return nil, fmt.Errorf("Сначала отключите VPN")
-	}
 	committed := false
 	defer func() {
 		if !committed {
@@ -156,7 +153,7 @@ func (a *Agent) login(ctx context.Context, body map[string]any) (any, error) {
 	}
 	committed = true
 	_, _ = a.call(ctx, "POST", "/api/vpn/device/register", a.deviceBody())
-	return map[string]any{"email": p.Email, "profile": profile, "lan_ip": a.cfg.LANIP, "lan_url": a.lanURL(), "router_name": "Keenetic " + a.model, "connected": false}, nil
+	return map[string]any{"email": p.Email, "profile": profile, "lan_ip": a.cfg.LANIP, "lan_url": a.lanURL(), "router_name": "Keenetic " + a.model, "connected": a.isConnected()}, nil
 }
 
 func (a *Agent) callSession(ctx context.Context, method, path string, body any) (json.RawMessage, error) {

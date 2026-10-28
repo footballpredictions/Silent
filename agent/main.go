@@ -172,7 +172,7 @@ func (a *Agent) serveAPI(w http.ResponseWriter, r *http.Request) {
 			defer a.updateMu.RUnlock()
 		}
 	}
-	if updateBusy(a.path) && (op == "login" || op == "connect" || op == "disconnect" || op == "logout" || op == "server" || ((op == "dns" || op == "exclusions") && r.Method == "POST")) {
+	if updateBusy(a.path) && (op == "login" || op == "connect" || op == "disconnect" || op == "logout" || op == "server" || op == "device-rename" || op == "device-delete" || ((op == "dns" || op == "exclusions") && r.Method == "POST")) {
 		reply(w, http.StatusConflict, map[string]string{"detail": "Дождитесь завершения обновления"})
 		return
 	}
@@ -220,18 +220,21 @@ func (a *Agent) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case "connect":
 		err = a.connect(ctx)
 		v = map[string]bool{"ok": true, "connected": a.isConnected()}
-	case "disconnect", "logout":
+	case "disconnect":
 		a.interrupt()
 		a.op.Lock()
 		err = a.disconnect()
-		if op == "logout" {
-			a.mu.Lock()
-			a.cfg.Token, a.cfg.RefreshToken, a.cfg.Email = "", "", ""
-			a.mu.Unlock()
-			err = a.persist()
-		}
 		a.op.Unlock()
 		v = map[string]bool{"ok": true, "connected": false}
+	case "logout":
+		// Panel sign-out must not tear down a VPN used by the rest of the LAN.
+		a.op.Lock()
+		a.mu.Lock()
+		a.cfg.Token, a.cfg.RefreshToken, a.cfg.Email = "", "", ""
+		a.mu.Unlock()
+		err = a.persist()
+		a.op.Unlock()
+		v = map[string]bool{"ok": true, "connected": a.isConnected()}
 	case "dns", "exclusions":
 		a.op.Lock()
 		if r.Method == "POST" {

@@ -24,7 +24,7 @@ func updateFixture(t *testing.T, mutate func(map[string][]byte)) ([]byte, update
 	old := packageArch
 	packageArch = "x86_64"
 	t.Cleanup(func() { packageArch = old })
-	info := packageInfo{Schema: 1, Platform: "keenetic", Arch: "x86_64", Version: "1.0.170", BuildID: strings.Repeat("b", 64)}
+	info := packageInfo{Schema: 1, Platform: "keenetic", Arch: "x86_64", Version: "1.0.172", BuildID: strings.Repeat("b", 64)}
 	p, _ := json.Marshal(info)
 	elf := make([]byte, 128)
 	copy(elf, "\x7fELF")
@@ -36,7 +36,7 @@ func updateFixture(t *testing.T, mutate func(map[string][]byte)) ([]byte, update
 	binary.LittleEndian.PutUint16(elf[54:], 56)
 	binary.LittleEndian.PutUint16(elf[56:], 1)
 	binary.LittleEndian.PutUint32(elf[64:], 1)
-	files := map[string][]byte{"ARCH": []byte("x86_64\n"), "VERSION": []byte("1.0.170\n"), "PACKAGE.json": p, "install.sh": []byte("#!/bin/sh\n"), "uninstall.sh": []byte("#!/bin/sh\n"), "README.md": []byte("readme"), "RESEARCH.md": []byte("research"), "THIRD_PARTY_LICENSES.txt": []byte("license"), "files/network.sh": []byte("network"), "files/guard.sh": []byte("guard"), "files/S99silent-keenetic": []byte("service"), "files/100-silent-keenetic.sh": []byte("hook"), "files/ru-direct.domains": []byte("ru\n"), "files/ru-vpn.domains": []byte("youtube.com\n"), "bin/x86_64/silent-keenetic": elf, "bin/x86_64/spass": elf}
+	files := map[string][]byte{"ARCH": []byte("x86_64\n"), "VERSION": []byte("1.0.172\n"), "PACKAGE.json": p, "install.sh": []byte("#!/bin/sh\n"), "uninstall.sh": []byte("#!/bin/sh\n"), "README.md": []byte("readme"), "RESEARCH.md": []byte("research"), "THIRD_PARTY_LICENSES.txt": []byte("license"), "files/network.sh": []byte("network"), "files/guard.sh": []byte("guard"), "files/S99silent-keenetic": []byte("service"), "files/100-silent-keenetic.sh": []byte("hook"), "files/ru-direct.domains": []byte("ru\n"), "files/ru-vpn.domains": []byte("youtube.com\n"), "bin/x86_64/silent-keenetic": elf, "bin/x86_64/spass": elf}
 	if mutate != nil {
 		mutate(files)
 	}
@@ -50,13 +50,13 @@ func updateFixture(t *testing.T, mutate func(map[string][]byte)) ([]byte, update
 		if strings.HasPrefix(name, "bin/") {
 			mode = 0755
 		}
-		_ = tf.WriteHeader(&tar.Header{Name: "silent-vpn-keenetic-1.0.170/" + name, Mode: mode, Size: int64(len(data))})
+		_ = tf.WriteHeader(&tar.Header{Name: "silent-vpn-keenetic-1.0.172/" + name, Mode: mode, Size: int64(len(data))})
 		_, _ = tf.Write(data)
 	}
 	_ = tf.Close()
 	_ = gz.Close()
 	sum := sha256.Sum256(out.Bytes())
-	return out.Bytes(), updateOffer{Platform: "keenetic", Arch: "x86_64", Version: "1.0.170", BuildID: info.BuildID, Size: int64(out.Len()), UnpackedSize: size, SHA256: hex.EncodeToString(sum[:])}
+	return out.Bytes(), updateOffer{Platform: "keenetic", Arch: "x86_64", Version: "1.0.172", BuildID: info.BuildID, Size: int64(out.Len()), UnpackedSize: size, SHA256: hex.EncodeToString(sum[:])}
 }
 func TestUpdateDownloadsFromPublicReleaseRepository(t *testing.T) {
 	u := updateOffer{Version: "1.0.169", Arch: "mipsel"}
@@ -71,14 +71,14 @@ func TestUpdateRejectsForeignCPUAndInvalidMetadata(t *testing.T) {
 	if !u.valid() {
 		t.Fatal("valid offer rejected")
 	}
-	for _, change := range []func(*updateOffer){func(u *updateOffer) { u.Arch = "mipsel" }, func(u *updateOffer) { u.Platform = "openwrt" }, func(u *updateOffer) { u.SHA256 = "none" }, func(u *updateOffer) { u.Version = "1.0.169" }, func(u *updateOffer) { u.Version = "1.0.170;sh" }, func(u *updateOffer) { u.UnpackedSize = maxUnpackedSize + 1 }} {
+	for _, change := range []func(*updateOffer){func(u *updateOffer) { u.Arch = "mipsel" }, func(u *updateOffer) { u.Platform = "openwrt" }, func(u *updateOffer) { u.SHA256 = "none" }, func(u *updateOffer) { u.Version = "1.0.169" }, func(u *updateOffer) { u.Version = "1.0.172;sh" }, func(u *updateOffer) { u.UnpackedSize = maxUnpackedSize + 1 }} {
 		bad := u
 		change(&bad)
 		if bad.valid() {
 			t.Fatal("unsafe offer accepted", bad)
 		}
 	}
-	if !newerVersion("1.0.170", "1.0.99") || newerVersion("1.0.9", "1.0.10") {
+	if !newerVersion("1.0.172", "1.0.99") || newerVersion("1.0.9", "1.0.10") {
 		t.Fatal("lexical version comparison")
 	}
 }
@@ -133,7 +133,7 @@ func TestPackageVerificationAndBoundedExtraction(t *testing.T) {
 	}{
 		{"valid", nil, true},
 		{"foreign_cpu", func(f map[string][]byte) { f["ARCH"] = []byte("mipsel\n") }, false},
-		{"version", func(f map[string][]byte) { f["VERSION"] = []byte("1.0.171\n") }, false},
+		{"version", func(f map[string][]byte) { f["VERSION"] = []byte("1.0.173\n") }, false},
 		{"traversal", func(f map[string][]byte) { f["../../outside"] = []byte("bad") }, false},
 		{"extra_binary", func(f map[string][]byte) { f["bin/mipsel/spass"] = []byte("bad") }, false},
 		{"missing", func(f map[string][]byte) { delete(f, "files/network.sh") }, false},

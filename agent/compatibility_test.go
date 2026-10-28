@@ -219,3 +219,24 @@ func TestUpdateStartRequiresSilentAccount(t *testing.T) {
 		t.Fatal("worker started without account")
 	}
 }
+
+func TestPanelLogoutKeepsSharedVPNRunning(t *testing.T) {
+	a := testAgent(t)
+	a.connected = true
+	a.cfg.Token = "one.two.three"
+	a.cfg.Reconnect = true
+	a.run = func(context.Context, string, ...string) error { t.Fatal("panel logout touched network"); return nil }
+	r := httptest.NewRequest("POST", "http://192.168.1.1:8787/cgi-bin/silent-api/logout", strings.NewReader(`{}`))
+	r.RemoteAddr = "192.168.1.2:12345"
+	r.SetBasicAuth("admin", a.cfg.AdminPassword)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, r)
+	if w.Code != 200 || !a.isConnected() {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	c, err := loadConfig(a.path)
+	if err != nil || c.Token != "" || !c.Reconnect {
+		t.Fatal("logout lost reconnect or retained token", err)
+	}
+}

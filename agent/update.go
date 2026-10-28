@@ -175,7 +175,7 @@ func (a *Agent) checkUpdate(ctx context.Context) updateState {
 	if updateBusy(a.path) {
 		return updateStatus(a.path)
 	}
-	offer, err := fetchUpdate(ctx, a.client)
+	offer, err := a.fetchUpdate(ctx)
 	if err != nil {
 		return updateState{Phase: "error", Detail: "Не удалось проверить обновление. Повторите попытку."}
 	}
@@ -183,6 +183,31 @@ func (a *Agent) checkUpdate(ctx context.Context) updateState {
 		return updateState{Phase: "current"}
 	}
 	return updateState{Phase: "available", Version: offer.Version}
+}
+
+func (a *Agent) fetchUpdate(ctx context.Context) (updateOffer, error) {
+	for _, base := range a.apiBases() {
+		probe, cancel := context.WithTimeout(ctx, 6*time.Second)
+		raw, err := a.callBases(probe, []string{base}, "GET", "/api/updates/check?platform=keenetic&version="+version+"&arch="+packageArch, nil)
+		cancel()
+		if err != nil {
+			continue
+		}
+		var status struct {
+			Available *bool `json:"available"`
+		}
+		if json.Unmarshal(raw, &status) != nil || status.Available == nil {
+			continue
+		}
+		if !*status.Available {
+			return updateOffer{}, nil
+		}
+		var offer updateOffer
+		if json.Unmarshal(raw, &offer) == nil && offer.valid() {
+			return offer, nil
+		}
+	}
+	return fetchUpdate(ctx, a.client)
 }
 func (a *Agent) startUpdate() (any, error) {
 	a.op.Lock()
@@ -285,12 +310,12 @@ func runUpdateWorker(path, root string) (err error) {
 	if cfg.Token == "" {
 		return fmt.Errorf("Нужен аккаунт")
 	}
-	a := &Agent{cfg: cfg, path: path, root: root, client: newHTTPClient(), run: runCommand}
+	a := &Agent{cfg: cfg, path: path, root: root, client: newHTTPClient(), run: runCommand, bases: publicAPIs, connected: cfg.Reconnect}
 	a.client.Timeout = 10 * time.Minute
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	check, stop := context.WithTimeout(ctx, 20*time.Second)
-	offer, err := fetchUpdate(check, a.client)
+	offer, err := a.fetchUpdate(check)
 	stop()
 	if err != nil {
 		return err

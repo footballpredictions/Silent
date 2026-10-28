@@ -1,14 +1,14 @@
-# Silent VPN для Keenetic — 1.0.169
+# Silent VPN для Keenetic — 1.0.171
 
 Отдельный порт клиента для KeeneticOS + Entware. В архиве собственный агент, встроенная веб-панель Silent, наш VK/WDTT-транспорт `spass` и WireGuard userspace. Сервер использует прежний API, `device_type=pc`, имя устройства `Keenetic <hostname>`. Старые клиенты и сервер не требуют изменений.
 
 Статус: экспериментальная сборка, прошедшая локальные проверки. Реальная установка/работа на Keenetic пока не подтверждены. «Универсальная» означает варианты CPU с проверкой требований, а не гарантию для каждой модели/прошивки.
 
-Исходники: `footballpredictions/Silent`, ветка `keenetic`. Пакеты и обновления публикуются отдельно: https://github.com/silentvpn3/silentvpn3.github.io/releases/tag/v1.0.169. Метадата OTA — `keenetic.arches` в https://silentvpn3.github.io/releases.json; пакеты OpenWrt для Keenetic не подходят.
+Исходники: `footballpredictions/Silent`, ветка `keenetic`. Пакеты и обновления публикуются отдельно: https://github.com/silentvpn3/silentvpn3.github.io/releases/tag/v1.0.171. Метадата OTA — `keenetic.arches` в https://silentvpn3.github.io/releases.json; пакеты OpenWrt для Keenetic не подходят.
 
 ## Архитектуры
 
-Универсальный `dist/silent-vpn-keenetic-1.0.169.tar.gz` содержит aarch64, ARMv7, ARMv5, MIPS little endian, MIPS big endian, x86_64 и i386. Есть меньшие отдельные архивы для каждого CPU. MIPS выбирается по ELF byte order `/bin/sh`, не только по `uname`; ARMv6 использует совместимый ARMv5 вариант. Статические бинарники: CGO отключён, musl/glibc не нужны.
+Универсальный `dist/silent-vpn-keenetic-1.0.171.tar.gz` содержит aarch64, ARMv7, ARMv5, MIPS little endian, MIPS big endian, x86_64 и i386. Есть меньшие отдельные архивы для каждого CPU. MIPS выбирается по ELF byte order `/bin/sh`, не только по `uname`; ARMv6 использует совместимый ARMv5 вариант. Статические бинарники: CGO отключён, musl/glibc не нужны.
 
 ## Требования
 
@@ -27,8 +27,8 @@
 mkdir -p /opt/share/silent-keenetic-install
 cd /opt/share/silent-keenetic-install
 # Скопируйте архив в эту папку перед распаковкой.
-tar -xzf silent-vpn-keenetic-1.0.169.tar.gz
-cd silent-vpn-keenetic-1.0.169
+tar -xzf silent-vpn-keenetic-1.0.171.tar.gz
+cd silent-vpn-keenetic-1.0.171
 sh install.sh
 ```
 
@@ -63,7 +63,7 @@ OTA читает только `keenetic.arches.<CPU>` из `https://silentvpn3.g
 
 Скачивание и потоковые проверки SHA256, CPU/ELF, ARCH/VERSION/PACKAGE.json, состава/размеров/безопасности архива выполняются при работающем VPN. Только после проверки останавливается собственный сервис, повторно проверяется свободная RAM, выполняются распаковка/временный rollback/установка. Конфигурация, аккаунт, пароль панели и намерение автоподключения сохраняются. Payload и rollback удаляются до старта сервиса, включая сценарии ошибки; неудачная установка восстанавливает предыдущие runtime файлы. Не используется экспериментальный fallback backup на flash, откатанный сегодня в OpenWrt. При недостатке памяти обновление отказывается от установки и запускает прежний клиент.
 
-Сейчас новые архивы и `dist/release-entry.json` подготовлены локально; Keenetic не опубликован в Release/Pages и не добавлен в серверную админку. Поэтому публичное предложение обновления ещё отсутствует. Для первой установки и обновления старого порта без OTA используйте ручной архив. Унифицированную инструкцию и первоначальную установку Entware добавим отдельным шагом позже.
+Архивы публикуются в GitHub Releases и семи слотах Keenetic серверной админки. OTA сначала проверяет сервер через туннель/резервные API, затем публичный Pages releases.json. Для первой установки и обновления старого порта без OTA используйте ручной архив. Общая команда на лендинге определяет OpenWrt или Keenetic; на Keenetic она запускается из заранее настроенного Entware. Первоначальная установка Entware остаётся отдельной подготовкой роутера.
 
 ## Что проверить на реальном Keenetic
 

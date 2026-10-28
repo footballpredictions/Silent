@@ -24,6 +24,9 @@
 
 html, body {
   height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
   background: var(--sv-bg);
   color: var(--sv-fg);
   font-family: var(--sv-font);
@@ -68,9 +71,14 @@ body.has-chrome { --sv-chrome: 36px; }
 
 .app {
   height: calc(100% - var(--sv-chrome));
+  height: calc(100dvh - var(--sv-chrome));
+  max-height: calc(100dvh - var(--sv-chrome));
+  min-height: 0;
   background: var(--sv-bg);
   color: var(--sv-fg);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .boot {
@@ -315,7 +323,11 @@ body.has-chrome { --sv-chrome: 36px; }
 .shell {
   display: grid;
   grid-template-columns: 1fr;
+  flex: 1 1 auto;
   height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 .shell.menu-open { grid-template-columns: var(--sv-side) 1fr; }
 .menu-scrim { display: none; }
@@ -325,11 +337,14 @@ body.has-chrome { --sv-chrome: 36px; }
   display: none;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--sv-bg);
+  overflow: hidden;
 }
 .side.open { display: flex; }
 
 .side-head {
+  flex: 0 0 auto;
   padding: 16px 48px 16px 16px;
   position: relative;
   border-bottom: 1px solid var(--sv-border);
@@ -350,7 +365,17 @@ body.has-chrome { --sv-chrome: 36px; }
   margin-top: 2px;
 }
 
-.nav { flex: 1; overflow: auto; padding: 8px; }
+.nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 8px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+}
 
 .nav-item {
   width: 100%;
@@ -375,7 +400,9 @@ body.has-chrome { --sv-chrome: 36px; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   height: 100%;
+  overflow: hidden;
   position: relative;
 }
 
@@ -778,9 +805,15 @@ body.has-chrome { --sv-chrome: 36px; }
 .update-progress { margin: 10px 0 0; font-size: 12px; line-height: 1.4; }
 
 .page {
-  flex: 1;
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   padding: 28px 36px 40px;
+  padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
 }
 
 .page-inner { max-width: 520px; }
@@ -806,17 +839,24 @@ body.has-chrome { --sv-chrome: 36px; }
 .session {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 10px 0;
   border-bottom: 1px solid var(--sv-border);
 }
-
-.session-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.session-act { flex-shrink: 0; border: 0; border-radius: 8px; background: transparent; color: var(--sv-hint); font: inherit; font-size: 12px; padding: 8px; }
+.session-body { flex: 1; min-width: 0; }
+.session-act {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sv-hint);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+}
 .session-act:hover { background: var(--sv-surface); color: var(--sv-fg); }
-.session-act:focus-visible { outline: 2px solid var(--sv-link); outline-offset: 2px; }
-.session-act:disabled { opacity: .5; cursor: wait; }
-@media (max-width: 480px) { .session { flex-wrap: wrap; } .session-body { min-width: 60%; } }
 
 .dot { width: 10px; height: 10px; border-radius: 50%; background: #d1d5db; flex-shrink: 0; }
 .dot.on { background: var(--sv-green); }
@@ -849,11 +889,36 @@ body.has-chrome { --sv-chrome: 36px; }
   .side { display: none; }
   .side.open {
     display: flex;
+    flex-direction: column;
     position: absolute;
-    inset: 44px auto 0 0;
+    top: 44px;
+    left: 0;
+    bottom: 0;
     width: var(--sv-side);
+    max-width: min(var(--sv-side), 100vw);
     z-index: 20;
-    height: calc(100% - 44px);
+    height: auto;
+    max-height: calc(100% - 44px);
+    max-height: calc(100dvh - 44px - var(--sv-chrome));
+    min-height: 0;
+    overflow: hidden;
     box-shadow: 8px 0 24px rgba(0, 0, 0, 0.08);
   }
+  .side.open .nav {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
+  .page {
+    padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (max-height: 500px) {
+  .page {
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  .topbar { height: 40px; }
 }

@@ -20,7 +20,7 @@ case "${1:-start}" in
         ( trap '' HUP; exec /bin/sh "$ROOT/guard.sh" ) </dev/null >/dev/null 2>&1 &
         echo $! > "$PID"
         i=0
-        while [ ! -s "$READY" ] && [ "$i" -lt 6 ]; do sleep 1; i=$((i+1)); done
+        while [ ! -s "$READY" ] && [ "$i" -lt 22 ]; do sleep 1; i=$((i+1)); done
         if ! running || [ ! -s "$READY" ]; then
             "$0" stop
             echo 'Агент не запустился (проверьте LAN/порт/конфигурацию)'
@@ -31,7 +31,7 @@ case "${1:-start}" in
         if running; then
             kill "$(cat "$PID")"
             i=0
-            while running && [ "$i" -lt 25 ]; do sleep 1; i=$((i+1)); done
+            while running && [ "$i" -lt 40 ]; do sleep 1; i=$((i+1)); done
             running && { echo 'Агент ещё завершает очистку; повторите stop'; exit 1; }
         fi
         # Explicit local cleanup even after crash, without killing unrelated processes.

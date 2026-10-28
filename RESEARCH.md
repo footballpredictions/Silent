@@ -1,5 +1,7 @@
 # Исследование порта Silent VPN для Keenetic
 
+Дополнение 2026-10-28: общий адрес панели реализован штатными [ip host](https://storage.googleapis.com/docs.help.keenetic.com/cli/4.3/en/cli_manual_kn-3610.pdf) (§3.51) и HTTP proxy domain static / upstream / preserve-host / x-real-ip / security-level private (§3.58). Эти команды описаны производителем; proxy private и x-real-ip доступны с 3.05, preserve-origin — с 4.02. Настраивается только именованный proxy silent-vpn-panel и собственная DNS-запись, с marker ownership и очисткой; глобальные HTTP security-level/port, WAN и чужие proxy не меняются. Публикация сборки не означает аппаратной проверки NDM. На старом NDM переписанный Origin принимается только при доверенном локальном proxy и Sec-Fetch-Site=same-origin.
+
 Дата: 2026-10-10. Источники прочитаны; роутеры и серверы не изменялись. Результат сборки не означает подтверждённую работу на конкретной модели.
 
 ## Запрошенная тема 4PDA

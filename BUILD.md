@@ -1,3 +1,7 @@
+# Единый вход и панель Keenetic / OpenWrt — 2026-10-28
+
+Основной адрес — http://LAN-IP.silent.vpn на обеих платформах. Keenetic использует собственный private NDM HTTP proxy и DNS-host с учётом владельца ресурсов, rollback и cleanup, без изменения штатного HTTP-порта или настроек WAN. Account UI работает без дополнительного Basic login; прежний IP:8787 защищённый вход сохранён. Host/X-Real-IP/Origin/Sec-Fetch-Site проверяются; локальный DNS имени сохраняется и при активном VPN. Панельные файлы сверены с OpenWrt; пакетный формат не изменён, старый OTA scanPackage остаётся совместим. Новая серия тестов проверяет реальный HTTP reverse proxy, NDM lifecycle/idempotence/collision/rollback и DNS. Аппаратная приёмка NDM на настоящем Keenetic по-прежнему необходима.
+
 # Повторная проверка Keenetic 1.0.171 — 2026-10-28
 
 Сверка с OpenWrt8e37bb3: перенесены актуальные UI/login/session/About/mobile scrolling исправления. Панельный logout сохраняет работающий VPN, повторный вход возможен при активном туннеле. Общий установщик определяет Keenetic и выбирает один из7CPU. В админке — отдельные слоты Keenetic, целостность комплекта/version/build_id/ELF, публикация с сохранением других платформ. Итоговые размеры/SHA и build_id — dist/manifest.json. Реальные испытания на Keenetic ещё не проводились; Linux/NDM/FastNAT/PPE/скорость остаются аппаратной приёмкой.

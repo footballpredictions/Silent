@@ -49,6 +49,7 @@ type Agent struct {
 	servers           []*dnsServer
 	run               func(context.Context, string, ...string) error
 	restoreSets       func(context.Context, string) error
+	ndmCommand        func(context.Context, string) ([]byte, error)
 }
 
 func (a *Agent) persist() error {
@@ -63,12 +64,12 @@ func (a *Agent) isConnected() bool { a.mu.RLock(); defer a.mu.RUnlock(); return 
 func (a *Agent) lanURL() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return fmt.Sprintf("http://%s:%d", a.cfg.LANIP, a.cfg.Port)
+	return panelURL(a.cfg)
 }
 func (a *Agent) status() any {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return map[string]any{"version": version, "platform": "keenetic", "arch": packageArch, "build_id": packageBuildID, "device_id": a.cfg.DeviceID, "lan_ip": a.cfg.LANIP, "lan_url": fmt.Sprintf("http://%s:%d", a.cfg.LANIP, a.cfg.Port), "router_name": "Keenetic " + a.model, "connected": a.connected, "session": a.cfg.Token != "", "cloak": true, "ru_direct": a.cfg.Direct, "dns_preset": a.cfg.DNSPreset, "dns_custom": a.cfg.DNSCustom, "email": a.cfg.Email}
+	return map[string]any{"version": version, "platform": "keenetic", "arch": packageArch, "build_id": packageBuildID, "device_id": a.cfg.DeviceID, "lan_ip": a.cfg.LANIP, "lan_url": panelURL(a.cfg), "router_name": "Keenetic " + a.model, "connected": a.connected, "session": a.cfg.Token != "", "cloak": true, "ru_direct": a.cfg.Direct, "dns_preset": a.cfg.DNSPreset, "dns_custom": a.cfg.DNSCustom, "email": a.cfg.Email}
 }
 func reply(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -88,24 +89,19 @@ func (a *Agent) handler() http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		// Bind + subnet + Host checks also prevent DNS rebinding to the LAN admin.
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		remote, _, _ := net.SplitHostPort(r.RemoteAddr)
-		_, subnet, _ := net.ParseCIDR(cfg.LANPrefix)
-		if host != cfg.LANIP || !subnet.Contains(net.ParseIP(remote)) {
+		proxied, allowed := panelRequest(cfg, r)
+		if !allowed {
 			http.Error(w, "LAN only", 403)
 			return
 		}
 		user, pass, ok := r.BasicAuth()
-		if !ok || user != "admin" || subtle.ConstantTimeCompare([]byte(pass), []byte(cfg.AdminPassword)) != 1 {
+		if !proxied && (!ok || user != "admin" || subtle.ConstantTimeCompare([]byte(pass), []byte(cfg.AdminPassword)) != 1) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Silent Keenetic", charset="UTF-8"`)
 			http.Error(w, "Нужен пароль локальной панели", 401)
 			return
 		}
 		if r.Method != "GET" && r.Method != "HEAD" {
-			if origin := r.Header.Get("Origin"); origin != "" && origin != a.lanURL() {
+			if !panelOrigin(cfg, r, proxied) {
 				http.Error(w, "Invalid origin", 403)
 				return
 			}
@@ -380,7 +376,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Printf("Панель: http://%s:%d\nЛогин: admin\nПароль: %s\n", c.LANIP, c.Port, c.AdminPassword)
+		fmt.Printf("Панель: %s\nВойдите в аккаунт Silent VPN, как на OpenWrt.\nРезервный вход: %s\nЛогин резервного входа: admin\nПароль резервного входа: %s\n", panelURL(c), legacyPanelURL(c), c.AdminPassword)
 		return
 	}
 	c, err := loadConfig(*path)
@@ -399,7 +395,9 @@ func main() {
 		defer unlock()
 	}
 	if *cleanup {
-		if err = a.network(context.Background(), "down"); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err = errors.Join(a.network(cleanupCtx, "down"), a.cleanupPanel(cleanupCtx)); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -418,7 +416,17 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Println("Prerequisites OK")
+		ndmCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		data, ndmErr := a.ndm(ndmCtx, "show running-config")
+		cancel()
+		if ndmErr == nil {
+			_, _, ndmErr = inspectPanel(data, c)
+		}
+		if ndmErr != nil {
+			fmt.Fprintln(os.Stderr, "Для панели нужен доступный ndmc и HTTP-порт Keenetic 80")
+			os.Exit(1)
+		}
+		fmt.Printf("Prerequisites OK\nПанель: %s\n", panelURL(c))
 		return
 	}
 	if err = a.network(context.Background(), "check"); err != nil {
@@ -438,9 +446,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	panelCtx, panelCancel := context.WithTimeout(ctx, 20*time.Second)
+	err = a.ensurePanel(panelCtx)
+	panelCancel()
+	if err != nil {
+		listener.Close()
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	readyFile := filepath.Join(filepath.Dir(a.path), "web.ready")
 	if err = os.WriteFile(readyFile, []byte(fmt.Sprint(os.Getpid())), 0600); err != nil {
 		listener.Close()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = a.cleanupPanel(cleanupCtx)
+		cancel()
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -463,6 +482,11 @@ func main() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdown)
+		panelCleanup, panelCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := a.cleanupPanel(panelCleanup); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		panelCancel()
 	}()
 	go a.watch(ctx)
 	if c.Reconnect && c.Token != "" {

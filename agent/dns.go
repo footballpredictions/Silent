@@ -34,6 +34,19 @@ func (a *Agent) answerDNS(w dns.ResponseWriter, q *dns.Msg) {
 		_ = w.WriteMsg(r)
 		return
 	}
+	a.mu.RLock()
+	lan := a.cfg.LANIP
+	localPanel := panelHost(a.cfg)
+	a.mu.RUnlock()
+	if strings.EqualFold(strings.TrimSuffix(q.Question[0].Name, "."), localPanel) {
+		r := new(dns.Msg)
+		r.SetReply(q)
+		if q.Question[0].Qclass == dns.ClassINET && q.Question[0].Qtype == dns.TypeA {
+			r.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: q.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP(lan).To4()}}
+		}
+		_ = w.WriteMsg(r)
+		return
+	}
 	// IPv6 is blocked for VPN LAN forwarding too. No AAAA leaks around IPv4 WG.
 	if q.Question[0].Qtype == dns.TypeAAAA {
 		r := new(dns.Msg)

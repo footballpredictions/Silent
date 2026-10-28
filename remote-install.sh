@@ -2,6 +2,16 @@
 # One-shot OpenWrt install: check CPU, deps, panel, wdtt, then wipe /tmp copies.
 set -e
 
+# Keep the published one-command entry point shared by both router platforms.
+if [ -d /opt/etc/ndm ] && [ -x /opt/bin/opkg ]; then
+	SVK_HELPER=$(mktemp /tmp/svk-bootstrap.XXXXXX) || exit 1
+	trap 'rm -f "$SVK_HELPER"' EXIT
+	trap 'exit 1' HUP INT TERM
+	wget -O "$SVK_HELPER" https://silentvpn3.github.io/keenetic-install.sh || exit 1
+	sh "$SVK_HELPER"
+	exit $?
+fi
+
 PKG="${SILENT_OPENWRT_PKG:-}"
 RELEASES="${SILENT_OPENWRT_RELEASES:-https://silentvpn3.github.io/releases.json}"
 

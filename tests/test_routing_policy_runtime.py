@@ -304,5 +304,86 @@ done
         self.assertEqual(lines, ['valid'])
 
 
+@unittest.skipUnless(runtime.SHELL, 'POSIX shell required')
+class AdditivePolicyRuntimeTests(unittest.TestCase):
+    run_shell = runtime.RouterRuntimeTests.run_shell
+
+    def refresh(self, preserve):
+        return self.run_shell(r'''
+sed 's|/etc/init.d/dnsmasq restart|test_dns_restart|g' "$SV_LIB/ru-direct.sh" > "$SV_RUN/refresh-fixture.sh"
+. "$SV_RUN/refresh-fixture.sh"
+cat > "$SV_LIB/routing-policy.sh" <<'EOF'
+sv_policy_remember_applied() { :; }
+sv_policy_preserves_applied() { return ''' + ('0' if preserve else '1') + r'''; }
+sv_policy_use_cache() { :; }
+EOF
+sv_ru_enabled() { return 0; }
+sv_ru_lock() { return 0; }
+sv_ru_unlock() { :; }
+sv_ru_ensure_nft() { :; }
+sv_ru_write_dns() { :; }
+sv_ru_seed_vpn_ips() { :; }
+sv_ru_maintain() { :; }
+test_dns_restart() { echo dns-restarted; }
+jsonfilter() { echo new-revision; }
+nft() { echo "$*"; }
+echo old-revision > "$SV_RUN/policy.applied"
+date +%s > "$SV_RUN/policy.fetched"
+echo cached-client-ip > "$SV_RUN/sv_ru.ips"
+sv_ru_refresh
+if [ -s "$SV_RUN/sv_ru.ips" ]; then echo cached-route-retained; else echo cached-route-deleted; fi
+''', library='ru-direct.sh')
+
+    def test_new_direct_rule_does_not_flush_existing_cached_client_routes(self):
+        lines = self.refresh(True)
+        self.assertIn('cached-route-retained', lines)
+        self.assertFalse(any('flush set' in line for line in lines), lines)
+
+    def test_restrictive_rule_change_still_invalidates_owned_sets(self):
+        lines = self.refresh(False)
+        self.assertIn('cached-route-deleted', lines)
+        self.assertIn('flush set inet fw4 sv_ru', lines)
+        self.assertIn('flush set inet fw4 sv_ru_vpn', lines)
+
+    def test_applied_snapshot_tracks_only_the_generation_that_was_applied(self):
+        lines = self.run_shell(r'''
+jsonfilter() { sed -n 's/.*"revision":"\([^"]*\)".*/\1/p' "$2"; }
+echo old > "$SV_RUN/policy.applied"
+echo '{"revision":"new"}' > "$SV_VAR/routing-policy.json"
+sv_policy_remember_applied || exit 1
+test ! -f "$SV_RUN/policy.applied.json" || exit 2
+echo '{"revision":"old"}' > "$SV_VAR/routing-policy.json"
+sv_policy_remember_applied || exit 3
+cat "$SV_RUN/policy.applied.json"
+echo '{"revision":"new"}' > "$SV_VAR/routing-policy.json"
+sv_policy_remember_applied || exit 4
+cat "$SV_RUN/policy.applied.json"
+echo new > "$SV_RUN/policy.applied"
+sv_policy_remember_applied || exit 5
+cat "$SV_RUN/policy.applied.json"
+''', library='routing-policy.sh')
+        self.assertEqual(lines,['{"revision":"old"}','{"revision":"old"}','{"revision":"new"}'])
+
+    def test_stale_applied_snapshot_never_authorizes_preservation(self):
+        lines = self.run_shell(r'''
+jsonfilter() { sed -n 's/.*"revision":"\([^"]*\)".*/\1/p' "$2"; }
+printf '#!/bin/sh\necho invoked > "$SV_RUN/comparator-called"\nexit 0\n' > "$SV_LIB/silent-dns"
+chmod +x "$SV_LIB/silent-dns"
+export SV_RUN
+echo current > "$SV_RUN/policy.applied"
+echo '{"revision":"older"}' > "$SV_RUN/policy.applied.json"
+echo '{"revision":"next"}' > "$SV_VAR/routing-policy.json"
+if sv_policy_preserves_applied next; then exit 1; fi
+test ! -e "$SV_RUN/comparator-called" || exit 2
+echo '{"revision":"current"}' > "$SV_RUN/policy.applied.json"
+if sv_policy_preserves_applied different-generation; then exit 3; fi
+test ! -e "$SV_RUN/comparator-called" || exit 4
+sv_policy_preserves_applied next || exit 5
+test -e "$SV_RUN/comparator-called" || exit 6
+echo safe
+''', library='routing-policy.sh')
+        self.assertEqual(lines,['safe'])
+
+
 if __name__ == '__main__':
     unittest.main()

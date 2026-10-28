@@ -294,7 +294,7 @@ sv_ru_apply_inner() {
 		uci -q delete dhcp.silent_ru_vpn || true
 		uci commit dhcp
 		sv_ru_clear_policy
-		rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips" "$SV_RUN/policy.applied"
+		rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips" "$SV_RUN/policy.applied" "$SV_RUN/policy.applied.json"
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 		sv_log "ru-direct off"
 		return 0
@@ -318,6 +318,7 @@ sv_ru_apply_inner() {
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
 	if [ -s "$SV_VAR/routing-policy.json" ]; then
 		jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' > "$SV_RUN/policy.applied"
+		sv_policy_remember_applied >/dev/null 2>&1 || true
 	fi
 	sv_log "ru-direct on table=$SV_RU_TABLE mark=$SV_RU_MARK"
 }
@@ -332,9 +333,11 @@ sv_ru_apply() {
 }
 
 sv_ru_refresh() {
-	local now last revision applied
+	local now last revision applied preserve=0
 	sv_ru_enabled || return 0
 	. "$SV_LIB/routing-policy.sh"
+	# Capture the active generation before a validated fetch replaces the cache.
+	sv_policy_remember_applied >/dev/null 2>&1 || true
 	now="$(date +%s)"
 	last="$(cat "$SV_RUN/policy.fetched" 2>/dev/null)"
 	case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -349,14 +352,18 @@ sv_ru_refresh() {
 	revision="$(jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' 2>/dev/null)"
 	applied="$(cat "$SV_RUN/policy.applied" 2>/dev/null)"
 	if [ -n "$revision" ] && [ "$revision" != "$applied" ]; then
+		sv_policy_preserves_applied "$revision" && preserve=1
 		# Rebuild only when admin changed the list. No periodic DNS/service restart.
 		if sv_ru_ensure_nft && sv_ru_write_dns; then
-			nft flush set inet fw4 sv_ru 2>/dev/null || true
-			nft flush set inet fw4 sv_ru_vpn 2>/dev/null || true
-			rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips"
+			if [ "$preserve" != 1 ]; then
+				nft flush set inet fw4 sv_ru 2>/dev/null || true
+				nft flush set inet fw4 sv_ru_vpn 2>/dev/null || true
+				rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips"
+			fi
 			sv_ru_seed_vpn_ips
 			if /etc/init.d/dnsmasq restart >/dev/null 2>&1; then
 				echo "$revision" > "$SV_RUN/policy.applied"
+				sv_policy_remember_applied >/dev/null 2>&1 || true
 			fi
 		fi
 	fi

@@ -50,6 +50,37 @@ sv_policy_validate() {
 	return 1
 }
 
+sv_policy_remember_applied() {
+	local applied snapshot revision
+	applied="$(cat "$SV_RUN/policy.applied" 2>/dev/null)"
+	[ -n "$applied" ] && [ -s "$SV_VAR/routing-policy.json" ] || return 0
+	if [ -s "$SV_RUN/policy.applied.json" ] &&
+	   [ "$(jsonfilter -i "$SV_RUN/policy.applied.json" -e '@.revision' 2>/dev/null)" = "$applied" ]; then return 0; fi
+	snapshot="$(mktemp "$SV_RUN/policy-applied.XXXXXX")" || return 1
+	if ! cp "$SV_VAR/routing-policy.json" "$snapshot"; then rm -f "$snapshot"; return 1; fi
+	revision="$(jsonfilter -i "$snapshot" -e '@.revision' 2>/dev/null)"
+	# A concurrent fetch must not label a newer policy as already applied.
+	if [ "$revision" != "$applied" ] || [ "$(cat "$SV_RUN/policy.applied" 2>/dev/null)" != "$applied" ]; then
+		rm -f "$snapshot"
+		return 0
+	fi
+	mv "$snapshot" "$SV_RUN/policy.applied.json"
+}
+
+sv_policy_preserves_applied() {
+	local applied
+	[ -s "$SV_RUN/policy.applied.json" ] && [ -x "$SV_LIB/silent-dns" ] || return 1
+	applied="$(cat "$SV_RUN/policy.applied" 2>/dev/null)"
+	[ -n "$applied" ] &&
+		[ "$(jsonfilter -i "$SV_RUN/policy.applied.json" -e '@.revision' 2>/dev/null)" = "$applied" ] || return 1
+	[ -z "${1:-}" ] || [ "$(jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' 2>/dev/null)" = "$1" ] || return 1
+	# The common Go parser checks suffix/exact coverage and forced-VPN priority.
+	# Missing/older helpers fail closed to the existing invalidation behavior.
+	GOMEMLIMIT=8MiB GOGC=50 "$SV_LIB/silent-dns" -policy "$SV_VAR/routing-policy.json" \
+		-preserves-policy "$SV_RUN/policy.applied.json" >/dev/null 2>&1 || return 1
+	[ -z "${1:-}" ] || [ "$(jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' 2>/dev/null)" = "$1" ]
+}
+
 sv_policy_fetch() {
 	local base tmp saved query queries
 	sv_mkdir

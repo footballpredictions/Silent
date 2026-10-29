@@ -196,6 +196,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function VerdictCard({ verdict }: { verdict: Verdict }) {
+  const servicePortOnly = verdict.kind === 'port_block' && verdict.channel === 'agent_tcp'
   const [open, setOpen] = useState(verdict.severity === 'critical' || verdict.severity === 'error')
   return (
     <div className="bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2.5">
@@ -221,8 +222,8 @@ function VerdictCard({ verdict }: { verdict: Verdict }) {
             )}
             <span className="text-[#888]">оценка доказательств {verdict.confidence.toFixed(2)}</span>
           </div>
-          <p className="text-sm text-[#eee] mt-1">{verdict.title}</p>
-          <p className="text-xs text-[#999] mt-0.5">{verdict.summary}</p>
+          <p className="text-sm text-[#eee] mt-1">{servicePortOnly ? 'Недоступность служебного порта' : verdict.title}</p>
+          <p className="text-xs text-[#999] mt-0.5">{servicePortOnly ? 'Внешние проверяющие ноды не подключились к служебному API. Причина таймаутов не установлена.' : verdict.summary}</p>
         </div>
       </button>
 
@@ -431,7 +432,7 @@ function TargetRow({ target }: { target: Target }) {
                       </span>
                     ) : target.ai_exit && ch === 'agent_tcp' ? (
                       <span className="text-[#888]" title="Порт закрыт фаерволом: снаружи отвечает только Улей">
-                        закрыт Улью
+                        только для Улья
                       </span>
                     ) : (
                       <span className="text-[#444]">нет проб</span>
@@ -550,9 +551,12 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
     if (data.settings) setSettings(data.settings)
   }
 
-  const status = report?.status || 'unknown'
-  const meta = STATUS_META[status] || STATUS_META.unknown
   const problems = (report?.verdicts || []).filter(v => v.kind !== 'ok')
+  const servicePortOnly = problems.length > 0 && problems.every(v => v.kind === 'port_block' && v.channel === 'agent_tcp')
+  const status = servicePortOnly ? 'degraded' : report?.status || 'unknown'
+  const meta = servicePortOnly
+    ? { ...STATUS_META.degraded, label: 'Ограничен доступ к служебному API' }
+    : STATUS_META[status] || STATUS_META.unknown
   const ruNodes = report?.vantage?.ru_nodes || []
 
   return (
@@ -651,7 +655,7 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
       {report ? (
         <>
           <div className="mt-3 bg-[#0d0d0d] border border-[#242424] rounded-lg px-3 py-2.5">
-            <p className="text-sm text-[#ddd]">{report.summary}</p>
+            <p className="text-sm text-[#ddd]">{servicePortOnly ? 'Есть таймауты служебного API из проверяющих сетей. Доступность VPN-транспорта оценивается отдельно.' : report.summary}</p>
             <p className="text-[11px] text-[#888] mt-1">
               {new Date(report.ts).toLocaleString('ru-RU')} · проверка {report.duration_sec} с ·
               российские ноды: {ruNodes.length > 0 ? ruNodes.join(', ') : 'нет'} ·

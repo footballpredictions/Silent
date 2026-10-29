@@ -61,6 +61,8 @@ async def publish_config_for_user(db: AsyncSession, user: User) -> bool:
         "wdtt_password": config.wdtt_password,
         "vk_hashes": config.vk_hashes,
         "stream_count": config.stream_count,
+        "selected_server": config.selected_server,
+        "wg_mtu": config.wg_mtu,
     }
     message = encrypt_config_payload(user.vk_user_id, payload)
     primary_hash = config.vk_hashes[0] if config.vk_hashes else ""

@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import io
+import hashlib
+import json
 import argparse
 import os
 import subprocess
@@ -18,6 +20,7 @@ from _deploy_common import BACKEND_ROOT, CONTAINER, REMOTE, connect, run
 from fix_tunnel_dnat import FIX_SH
 
 PREFLIGHT_TESTS = (
+    "scripts/test_node_profiles_unit.py",
     "scripts/test_routing_policy_unit.py",
     "scripts/test_nginx_http_api_unit.py",
     "scripts/test_cell_http_guard_unit.py",
@@ -48,6 +51,79 @@ def _preflight() -> None:
             raise SystemExit(f"preflight failed: {rel} — deploy aborted")
 
 SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache"}
+
+# Tested fixes must not remain only in the local checkout while a partial
+# deployment restarts a different production baseline.
+CRITICAL_PYTHON = (
+    'app/main.py', 'app/api/admin.py', 'app/api/hive.py',
+    'app/services/hive_service.py', 'app/services/hive_slots.py',
+    'app/services/wg_peer_gc.py', 'app/services/session_presence.py',
+    'app/services/availability_store.py', 'app/services/vpn_service.py',
+    'app/services/vpn_kick.py', 'app/services/vpn_deny_net.py',
+    'app/services/hive_profiles.py', 'app/services/node_profile_runtime.py',
+    'ai/availability_agent.py', 'ai/availability_classifier.py',
+    'ai/availability_model.py', 'ai/availability_probes.py',
+)
+
+
+def _source_hash(data: bytes) -> str:
+    return hashlib.sha256(data.replace(b'\r\n', b'\n').rstrip(b'\n') + b'\n').hexdigest()
+
+
+def _expected_source_hashes(*, pending_paths=(), verify_paths=()) -> dict[str, str]:
+    return {rel: _source_hash((BACKEND_ROOT / rel).read_bytes())
+            for rel in sorted(set(CRITICAL_PYTHON) | set(verify_paths))
+            if rel not in set(pending_paths)}
+
+
+def _remote_release_snapshot(client, paths: list[str]) -> dict:
+    # Read inside the actual API container, not merely the host checkout.
+    source = "import hashlib,json,pathlib,sys; print(json.dumps({p: hashlib.sha256(pathlib.Path(sys.argv[1],p).read_bytes().replace(b'\\r\\n',b'\\n').rstrip(b'\\n')+b'\\n').hexdigest() if pathlib.Path(sys.argv[1],p).is_file() else None for p in " + repr(paths) + "}))"
+    program = f'''import json,subprocess
+def run(*args): return subprocess.run(args,capture_output=True,text=True,check=True,timeout=20).stdout
+mounts=json.loads(run('docker','inspect',{CONTAINER!r},'--format','{{{{json .Mounts}}}}'))
+apis=run('docker','ps','--filter','label=com.docker.compose.project=backend','--filter','label=com.docker.compose.service=api','--format','{{{{.Names}}}}').splitlines()
+running=run('docker','inspect',{CONTAINER!r},'--format','{{{{.State.Running}}}}').strip()=='true'
+# A stopped API must remain repairable. The verified bind-mount source is the
+# same authority; no fallback to source baked into an old image is allowed.
+hashes=json.loads(run('docker','exec',{CONTAINER!r},'python','-c',{source!r},'/app') if running else run('python3','-c',{source!r},{REMOTE!r}))
+print(json.dumps(dict(mounts=mounts,apis=apis,hashes=hashes,container_running=running)))
+'''
+    _, stdout, _ = client.exec_command('python3 -c ' + shlex.quote(program), timeout=30)
+    raw = stdout.read().decode('utf-8')
+    if stdout.channel.recv_exit_status():
+        raise SystemExit('Cannot verify the running API source; deployment aborted before publication')
+    return json.loads(raw)
+
+
+def _verify_deploy_sources(client, *, pending_paths=(), verify_paths=()) -> dict:
+    expected = _expected_source_hashes(pending_paths=pending_paths, verify_paths=verify_paths)
+    snapshot = _remote_release_snapshot(client, list(expected))
+    expected_apis = [CONTAINER] if snapshot.get('container_running', True) else []
+    if snapshot['apis'] != expected_apis:
+        raise SystemExit('Expected exactly one canonical API container; deployment aborted')
+    mounts = {m['Destination']: m for m in snapshot['mounts']}
+    for sub in ('app', 'ai'):
+        mount = mounts.get('/app/' + sub, {})
+        if mount.get('Source') != REMOTE + '/' + sub or mount.get('RW') is not False:
+            raise SystemExit('Unexpected API code mount: ' + sub + '; deployment aborted')
+    drift = [p for p, sha in expected.items() if snapshot['hashes'].get(p) != sha]
+    if drift:
+        raise SystemExit('Production source differs from tested local code: ' + ', '.join(drift)
+                         + '. Include reviewed files explicitly; no files were changed by this check.')
+    print(f'PASS running API source: {len(expected)} files, canonical container and read-only mounts')
+    return {'verified_at': time.time(), 'container': CONTAINER, 'source_hashes': expected}
+
+
+def _record_deploy_manifest(client, manifest: dict) -> None:
+    # Kept outside public static/update trees. No credentials or source bodies.
+    target = REMOTE + '/.deploy-manifest.json'
+    temporary = target + '.tmp'
+    with client.open_sftp() as sftp:
+        with sftp.file(temporary, 'wb') as out:
+            out.write(json.dumps(manifest, indent=2).encode('utf-8'))
+        sftp.chmod(temporary, 0o600)
+        sftp.posix_rename(temporary, target)
 
 
 def _upload_py_tree(sftp, client, sub: str) -> int:
@@ -122,6 +198,7 @@ def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None, c
     _preflight()
     client = connect()
     try:
+        _verify_deploy_sources(client, pending_paths=paths)
         with client.open_sftp() as sftp:
             stamp = str(time.time_ns())
             for rel in paths:
@@ -152,6 +229,7 @@ def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None, c
                 sftp.put(str(BACKEND_ROOT / 'docker/nginx.conf'), remote)
                 print('selected nginx config')
         _restart_and_verify(client, expected_admin_index=admin_ui / 'index.html' if admin_ui else None)
+        _record_deploy_manifest(client, _verify_deploy_sources(client, verify_paths=paths))
     finally:
         client.close()
 
@@ -172,9 +250,11 @@ def main() -> None:
             raise SystemExit("Сначала: cd admin-ui && npm run build")
         client = connect()
         try:
+            _verify_deploy_sources(client)
             with client.open_sftp() as sftp:
                 _upload_admin_ui(sftp, client, dist)
             _verify_admin_ui(client, dist / 'index.html')
+            _record_deploy_manifest(client, _verify_deploy_sources(client))
         finally:
             client.close()
         print("Done: admin UI only, services unchanged")
@@ -193,6 +273,7 @@ def main() -> None:
     _preflight()
 
     client = connect()
+    _verify_deploy_sources(client, pending_paths=CRITICAL_PYTHON)
     sftp = client.open_sftp()
 
     _upload_py_tree(sftp, client, "app")
@@ -232,6 +313,8 @@ def main() -> None:
 
     sftp.close()
     _restart_and_verify(client, expected_admin_index=dist / 'index.html')
+    _record_deploy_manifest(client, _verify_deploy_sources(client))
+    client.close()
 
 
 def _verify_admin_ui(client, expected_index: Path | None = None) -> None:

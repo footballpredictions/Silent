@@ -19,6 +19,7 @@ from app.schemas.hive import (
     HiveCellCreateAgent,
     HiveCellUpdate,
     HiveCellSshRepair,
+    HiveProfilesUpdate,
 )
 from app.services import hive_service
 from app.services import hive_provision_service
@@ -36,9 +37,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/hive", tags=["admin-hive"])
 
 _FORCE_DELETE_STATUSES = frozenset({"provisioning", "error", "pending", "offline"})
-
-# Тумблер «Профиль для ИИ»: одна фоновая настройка на соту.
-_ai_profile_jobs: set[uuid.UUID] = set()
 
 
 async def _next_cell_name(db: AsyncSession) -> str:
@@ -139,78 +137,6 @@ async def _provision_cell_background(
         logger.warning("Hive: сота подключена, пробы будут в следующем цикле: %s", e)
 
 
-async def _ai_profile_background(cell_id: uuid.UUID, *, enable: bool) -> None:
-    """Фон: hygiene+dns при включении профиля для ИИ, rollback при снятии. wdtt не трогаем."""
-    from app.services import ai_exit_node
-    from app.services.threat_filter_settings import is_threat_filter_enabled
-
-    try:
-        async with AsyncSessionLocal() as db:
-            cell = await hive_service.get_cell_by_id(db, cell_id)
-            if not cell or cell.is_queen:
-                return
-            pwd = hive_service.resolve_ssh_password(cell)
-            if not pwd:
-                cell.last_error = "Профиль для ИИ: нет SSH-пароля — переподключите соту"
-                cell.updated_at = datetime.utcnow()
-                await db.commit()
-                return
-            host = (cell.public_ip or "").strip()
-            name = cell.name
-            queen = (
-                await db.execute(select(HiveCell).where(HiveCell.is_queen == True))  # noqa: E712
-            ).scalars().first()
-            queen_ip = (queen.public_ip or settings.VPN_SERVER_IP or "").strip() if queen else (
-                settings.VPN_SERVER_IP or ""
-            ).strip()
-            threat = await is_threat_filter_enabled(db)
-            cell.last_error = (
-                "Профиль для ИИ: настройка на соте…" if enable else "Профиль для ИИ: откат на соте…"
-            )
-            cell.updated_at = datetime.utcnow()
-            await db.commit()
-
-        if not host or not queen_ip:
-            raise RuntimeError("нет IP соты или Улья")
-
-        if enable:
-            await asyncio.to_thread(
-                ai_exit_node.apply_ai_profile,
-                host,
-                pwd,
-                queen_ip=queen_ip,
-                threat_filter_enabled=threat,
-            )
-        else:
-            await asyncio.to_thread(ai_exit_node.remove_ai_profile, host, pwd)
-
-        async with AsyncSessionLocal() as db:
-            cell = await hive_service.get_cell_by_id(db, cell_id)
-            if not cell:
-                return
-            cell.last_error = None
-            cell.updated_at = datetime.utcnow()
-            await db.commit()
-            logger.info("Hive: профиль для ИИ %s на %s (%s)", "вкл" if enable else "выкл", name, host)
-    except Exception as e:  # noqa: BLE001
-        async with AsyncSessionLocal() as db:
-            cell = await hive_service.get_cell_by_id(db, cell_id)
-            if cell:
-                cell.last_error = f"Профиль для ИИ: {e}"[:500]
-                cell.updated_at = datetime.utcnow()
-                await db.commit()
-                push_incident(
-                    source="hive.ai_profile",
-                    severity="error",
-                    cell_name=cell.name,
-                    cell_ip=cell.public_ip,
-                    message=f"AI profile {'on' if enable else 'off'} failed: {e}",
-                )
-        logger.exception("Hive AI profile failed for %s enable=%s: %s", cell_id, enable, e)
-    finally:
-        _ai_profile_jobs.discard(cell_id)
-
-
 @router.get("/cells")
 async def list_hive_cells(
     _: bool = Depends(get_admin_credentials),
@@ -219,7 +145,10 @@ async def list_hive_cells(
         await hive_service.ensure_queen_cell(db)
         await _sweep_stale_provisioning(db)
         await db.commit()
-    return await hive_service.list_cells_with_stats_pooled()
+    from app.services.hive_profiles import attach_profiles
+    cells = await hive_service.list_cells_with_stats_pooled()
+    async with AsyncSessionLocal() as db:
+        return await attach_profiles(db, cells)
 
 
 @router.post("/cells/auto")
@@ -436,6 +365,22 @@ async def egress_check_cell(
         raise HTTPException(status_code=502, detail=f"cell-agent недоступен: {e}") from e
 
 
+@router.patch("/cells/{cell_id}/profiles")
+async def update_profiles(
+    cell_id: uuid.UUID,
+    req: HiveProfilesUpdate,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.hive_profiles import request_change
+    cell = await hive_service.get_cell_by_id(db, cell_id)
+    if not cell:
+        raise HTTPException(404, "Сервер не найден")
+    profile = await request_change(db, cell, ai=req.ai, gaming=req.gaming,
+                                   expected_revision=req.expected_revision)
+    return {"profiles": profile, "message": "Настройка профилей запущена"}
+
+
 @router.patch("/cells/{cell_id}")
 async def update_cell(
     cell_id: uuid.UUID,
@@ -446,6 +391,15 @@ async def update_cell(
     cell = await hive_service.get_cell_by_id(db, cell_id)
     if not cell:
         raise HTTPException(status_code=404, detail="Сота не найдена")
+    if req.ai_exit is not None:
+        if any(value is not None for name, value in req.model_dump().items() if name != 'ai_exit'):
+            raise HTTPException(400, 'Меняйте профили отдельным запросом')
+        from app.services.hive_profiles import request_change
+        profile = await request_change(db, cell, ai=req.ai_exit, gaming=None, expected_revision=None)
+        return {"profiles": profile, "message": "Настройка профилей запущена"}
+    from app.services.hive_profiles import get_profile
+    if (await get_profile(db, cell))['state'] == 'running':
+        raise HTTPException(409, 'Дождитесь завершения настройки профилей сервера')
     if cell.is_queen and req.status == "offline":
         raise HTTPException(status_code=400, detail="Соту-Улей нельзя отключить")
     if req.name is not None:
@@ -460,27 +414,6 @@ async def update_cell(
         cell.accepts_wdtt = bool(req.accepts_wdtt)
     if req.admin_only is not None and not cell.is_queen:
         cell.admin_only = bool(req.admin_only)
-    ai_toggle: bool | None = None
-    if req.ai_exit is not None and not cell.is_queen:
-        want = bool(req.ai_exit)
-        if want != bool(cell.ai_exit):
-            if cell_id in _ai_profile_jobs:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Профиль для ИИ уже настраивается на этой соте — подождите",
-                )
-            if cell.status not in ("active", "draining"):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Профиль для ИИ можно менять только у активной соты",
-                )
-            if not hive_service.resolve_ssh_password(cell):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Нужен сохранённый SSH-пароль — переподключите соту через автоподключение",
-                )
-            ai_toggle = want
-        cell.ai_exit = want
     if req.wg_public_key is not None and not cell.is_queen:
         cell.wg_public_key = req.wg_public_key.strip()
     if req.public_ip is not None and not cell.is_queen:
@@ -490,16 +423,9 @@ async def update_cell(
     cell.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(cell)
-    if ai_toggle is not None:
-        _ai_profile_jobs.add(cell_id)
-        asyncio.create_task(_ai_profile_background(cell_id, enable=ai_toggle))
     online = await hive_service.count_online_on_cell(db, cell.id)
     assigned = await hive_service.count_assigned_on_cell(db, cell.id)
     resp = hive_service.cell_to_response(cell, online_count=online, assigned_devices=assigned)
-    if ai_toggle is True:
-        resp["message"] = "Профиль для ИИ включается на соте (гигиена + DNS, 1–2 мин)"
-    elif ai_toggle is False:
-        resp["message"] = "Профиль для ИИ снимается на соте (откат, 1–2 мин)"
     return resp
 
 
@@ -515,6 +441,10 @@ async def delete_cell(
         raise HTTPException(status_code=404, detail="Сота не найдена")
     if cell.is_queen:
         raise HTTPException(status_code=400, detail="Соту-Улей нельзя удалить")
+
+    from app.services.hive_profiles import get_profile
+    if (await get_profile(db, cell))["state"] == "running":
+        raise HTTPException(409, "Дождитесь завершения настройки профилей сервера")
 
     skip_checks = force or cell.status in _FORCE_DELETE_STATUSES
     if not skip_checks:

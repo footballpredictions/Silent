@@ -38,6 +38,16 @@ interface HiveCell {
   accepts_wdtt?: boolean
   admin_only?: boolean
   ai_exit?: boolean
+  profiles?: {
+    ai: boolean
+    gaming: boolean
+    wg_mtu: number
+    revision: number
+    state: 'ready' | 'running' | 'error'
+    requested?: { ai: boolean; gaming: boolean }
+    error?: string | null
+    rolled_back?: boolean
+  }
   manual_slot?: string | null
   manual_slot_title?: string | null
   last_error: string | null
@@ -374,6 +384,7 @@ export default function HivePage({ token }: { token: string }) {
     const provisioning = cells.some(
       c =>
         c.status === 'provisioning' ||
+        c.profiles?.state === 'running' ||
         (c.last_error || '').startsWith('Профиль для ИИ: настройка') ||
         (c.last_error || '').startsWith('Профиль для ИИ: откат'),
     )
@@ -437,39 +448,31 @@ export default function HivePage({ token }: { token: string }) {
     await updateCell(id, { admin_only: adminOnly })
   }
 
-  const setAiExit = async (id: string, aiExit: boolean) => {
-    const cell = cells.find(c => c.id === id)
-    if (!cell) return
-    if (!cell.has_ssh_password) {
-      setError('Нужен сохранённый SSH — переподключите соту через автоподключение')
-      return
-    }
-    const ok = aiExit
-      ? confirm(
-          `Включить «Профиль для ИИ» на «${cell.name}»?\n\n` +
-            'На соте сами поставятся гигиена (9100 только Улью) и свой DNS. ' +
-            'WARP/прокси не включаем. Займёт 1–2 минуты, VPN не рестартуем.',
-        )
-      : confirm(
-          `Снять «Профиль для ИИ» с «${cell.name}»?\n\n` +
-            'Откатим DNS/прокси и снова откроем 9100 наружу (как у обычной соты). 1–2 минуты.',
-        )
-    if (!ok) return
-    setBusy(id)
+  const setProfile = async (cell: HiveCell, profile: 'ai' | 'gaming', enabled: boolean) => {
+    if (!cell.profiles || cell.profiles.state === 'running') return
+    const label = profile === 'ai' ? 'профиль для ИИ' : 'игровой профиль'
+    const details = profile === 'ai'
+      ? 'Новые подключения получат DNS профиля. Ваш собственный DNS и фильтр угроз сохраняют приоритет.'
+      : 'Новый MTU получат клиенты с поддержкой серверных профилей при следующем подключении. Текущие VPN-сессии продолжат работу.'
+    if (!confirm(`${enabled ? 'Включить' : 'Снять'} ${label} на «${cell.name}»?\n\n${details}`)) return
+    setBusy(cell.id)
     setError(null)
+    setSuccess(null)
     try {
-      const res = await fetch(`/api/admin/hive/cells/${id}`, {
-        method: 'PATCH',
-        headers,
-        body: JSON.stringify({ ai_exit: aiExit }),
+      const res = await fetch(`/api/admin/hive/cells/${cell.id}/profiles`, {
+        method: 'PATCH', headers,
+        body: JSON.stringify({ [profile]: enabled, expected_revision: cell.profiles.revision }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         setError(fmtDetail(data.detail) || `HTTP ${res.status}`)
+        await load(true)
         return
       }
-      if (data.message) setSuccess(data.message)
+      setSuccess(data.message || 'Настройка профилей запущена')
       await load()
+    } catch {
+      setError('Не удалось получить результат. Обновите страницу, чтобы проверить состояние профилей.')
     } finally {
       setBusy(null)
     }
@@ -621,7 +624,8 @@ export default function HivePage({ token }: { token: string }) {
                   <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs">
                     <span className={cell.status === 'active' ? 'text-emerald-400' : cell.status === 'error' || cell.status === 'offline' ? 'text-red-400' : 'text-amber-300'}>{statusLabel[cell.status] || cell.status}</span>
                     {cell.admin_only && <span className="text-violet-300">Только админ</span>}
-                    {cell.ai_exit && <span className="text-sky-300">Профиль для ИИ</span>}
+                    {(cell.profiles?.ai ?? cell.ai_exit) && <span className="text-sky-300">Для ИИ</span>}
+                    {cell.profiles?.gaming && <span className="text-emerald-300">Игровой</span>}
                   </div>
                   <p className="text-xs text-[#888] font-mono mt-2 break-all">{cell.public_ip}:{cell.wdtt_port}</p>
                 </div>
@@ -631,10 +635,28 @@ export default function HivePage({ token }: { token: string }) {
                 </div>
               </div>
               <CellLoadGrid cell={cell} cpuThreshold={summary?.cpu_threshold ?? 80} memThreshold={summary?.mem_threshold ?? 85} bwThreshold={summary?.bandwidth_threshold ?? 90} />
+              <div className="flex flex-wrap items-center gap-2 mt-4">
+                <button type="button" aria-pressed={cell.profiles?.ai ?? !!cell.ai_exit}
+                  disabled={busy === cell.id || cell.profiles?.state === 'running' || !cell.profiles || !['active', 'draining'].includes(cell.status) || (!cell.is_queen && !cell.has_ssh_password)}
+                  onClick={() => setProfile(cell, 'ai', !(cell.profiles?.ai ?? cell.ai_exit))}
+                  className={`${actionClass} ${(cell.profiles?.ai ?? cell.ai_exit) ? 'text-sky-300 border-sky-800' : 'text-[#ccc]'}`}>
+                  {(cell.profiles?.ai ?? cell.ai_exit) ? 'Снять профиль для ИИ' : 'Профиль для ИИ'}
+                </button>
+                <button type="button" aria-pressed={!!cell.profiles?.gaming}
+                  disabled={busy === cell.id || cell.profiles?.state === 'running' || !cell.profiles || !['active', 'draining'].includes(cell.status) || (!cell.is_queen && !cell.has_ssh_password)}
+                  onClick={() => setProfile(cell, 'gaming', !cell.profiles?.gaming)}
+                  className={`${actionClass} ${cell.profiles?.gaming ? 'text-emerald-300 border-emerald-800' : 'text-[#ccc]'}`}>
+                  {cell.profiles?.gaming ? 'Снять игровой профиль' : 'Игровой профиль'}
+                </button>
+                {cell.profiles && <span className="text-xs text-[#aaa]">MTU профиля {cell.profiles.wg_mtu}</span>}
+              </div>
+              {cell.profiles?.state === 'running' && <p role="status" className="text-sm text-sky-300 mt-3 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin shrink-0" />Настройка профилей…</p>}
+              {cell.profiles?.state === 'error' && <p role="alert" className="text-sm text-red-300 mt-3">{cell.profiles.rolled_back ? 'Профиль не переключён. ' : 'Применение не подтверждено. '}{cell.profiles.error || 'Не удалось применить профиль. Повторите попытку.'}</p>}
+              {!cell.is_queen && !cell.has_ssh_password && <p className="text-xs text-amber-300 mt-2">Для настройки профилей сохраните SSH-пароль через автоподключение.</p>}
               {cell.last_error && <p className={`text-xs mt-3 whitespace-pre-wrap break-words ${cell.last_error.startsWith('Профиль для ИИ:') ? 'text-sky-300' : 'text-red-400'}`}>{cell.last_error}</p>}
 
               <details className="mt-4 border-t border-[#222] pt-3">
-                <summary className="text-xs text-[#aaa] cursor-pointer hover:text-white py-1">{cell.is_queen ? 'Характеристики' : 'Настройки и характеристики'}</summary>
+                <summary className="text-xs text-[#aaa] cursor-pointer hover:text-white py-1">Настройки и характеристики</summary>
                 <div className="mt-3 space-y-3">
                   <CellHardwareLine cell={cell} />
                   <p className="text-xs text-[#888]">Назначено устройств: {cell.assigned_devices}{cell.capacity?.mode ? ` · лимит: ${capModeLabel[cell.capacity.mode] || cell.capacity.mode}` : ''}</p>
@@ -642,14 +664,12 @@ export default function HivePage({ token }: { token: string }) {
                   {typeof cell.load?.wg_peers_total === 'number' && <p className="text-xs text-[#888]">WG: {cell.load.wg_peers_total} ключей · {cell.load.wg_peers_live_3m ?? 0} онлайн · {cell.load.wg_peers_never_hs ?? 0} без подключения{typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}{(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · очищено ${cell.load.wg_gc_last_removed}` : ''}</p>}
                   {!cell.is_queen && (
                     <>
-                      {!cell.has_ssh_password && <p className="text-xs text-amber-300">SSH пароль не сохранён. Для профиля ИИ переподключите соту.</p>}
                       <div className="flex flex-wrap gap-2">
-                        {cell.status === 'active' && <button type="button" disabled={busy === cell.id} onClick={() => setStatus(cell.id, 'draining')} title="Текущие подключения продолжат работать" className={`${actionClass} text-orange-300`}>Не принимать новых</button>}
-                        {cell.status === 'draining' && <button type="button" disabled={busy === cell.id} onClick={() => setStatus(cell.id, 'active')} className={`${actionClass} text-emerald-400`}>Вернуть в работу</button>}
+                        {cell.status === 'active' && <button type="button" disabled={busy === cell.id || cell.profiles?.state === 'running'} onClick={() => setStatus(cell.id, 'draining')} title="Текущие подключения продолжат работать" className={`${actionClass} text-orange-300`}>Не принимать новых</button>}
+                        {cell.status === 'draining' && <button type="button" disabled={busy === cell.id || cell.profiles?.state === 'running'} onClick={() => setStatus(cell.id, 'active')} className={`${actionClass} text-emerald-400`}>Вернуть в работу</button>}
                         <button type="button" disabled={busy === cell.id} onClick={() => setAdminOnly(cell.id, !cell.admin_only)} className={`${actionClass} text-[#ccc]`}>{cell.admin_only ? 'Открыть всем' : 'Только админ'}</button>
-                        <button type="button" disabled={busy === cell.id || (cell.status !== 'active' && cell.status !== 'draining')} onClick={() => setAiExit(cell.id, !cell.ai_exit)} className={`${actionClass} text-[#ccc]`}>{cell.ai_exit ? 'Снять профиль для ИИ' : 'Профиль для ИИ'}</button>
                         <button type="button" disabled={egressBusy === cell.id || cell.status !== 'active'} onClick={() => checkEgress(cell)} className={`${actionClass} text-[#ccc] flex items-center gap-1.5`}>{egressBusy === cell.id && <Loader2 className="w-3 h-3 animate-spin" />} Проверить IP</button>
-                        <button type="button" disabled={busy === cell.id} onClick={() => removeCell(cell)} className={`${actionClass} text-red-400 flex items-center gap-1.5`}><Trash2 className="w-3 h-3" />{cell.status === 'provisioning' ? 'Отменить настройку' : 'Удалить соту'}</button>
+                        <button type="button" disabled={busy === cell.id || cell.profiles?.state === 'running'} onClick={() => removeCell(cell)} className={`${actionClass} text-red-400 flex items-center gap-1.5`}><Trash2 className="w-3 h-3" />{cell.status === 'provisioning' ? 'Отменить настройку' : 'Удалить соту'}</button>
                       </div>
                     </>
                   )}

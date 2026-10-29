@@ -524,6 +524,7 @@ async def lifespan(app: FastAPI):
         from app.services.hive_rebalance_loop import hive_rebalance_loop
         from app.services.hive_cell_maintenance_loop import hive_cell_maintenance_loop
         from app.services.proxy_health_loop import proxy_health_loop
+        from app.services.hive_profiles import recovery_loop as node_profile_recovery_loop
 
         agent_specs: list = [
             ("vk_tunnel_monitor", vk_tunnel_monitor_loop),
@@ -532,6 +533,7 @@ async def lifespan(app: FastAPI):
             ("hive_rebalance", hive_rebalance_loop),
             ("hive_cell_maintenance", hive_cell_maintenance_loop),
             ("proxy_health", proxy_health_loop),
+            ("node_profile_recovery", node_profile_recovery_loop),
         ]
         # Диагностический агент подключаем отдельно: его импорт не должен лишать
         # прод остальных агентов (VK, балансировка, обслуживание сот).

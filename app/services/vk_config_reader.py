@@ -78,6 +78,8 @@ async def fetch_config_from_vk_messages(vk_user_id: int) -> VpnConfigResponse | 
             wdtt_password=best_payload["wdtt_password"],
             vk_hashes=best_payload["vk_hashes"],
             stream_count=int(best_payload.get("stream_count", 3)),
+            selected_server=best_payload.get("selected_server", "queen"),
+            wg_mtu=best_payload.get("wg_mtu"),
         )
     except (KeyError, ValueError, TypeError) as e:
         logger.warning("Invalid VK config payload for vk_user_id=%s: %s", vk_user_id, e)

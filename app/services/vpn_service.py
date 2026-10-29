@@ -826,12 +826,19 @@ async def _build_vpn_config(
     server_port = cell.wdtt_port or settings.VPN_SERVER_PORT
 
     from app.services.threat_filter_settings import resolve_wg_dns
+    from app.services.hive_profiles import get_profile
+
+    profile = await get_profile(db, cell)
+    dns = await resolve_wg_dns(db)
+    # The global threat filter and explicit client DNS overrides take priority.
+    if profile['ai'] and dns == '77.88.8.8,77.88.8.1':
+        dns = '1.1.1.1,1.0.0.1'
 
     return VpnConfigResponse(
         device_id=str(device.id),
         wg_private_key=priv_key,
         wg_address=device.wg_address or "10.66.66.2/32",
-        wg_dns=await resolve_wg_dns(db),
+        wg_dns=dns,
         server_ip=server_ip,
         server_port=server_port,
         server_public_key=server_pub_key,
@@ -839,6 +846,7 @@ async def _build_vpn_config(
         vk_hashes=hashes,
         stream_count=9,
         selected_server=selected_server,
+        wg_mtu=1200 if is_bootstrap else profile['wg_mtu'],
     )
 
 
@@ -886,10 +894,19 @@ async def list_manual_vpn_servers(
     from app.services.hive_slots import cell_visible_to_client
 
     entries = await hive_service.manual_server_entries(db)
+    from app.services.hive_profiles import get_profile
+    from app.services.hive_slots import slot_title
     out: list[dict] = []
     for key, title, cell in entries:
         if not cell_visible_to_client(cell, is_admin=include_admin_only, app_version=app_version):
             continue
+        profile = await get_profile(db, cell)
+        labels = []
+        if profile['ai']:
+            labels.append('для ИИ')
+        if profile['gaming']:
+            labels.append('игровой')
+        title = slot_title(key) + (' · ' + ' · '.join(labels) if labels else '')
         online = await hive_service.count_online_on_cell(db, cell.id)
         if cell.is_queen:
             api_base = (settings.FRONTEND_URL or "").strip().rstrip("/")

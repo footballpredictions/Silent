@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class HiveCellCreateManual(BaseModel):
@@ -58,6 +58,18 @@ class HiveCellUpdate(BaseModel):
     wg_public_key: Optional[str] = Field(default=None, min_length=40, max_length=512)
     public_ip: Optional[str] = Field(default=None, min_length=3, max_length=255)
     link_capacity_mbps: Optional[float] = Field(default=None, ge=0, le=100000)
+
+
+class HiveProfilesUpdate(BaseModel):
+    ai: Optional[bool] = None
+    gaming: Optional[bool] = None
+    expected_revision: Optional[int] = Field(default=None, ge=0)
+
+    @model_validator(mode='after')
+    def require_profile(self):
+        if self.ai is None and self.gaming is None:
+            raise ValueError('Укажите профиль ИИ или игровой профиль')
+        return self
 
 
 class HiveAvailabilitySettings(BaseModel):

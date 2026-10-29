@@ -1,5 +1,5 @@
 import uuid
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
@@ -75,6 +75,7 @@ class VpnConfigResponse(BaseModel):
     vk_hashes: list[str]
     stream_count: int = 9  # libclient -n (workers), not hash count; bootstrap default 9
     selected_server: str = "queen"
+    wg_mtu: Optional[int] = Field(default=None, ge=1200, le=1420)
     client_sync: Optional[ClientSyncBundle] = None
 
     model_config = {"from_attributes": True}

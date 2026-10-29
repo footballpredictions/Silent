@@ -1,5 +1,9 @@
 # TASKS — Silent VPN
 
+- [x] 2026-10-29: по команде «деплой пуш» актуальная админка перепубликована canonical без restart API/VPN, source17/static443+2083/health5PASS; исходники main/android/pc/ios/keenetic/openwrt запушены и remote HEAD подтверждены. Коммиты и границы с чужим WIP записаны в Memory Bank; клиентские бинарные релизы не публиковались.
+- [x] 2026-10-29: дашборд/старые контейнеры проверены: 8 live cycles fast/light/full online совпадают143–145, один API/17critical source/4agent versions актуальны. Таймауты служебного9100Соты2 подтверждены2RU/DEok, причина неизвестна; scoped UI-индикатор опубликован без restart, VPN alarms сохранены. Canonical deploy guard17/mounts/container/pre-post manifest+8testsPASS блокирует реальный drift, игнорирует CRLF/пустую конечную строку, позволяет recovery stoppedAPI. Исходники опубликованы main fb7f54b.
+- [x] 2026-10-29: серверные профили ИИ/игровой всех узлов, включая Улей, опубликованы; rollback/concurrency/compatibility+live5nodes проверки PASS; Сота2 game actualMTU1420, wdtt PID/NRestarts неизменны. Клиентские исходники/локальные сборки готовы; исходники шести веток опубликованы, клиентские бинарные релизы не выпускались.
+
 Формат: `[ ]` — не выполнено, `[x]` — выполнено.  
 Agent приступает к **первой невыполненной** задаче.  
 Статус сверен с коммитами `origin/main`, `origin/pc`, `origin/android` (2026-06-20).

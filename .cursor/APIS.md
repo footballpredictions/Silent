@@ -1,5 +1,37 @@
 # APIS — Silent VPN
 
+## Профили всех узлов / контроль деплоя (2026-10-29)
+
+По команде «деплой пуш» исходники опубликованы в main/android/pc/ios/keenetic/openwrt.
+Админка повторно опубликована canonical без restart API/VPN; source17 и все5
+health200 подтверждены. Клиентские бинарные релизы отдельно не выпускались.
+
+Добавлен admin-auth `PATCH /api/admin/hive/cells/{uuid}/profiles`: опциональные
+`ai`, `gaming` (хотя бы одно) и `expected_revision>=0`. Ответ содержит
+`profiles` с последними подтверждёнными флагами, revision, state ready/running/error,
+requested во время операции, error и wg_mtu. 409 при параллельной операции
+или устаревшей revision. `GET /api/admin/hive/cells` включает profiles каждого
+узла, в том числе Улья. Изменение старого `ai_exit` в admin PATCH делегирует
+новой операции; legacy HiveCell.ai_exit как security/routing роль не меняется.
+
+VpnConfigResponse дополнен опциональным `wg_mtu` (1200..1420), включая сохранение
+в offline VK-конфиге. Старые клиенты игнорируют поле; новые клиенты принимают
+рекомендацию с проверкой диапазона, Mac сохраняет1280, роутеры normal1280/game1420.
+DNS/клиентский MTU меняются при следующем подключении, активные сессии не рвутся.
+Threat filter/custom DNS имеют приоритет над DNS ИИ-профиля.
+
+Source/runtime/user-data детали: backend/NODE_PROFILES.md. Публикация Python9+UI
+выполнена, затем только UI уточнения availability без restart API/VPN. Внешние
+TCP9100 таймауты двух RU проверочных нод Соты2 сохраняются при DE/local success;
+это не доказательство блокировки VPN/причины РКН. Данные report не подменялись,
+UI отдельно подписывает недоступность служебного API.
+
+Canonical deploy_stable проверяет source17, единственный API и ro bind mounts
+до/после публикации; unselected drift блокируется до изменений, selected
+проверяются после. CRLF/конечные пустые строки нормализуются. Manifest хоста
+`/opt/silent-vpn/backend/.deploy-manifest.json` (0600, не публичный). Остановленный
+API остаётся ремонтопригоден через проверку того же bind source.
+
 Все endpoint'ы, внешние сервисы и переменные окружения проекта.
 **Секреты не хранятся в этом файле** — только имена переменных и расположение.
 

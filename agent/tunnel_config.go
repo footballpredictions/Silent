@@ -20,6 +20,17 @@ type wgConfig struct {
 	MTU               int
 }
 
+func profileMTU(recommended, fallback int) int {
+	if recommended >= 1200 && recommended <= 1420 {
+		// Routers retain their proven baseline; game profiles may raise it.
+		if recommended < 1280 {
+			return 1280
+		}
+		return recommended
+	}
+	return fallback
+}
+
 func parseWG(text string) (wgConfig, error) {
 	c := wgConfig{MTU: 1280}
 	peer := false

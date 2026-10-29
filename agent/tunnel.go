@@ -102,6 +102,7 @@ func (a *Agent) connect(parent context.Context) (err error) {
 		ID       string   `json:"device_id"`
 		Streams  int      `json:"stream_count"`
 		DNS      string   `json:"wg_dns"`
+		MTU      int      `json:"wg_mtu"`
 	}
 	if err = json.Unmarshal(raw, &cfg); err != nil {
 		return err
@@ -149,6 +150,7 @@ func (a *Agent) connect(parent context.Context) (err error) {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+	wc.MTU = profileMTU(cfg.MTU, wc.MTU)
 	native, err := tun.CreateTUN(iface, wc.MTU)
 	if err != nil {
 		return fmt.Errorf("TUN: %w", err)

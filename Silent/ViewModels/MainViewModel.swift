@@ -224,7 +224,7 @@ final class MainViewModel: ObservableObject {
             publicKey: cfg.server_public_key,
             address: cfg.wg_address,
             dns: dns,
-            mtu: ServerCatalog.mtu(slot: selectedServer, ip: cfg.server_ip),
+            mtu: ServerCatalog.mtu(slot: selectedServer, ip: cfg.server_ip, recommended: cfg.wg_mtu),
             excludeCIDRs: siteRules,
             sitesWhitelist: sitesWhitelist,
             russian: RussianServices.policy(enabled: russianDirect)

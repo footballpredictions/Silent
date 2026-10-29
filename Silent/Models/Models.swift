@@ -67,6 +67,7 @@ struct VpnConfig: Decodable {
     let wdtt_password: String
     let vk_hashes: [String]
     let stream_count: Int
+    let wg_mtu: Int?
 }
 
 struct ShopPlan: Decodable, Identifiable {
@@ -327,7 +328,8 @@ enum ServerCatalog {
         }
     }
 
-    static func mtu(slot: String, ip: String) -> Int {
+    static func mtu(slot: String, ip: String, recommended: Int? = nil) -> Int {
+        if let mtu = recommended, (1200...1420).contains(mtu) { return mtu }
         if slot == "server3" || ip == "78.17.74.27" { return 1420 }
         return 1200
     }

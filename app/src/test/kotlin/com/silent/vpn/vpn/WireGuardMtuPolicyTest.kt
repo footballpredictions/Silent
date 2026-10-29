@@ -20,6 +20,15 @@ class WireGuardMtuPolicyTest {
     )
 
     @Test
+    fun server_profile_overrides_legacy_slot_and_rejects_invalid_values() {
+        assertEquals(1420, WireGuardConfigBuilder.mtuForConfig(cfg("server1", "89.125.188.100").copy(wg_mtu = 1420)))
+        assertEquals(1200, WireGuardConfigBuilder.mtuForConfig(cfg("server3", "78.17.74.27").copy(wg_mtu = 1200)))
+        assertEquals(1200, WireGuardConfigBuilder.mtuForConfig(cfg("server1", "89.125.188.100").copy(wg_mtu = 9000)))
+        assertEquals(1420, WireGuardConfigBuilder.profileMtuFromApiConfig("[Interface]\nMTU = 1420\n"))
+        assertEquals(null, WireGuardConfigBuilder.profileMtuFromApiConfig("MTU = 9000\n"))
+    }
+
+    @Test
     fun server3_gets_game_mtu() {
         assertEquals(1420, WireGuardConfigBuilder.mtuForConfig(cfg("server3", "78.17.74.27")))
         assertEquals(1420, WireGuardConfigBuilder.mtuForConfig(cfg(null, "78.17.74.27")))

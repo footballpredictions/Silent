@@ -180,6 +180,7 @@ data class VpnConfig(
     val vk_hashes: List<String>,
     val stream_count: Int,
     val selected_server: String? = null,
+    val wg_mtu: Int? = null,
     val client_sync: ClientSyncBundle? = null,
 )
 

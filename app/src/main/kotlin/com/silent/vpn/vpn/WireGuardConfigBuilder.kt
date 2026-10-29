@@ -23,6 +23,7 @@ object WireGuardConfigBuilder {
     }
 
     fun mtuForConfig(cfg: VpnConfig): Int {
+        cfg.wg_mtu?.takeIf { it in MTU_DEFAULT..MTU_GAME }?.let { return it }
         val slot = cfg.selected_server?.trim()?.lowercase().orEmpty()
         val ip = cfg.server_ip.trim()
         return mtuForSlotAndIp(slot, ip)
@@ -35,6 +36,11 @@ object WireGuardConfigBuilder {
         if (SilentRepository.BAKED_SERVER_IPS[slot] == GAME_SERVER_IP) return MTU_GAME
         return MTU_DEFAULT
     }
+
+    /** Only read MTU from the locally generated API configuration, never GETCONF. */
+    fun profileMtuFromApiConfig(config: String?): Int? =
+        Regex("""(?m)^\s*MTU\s*=\s*(\d+)\s*$""").find(config.orEmpty())
+            ?.groupValues?.getOrNull(1)?.toIntOrNull()?.takeIf { it in MTU_DEFAULT..MTU_GAME }
 
     /** Preferred slot из prefs — источник истины при apply (GETCONF часто шлёт MTU 1280). */
     fun mtuForPreferredSlot(context: android.content.Context): Int {

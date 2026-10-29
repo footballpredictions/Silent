@@ -472,7 +472,9 @@ object WdttTunnelManager {
                         liveGetconfApplied.value = false
                     }
 
-                    wgHelper = WireGuardHelper(appContext)
+                    wgHelper = WireGuardHelper(appContext).also {
+                        it.profileMtu = WireGuardConfigBuilder.profileMtuFromApiConfig(params.apiWgConfig)
+                    }
 
                     val workers = if (params.isBootstrap) {
                         params.workers.coerceIn(HashChannelHelper.WORKERS_PER_GROUP, 9)

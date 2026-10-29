@@ -62,6 +62,8 @@ import java.io.ByteArrayInputStream
 
 class WireGuardHelper(context: Context) {
 
+    var profileMtu: Int? = null
+
     private val appContext = context.applicationContext
 
     private val backend = (appContext as SilentApp).getBackend(context)
@@ -267,7 +269,7 @@ class WireGuardHelper(context: Context) {
 
             val semanticKey =
                 wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}" +
-                    "|routes=$excludeRouteKey|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}|ru=$ruDirect:${russian.getString("revision")}"
+                    "|routes=$excludeRouteKey|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}|ru=$ruDirect:${russian.getString("revision")}|mtu=$profileMtu"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -285,15 +287,16 @@ class WireGuardHelper(context: Context) {
                 .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
 
             // Bootstrap идёт через отдельную соту и не наследует игровой MTU main-слота.
-            // Main: Сервер 3 → 1420, остальные → 1200; bootstrap → 1200.
+            // Main uses API profile metadata; old API retains slot defaults.
             val mtu = if (isBootstrap) WireGuardConfigBuilder.MTU_DEFAULT
-                else WireGuardConfigBuilder.mtuForPreferredSlot(appContext)
+                else profileMtu?.takeIf { it in WireGuardConfigBuilder.MTU_DEFAULT..WireGuardConfigBuilder.MTU_GAME }
+                    ?: WireGuardConfigBuilder.mtuForPreferredSlot(appContext)
             ifaceBuilder.parseMtu(mtu.toString())
             DebugLog.i(
                 TAG,
                 if (isBootstrap) "MTU=$mtu (bootstrap)"
-                else if (mtu >= WireGuardConfigBuilder.MTU_GAME) "MTU=$mtu (Сервер 3 / Steam SDR)"
-                else "MTU=$mtu (slot default; ignore conf/GETCONF)",
+                else if (mtu >= WireGuardConfigBuilder.MTU_GAME) "MTU=$mtu (игровой профиль)"
+                else "MTU=$mtu (профиль сервера; legacy fallback)",
             )
 
             ifaceBuilder.parsePrivateKey(parsed.`interface`.keyPair.privateKey.toBase64())

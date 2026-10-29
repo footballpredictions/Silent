@@ -30,6 +30,7 @@ KIND_ACTIVE_PROBING = "active_probing_risk"
 KIND_ROUTE_LOSS = "route_loss"
 KIND_NO_VANTAGE = "no_vantage"
 KIND_UNKNOWN = "unknown"
+KIND_PROBE_UNCONFIRMED = "probe_unconfirmed"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,18 @@ class BlockMethod:
 
 
 _METHODS: tuple[BlockMethod, ...] = (
+    BlockMethod(
+        kind=KIND_PROBE_UNCONFIRMED,
+        title="Внешняя проверка не подтверждена",
+        severity="info",
+        how_it_works=(
+            "Недоступность служебного порта с отдельных точек не доказывает сбой VPN. "
+            "Для вывода о блокировке нужны пробы клиентского канала и достаточный охват."
+        ),
+        signals=("Ошибки служебной пробы или недостаточно независимых результатов.",),
+        fixes=("Повторить измерение с других точек и проверить подключение клиента из той же сети.",),
+        commands=(),
+    ),
     BlockMethod(
         kind=KIND_OK,
         title="Сервер доступен",

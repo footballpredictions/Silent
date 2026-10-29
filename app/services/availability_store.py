@@ -64,7 +64,7 @@ _SELECT_LATEST = text(
     "ORDER BY ts DESC, id DESC LIMIT 1"
 )
 _SELECT_HISTORY = text(
-    "SELECT ts, status, summary FROM availability_reports ORDER BY ts DESC, id DESC LIMIT :limit"
+    "SELECT ts, status, summary, report_json FROM availability_reports ORDER BY ts DESC, id DESC LIMIT :limit"
 )
 _PRUNE_REPORTS = text(
     "DELETE FROM availability_reports WHERE id NOT IN "
@@ -288,9 +288,9 @@ async def load_latest_report() -> dict[str, Any] | None:
         data.setdefault("ts", str(row.get("ts")))
         data.setdefault("status", row.get("status"))
         data.setdefault("summary", row.get("summary"))
-        from ai.availability_model import scrub_probe_noise_from_report
+        from ai.availability_report import reclassify_report
 
-        return scrub_probe_noise_from_report(data)
+        return reclassify_report(data)
     return None
 
 
@@ -302,14 +302,25 @@ async def load_history(limit: int = 30) -> list[dict[str, Any]]:
     except Exception as e:
         logger.warning("availability: история не прочитана: %s", e)
         return []
-    return [
-        {
+    from ai.availability_report import reclassify_report
+
+    items = []
+    for row in rows:
+        item = {
             "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else str(row["ts"]),
             "status": row["status"],
             "summary": row["summary"],
         }
-        for row in rows
-    ]
+        try:
+            data = json.loads(row.get("report_json") or "{}")
+        except (TypeError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            updated = reclassify_report(data)
+            item["status"] = updated.get("status") or item["status"]
+            item["summary"] = updated.get("summary") or item["summary"]
+        items.append(item)
+    return items
 
 
 def event_timestamp(now: datetime, age_sec: int | None) -> datetime | None:

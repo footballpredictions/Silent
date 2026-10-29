@@ -1,5 +1,18 @@
 # APIS — Silent VPN
 
+## Точность availability (2026-10-29)
+
+GET `/api/admin/hive/availability` и `/availability/history` пересчитывают выводы
+по архивным измерениям текущим классификатором без изменения timestamps и БД.
+Ответ отчёта дополнен optional `classification_version: 2`; `agent_port` теперь
+сохраняется в target. `settings.last_status` GET соответствует интерпретации report.
+Служебный `agent_tcp` при отсутствии локального отказа: `probe_unconfirmed/info`,
+не блокировка VPN и не incident. Локальный отказ службы сохраняет `service_down`.
+Нужны минимум2 разных node IDs для пер-канального вывода; pending/probe_error
+не отказы. Внешний HTTPS TCP timeout без установленной причины —
+`https_degraded/warning`, без смены IP/портов. SNI/UDP/DNS/RST/client diagnoses
+сохранены. Неполный legacy JSON остаётся с прежним выводом, не озеленяется.
+
 ## Профили всех узлов / контроль деплоя (2026-10-29)
 
 По команде «деплой пуш» исходники опубликованы в main/android/pc/ios/keenetic/openwrt.

@@ -373,6 +373,7 @@ class TargetSnapshot:
             "api_port": self.api_port,
             "wdtt_port": self.wdtt_port,
             "wg_port": self.wg_port,
+            "agent_port": self.agent_port,
             "domain": self.domain,
             "ai_exit": self.ai_exit,
             "status": self.status,

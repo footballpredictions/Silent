@@ -26,6 +26,7 @@ from ai.availability_knowledge import (  # noqa: E402
     KIND_NO_VANTAGE,
     KIND_OK,
     KIND_PORT_BLOCK,
+    KIND_PROBE_UNCONFIRMED,
     KIND_PROTOCOL_FINGERPRINT,
     KIND_RST_INJECTION,
     KIND_SERVICE_DOWN,
@@ -184,20 +185,20 @@ def test_service_down_mentions_host_offline_when_ping_also_dead():
     assert any("VPS" in f or "хостер" in f for f in down[0].fixes)
 
 
-def test_port_block_when_one_port_dies_and_others_live():
+def test_primary_api_timeout_preserves_path_warning_without_claiming_block():
     snap = _queen()
     snap.agent_port = 9100
     snap.local[CHANNEL_AGENT_TCP] = ProbeResult(channel=CHANNEL_AGENT_TCP, ok=True, latency_ms=2.0)
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=5)
-    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=5)
-    snap.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, failed=5)
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, failed=5)
+    snap.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, ok=5)
     verdicts = classify_target(snap)
-    port_block = [v for v in verdicts if v.kind == KIND_PORT_BLOCK]
-    assert port_block, "должен быть вывод про порт"
-    assert "DNAT" in " ".join(port_block[0].fixes)
+    assert KIND_PORT_BLOCK not in {v.kind for v in verdicts}
+    assert KIND_HTTPS_DEGRADED in {v.kind for v in verdicts}
+    assert report_status(verdicts) == "degraded"
 
 
-def test_hive_https_timeout_from_rf_is_port_block_even_if_ping_partial():
+def test_hive_https_timeout_is_path_warning_even_if_ping_partial():
     """Скрин 2026-09-15: локально API/TLS ok, из РФ TCP+TLS 0/2 timeout, ping 1/2, DNS 2/2.
 
     Классификатор ждал «другой канал all_ok» или полный blackhole. Ping 1/2 не all_ok
@@ -210,15 +211,14 @@ def test_hive_https_timeout_from_rf_is_port_block_even_if_ping_partial():
     snap.ru[CHANNEL_DNS] = _agg(CHANNEL_DNS, ok=2, ips=("89.125.188.100",))
     verdicts = classify_target(snap)
     kinds = {v.kind for v in verdicts}
-    assert KIND_PORT_BLOCK in kinds, kinds
+    assert KIND_HTTPS_DEGRADED in kinds, kinds
+    assert KIND_PORT_BLOCK not in kinds
     assert KIND_OK not in kinds
-    assert report_status(verdicts) == "blocked"
-    port = [v for v in verdicts if v.kind == KIND_PORT_BLOCK][0]
+    assert report_status(verdicts) == "degraded"
+    port = [v for v in verdicts if v.kind == KIND_HTTPS_DEGRADED][0]
     assert "443" in port.summary or "API" in port.summary
     text = " ".join(port.fixes)
-    assert "DNAT" in text
-    assert "на 443" not in text or "Не делать DNAT" in text
-    assert "9100" in text
+    assert "не менять IP" in text
     assert "wdtt" in text.lower()
 
 
@@ -248,14 +248,15 @@ def test_local_tls_dead_is_our_breakage_not_port_block():
     assert "TLS" in down.summary or "TLS" in " ".join(down.evidence)
 
 
-def test_live_tls_locally_still_allows_port_block():
-    """Если локально TLS жив, вывод про резку порта должен остаться."""
+def test_live_tls_locally_preserves_external_path_warning():
+    """Локальный TLS не доказывает причину внешнего таймаута."""
     snap = _queen()
     snap.local[CHANNEL_API_TLS] = ProbeResult(channel=CHANNEL_API_TLS, ok=True, latency_ms=9.0)
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=2)
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, failed=2)
     kinds = _kinds(snap)
-    assert KIND_PORT_BLOCK in kinds
+    assert KIND_HTTPS_DEGRADED in kinds
+    assert KIND_PORT_BLOCK not in kinds
     assert KIND_SERVICE_DOWN not in kinds
 
 
@@ -290,7 +291,7 @@ def test_ai_exit_closed_agent_port_is_not_dpi():
     assert report_status(classify_target(snap)) == "ok"
 
 
-def test_regular_cell_agent_timeout_is_still_port_block():
+def test_regular_cell_agent_timeout_does_not_prove_vpn_block():
     snap = TargetSnapshot(
         name="сота1",
         host="87.58.213.193",
@@ -302,7 +303,8 @@ def test_regular_cell_agent_timeout_is_still_port_block():
     snap.local[CHANNEL_AGENT_TCP] = ProbeResult(channel=CHANNEL_AGENT_TCP, ok=True)
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=2)
     snap.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, failed=2)
-    assert KIND_PORT_BLOCK in _kinds(snap)
+    assert KIND_PORT_BLOCK not in _kinds(snap)
+    assert KIND_PROBE_UNCONFIRMED in _kinds(snap)
 
 
 def test_ai_exit_has_no_public_tcp_probe():
@@ -422,9 +424,8 @@ def test_dns_ok_when_resolved_to_our_ip():
 def test_rst_injection_distinguished_from_timeout():
     snap = _queen()
     snap.agent_port = 9100
-    snap.local[CHANNEL_AGENT_TCP] = ProbeResult(channel=CHANNEL_AGENT_TCP, ok=True)
-    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=5)
-    snap.ru[CHANNEL_AGENT_TCP] = _agg(CHANNEL_AGENT_TCP, failed=5, error=ERR_RESET)
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=5)
+    snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, failed=5, error=ERR_RESET)
     kinds = _kinds(snap)
     assert KIND_RST_INJECTION in kinds
     assert KIND_PORT_BLOCK not in kinds

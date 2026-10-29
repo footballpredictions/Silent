@@ -17,6 +17,7 @@ from ai.availability_knowledge import (
     KIND_NO_VANTAGE,
     KIND_OK,
     KIND_PORT_BLOCK,
+    KIND_PROBE_UNCONFIRMED,
     KIND_PROTOCOL_FINGERPRINT,
     KIND_ROUTE_LOSS,
     KIND_RST_INJECTION,
@@ -66,6 +67,7 @@ from ai.availability_model import (
 PARTIAL_OK_RATIO = 0.75
 # Один таймаут check-host при 3 нодах (2/3) — шум сервиса, не ТСПУ. Нужно ≥2 фейла.
 PARTIAL_MIN_FAILS = 2
+MIN_FAILURE_NODES = 2
 _APP_HTTP_MARKERS = ("HTTP 401", "HTTP 403", "HTTP 404", "HTTP 500", "HTTP 502", "HTTP 503")
 # Минимум клиентских отказов, ниже которого не делаем выводов по телеметрии.
 CLIENT_MIN_FAILURES = 5
@@ -231,6 +233,12 @@ def _blackhole_verdict(snap: TargetSnapshot) -> Verdict | None:
     views = {c: v for c, v in views.items() if v is not None and c != CHANNEL_DNS}
     if len(views) < 2:
         return None
+    # Ping и служебный cell-agent не измеряют доступность VPN-транспорта/API.
+    if not (views.keys() - {CHANNEL_AGENT_TCP, CHANNEL_PING}):
+        return None
+    if any(len({n.node for n in v.failing_nodes() if n.node}) < MIN_FAILURE_NODES
+           for v in views.values()):
+        return None
     if any(not v.all_failed for v in views.values()):
         return None
     # Локально сервисы живы — иначе это не блокировка.
@@ -376,10 +384,14 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
     out: list[Verdict] = []
     udp_views = {c: snap.ru_view(c) for c in UDP_CHANNELS if snap.ru_view(c)}
     tcp_views = {c: snap.ru_view(c) for c in TCP_CHANNELS if snap.ru_view(c)}
-    udp_all_dead = bool(udp_views) and all(v.all_failed for v in udp_views.values())
+    udp_all_dead = bool(udp_views) and all(
+        v.all_failed and len({n.node for n in v.failing_nodes() if n.node}) >= MIN_FAILURE_NODES
+        for v in udp_views.values()
+    )
     tcp_all_ok = bool(tcp_views) and all(v.all_ok for v in tcp_views.values())
+    udp_blocked = udp_all_dead and tcp_all_ok
 
-    if udp_all_dead and tcp_all_ok:
+    if udp_blocked:
         ports = [p for p in (snap.wdtt_port, snap.wg_port) if p]
         out.append(
             _verdict(
@@ -452,6 +464,35 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
             )
             continue
 
+        failed_nodes = {n.node for n in agg.failing_nodes() if n.node}
+        # Один отказ при успешных контрольных пробах остаётся шумом измерителя.
+        if channel != CHANNEL_AGENT_TCP and agg.ok_count and len(failed_nodes) < MIN_FAILURE_NODES:
+            continue
+        if channel == CHANNEL_AGENT_TCP or len(failed_nodes) < MIN_FAILURE_NODES:
+            service_probe = channel == CHANNEL_AGENT_TCP
+            evidence = [
+                f"{channel_title(channel)}: успешно {agg.ok_count}/{agg.total}, ошибки: {_fail_desc(agg)}.",
+                f"Получено отказов с разных точек: {len(failed_nodes)}; незавершённые пробы не считаются отказом.",
+            ]
+            if local is True:
+                evidence.append("Та же служба отвечает с Улья/локальной точки проверки.")
+            world = snap.world_view(channel)
+            if world:
+                evidence.append(f"Контроль вне РФ: успешно {world.ok_count}/{world.total}.")
+            evidence.append(
+                "Служебный TCP-порт не проверяет VPN-транспорт; причина внешних ошибок не установлена."
+                if service_probe else "Недостаточно независимых отказов для вывода о блокировке."
+            )
+            out.append(_verdict(
+                snap, KIND_PROBE_UNCONFIRMED, confidence=0.4,
+                summary=(
+                    "Есть ошибки внешних проб служебного API; блокировка VPN не подтверждена."
+                    if service_probe else "Внешние пробы неполные; блокировка порта не подтверждена."
+                ),
+                evidence=evidence, channel=channel,
+            ))
+            continue
+
         dominant = agg.dominant_error()
         if dominant == ERR_RESET and not _world_confirms_failure(snap, channel):
             out.append(
@@ -485,7 +526,7 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
             continue
 
         if agg.all_failed:
-            if udp_all_dead and channel in UDP_CHANNELS:
+            if udp_blocked and channel in UDP_CHANNELS:
                 continue  # уже покрыто выводом про UDP
             alive = [
                 c
@@ -512,6 +553,31 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
             if api_443 and tls_entrance_broken(snap):
                 continue
             if channel == CHANNEL_API_TCP and _rf_https_open(snap):
+                continue
+            # Таймаут check-host доказывает отказ этого пути, но не причину
+            # (DPI, маршрут, ACL или сама точка проверки). Не объявлять блок VPN.
+            if api_443 and set(agg.error_kinds()) == {ERR_TIMEOUT}:
+                evidence = [
+                    f"{channel_title(channel)}: таймаут с {len(failed_nodes)} внешних точек РФ.",
+                    f"Другие доступные каналы: {live_desc}.",
+                    "Проверка из датацентров не равна проверке подключения клиента; причина таймаутов неизвестна.",
+                ]
+                if local is True:
+                    evidence.append(f"Локальная проверка порта {port} проходит.")
+                world = snap.world_view(channel)
+                if world:
+                    evidence.append(f"Контроль вне РФ: успешно {world.ok_count}/{world.total}.")
+                out.append(_verdict(
+                    snap, KIND_HTTPS_DEGRADED, confidence=0.55,
+                    summary=(f"Внешние проверки HTTPS на порту {port} не прошли с {len(failed_nodes)} точек РФ; "
+                             "блокировка VPN не подтверждена."),
+                    evidence=evidence, channel=channel, port=port,
+                    extra_fixes=[
+                        "Повторить проверку из другой сети и проверить вход клиента из проблемной сети.",
+                        "До подтверждения причины не менять IP, порты и маршруты; wdtt не перезапускать.",
+                    ],
+                    replace_fixes=True,
+                ))
                 continue
             if api_443:
                 extra_fixes = [
@@ -828,7 +894,7 @@ def report_status(verdicts: list[Verdict]) -> str:
     # непроверенная снаружи сота не должна гасить общий статус.
     if KIND_NO_VANTAGE in kinds and KIND_OK not in kinds:
         return "unknown"
-    if KIND_UNKNOWN in kinds and KIND_OK not in kinds:
+    if kinds & {KIND_UNKNOWN, KIND_PROBE_UNCONFIRMED} and KIND_OK not in kinds:
         return "unknown"
     return "ok"
 
@@ -885,7 +951,8 @@ def plan_incidents(
 def report_summary(verdicts: list[Verdict], status: str) -> str:
     if status == "ok":
         targets = sorted({v.target for v in verdicts if v.kind == KIND_OK})
-        incomplete = sorted({v.target for v in verdicts if v.kind in (KIND_UNKNOWN, KIND_NO_VANTAGE)})
+        incomplete = sorted({v.target for v in verdicts
+                             if v.kind in (KIND_UNKNOWN, KIND_NO_VANTAGE, KIND_PROBE_UNCONFIRMED)})
         summary = f"Проверенные узлы доступны из РФ ({', '.join(targets) or 'нет целей'})."
         if incomplete:
             summary += f" Недостаточно измерений: {', '.join(incomplete)}."

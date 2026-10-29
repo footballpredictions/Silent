@@ -11,6 +11,26 @@ from deploy_stable import _selected_python_paths
 
 
 class SelectionTests(unittest.TestCase):
+    def test_connection_stays_open_through_final_source_verification(self):
+        client = MagicMock()
+        closed = False
+        def close():
+            nonlocal closed
+            closed = True
+        def verify(*args, **kwargs):
+            self.assertFalse(closed, 'SSH closed before final source verification')
+            return {}
+        client.close.side_effect = close
+        with patch.object(deploy_stable, '_preflight'), \
+             patch.object(deploy_stable, 'connect', return_value=client), \
+             patch.object(deploy_stable, 'run'), \
+             patch.object(deploy_stable, '_verify_admin_ui'), \
+             patch.object(deploy_stable, '_verify_registered_cell_allowlist'), \
+             patch.object(deploy_stable, '_record_deploy_manifest'), \
+             patch.object(deploy_stable, '_verify_deploy_sources', side_effect=verify):
+            deploy_stable._deploy_selected_python(['ai/availability_classifier.py'])
+        client.close.assert_called_once()
+
     def test_source_comparison_ignores_line_endings_and_final_empty_lines(self):
         original = b'def run():\n    return True\n'
         self.assertEqual(deploy_stable._source_hash(original), deploy_stable._source_hash(b'def run():\r\n    return True\r\n\r\n'))

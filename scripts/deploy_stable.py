@@ -35,6 +35,8 @@ PREFLIGHT_TESTS = (
     "scripts/test_cell_agent_build_id_unit.py",
     "scripts/test_availability_refresh_unit.py",
     "scripts/test_availability_polling_unit.py",
+    "scripts/test_availability_unit.py",
+    "scripts/test_availability_evidence_unit.py",
     "scripts/test_session_presence_unit.py",
 )
 
@@ -63,6 +65,7 @@ CRITICAL_PYTHON = (
     'app/services/hive_profiles.py', 'app/services/node_profile_runtime.py',
     'ai/availability_agent.py', 'ai/availability_classifier.py',
     'ai/availability_model.py', 'ai/availability_probes.py',
+    'ai/availability_knowledge.py', 'ai/availability_report.py',
 )
 
 
@@ -497,8 +500,8 @@ fi
     run(client, "bash /tmp/deploy_stable.sh 2>&1", timeout=240)
     _verify_admin_ui(client, expected_admin_index)
     _verify_registered_cell_allowlist(client)
-    client.close()
-    print("Done")
+    # The caller still verifies source hashes and writes the deployment manifest.
+    print("PASS API runtime and publication checks")
 
 
 if __name__ == "__main__":

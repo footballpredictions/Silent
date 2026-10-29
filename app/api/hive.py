@@ -595,6 +595,8 @@ async def hive_availability(
 
     report = await availability_store.load_latest_report()
     cfg = await availability_store.load_settings(db)
+    if report:
+        cfg["last_status"] = report.get("status") or cfg["last_status"]
     return {"report": report, "settings": cfg, "running": bool(await availability_store.pending_refresh())}
 
 

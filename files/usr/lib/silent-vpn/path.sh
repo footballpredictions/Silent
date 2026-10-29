@@ -5,6 +5,19 @@
 # LAN clients only. Never install 0.0.0.0/1 on the main table: that blackholes the router itself.
 SV_LAN_TABLE="201"
 
+sv_path_safe_mtu() {
+	case "$1" in
+		1200) echo 1280 ;;
+		""|*[!0-9]*|?????*) echo 1280 ;;
+		*) if [ "$1" -ge 1200 ] && [ "$1" -le 1420 ]; then echo "$1"; else echo 1280; fi ;;
+	esac
+}
+
+sv_path_profile_mtu() {
+	if [ -f "$SV_RUN/bootstrap" ]; then echo 1280; return; fi
+	sv_path_safe_mtu "$(jsonfilter -i "$1" -e '@.wg_mtu' 2>/dev/null)"
+}
+
 sv_path_ip() {
 	if [ -x /usr/libexec/ip-full ]; then
 		echo /usr/libexec/ip-full
@@ -49,7 +62,8 @@ sv_path_clear() {
 
 sv_path_write_conf() {
 	# stdin unused; args from JSON file $1
-	local src="$1" priv addr dns sip sport spub allowed
+	local src="$1" priv addr dns sip sport spub allowed mtu
+	mtu="$(sv_path_profile_mtu "$src")"
 	priv="$(jsonfilter -i "$src" -e '@.wg_private_key')"
 	addr="$(jsonfilter -i "$src" -e '@.wg_address')"
 	dns="$(jsonfilter -i "$src" -e '@.wg_dns')"
@@ -72,6 +86,7 @@ sv_path_write_conf() {
 PrivateKey = $priv
 Address = $addr
 DNS = $dns
+MTU = $mtu
 
 [Peer]
 PublicKey = $spub
@@ -83,7 +98,8 @@ EOF
 }
 
 sv_path_apply_uci() {
-	local priv addr dns sip sport spub
+	local priv addr dns sip sport spub mtu
+	mtu="$(sv_path_profile_mtu "$1")"
 	priv="$(jsonfilter -i "$1" -e '@.wg_private_key')"
 	addr="$(jsonfilter -i "$1" -e '@.wg_address')"
 	dns="$(jsonfilter -i "$1" -e '@.wg_dns')"
@@ -104,7 +120,7 @@ sv_path_apply_uci() {
 	uci set network."$SV_WG_IF".proto='wireguard'
 	uci set network."$SV_WG_IF".private_key="$priv"
 	uci add_list network."$SV_WG_IF".addresses="$addr"
-	uci set network."$SV_WG_IF".mtu='1280'
+	uci set network."$SV_WG_IF".mtu="$mtu"
 
 	uci -q delete network."${SV_WG_IF}_peer"
 	uci set network."${SV_WG_IF}_peer"=wireguard_"$SV_WG_IF"
@@ -188,7 +204,7 @@ sv_path_wait_gateway() {
 }
 
 sv_path_apply_turn() {
-	local src addr hs i
+	local src addr hs i mtu
 	src="/etc/silent-vpn/wg-turn.conf"
 	[ -s "$src" ] || { sv_log "no turn conf"; return 1; }
 	if [ -x /usr/libexec/ip-full ]; then
@@ -220,7 +236,8 @@ sv_path_apply_turn() {
 	ip addr flush dev "$SV_WG_IF"
 	[ -n "$addr" ] && ip addr add "$addr" dev "$SV_WG_IF"
 	sv_log "addr ${addr:-none}"
-	ip link set dev "$SV_WG_IF" mtu 1280
+	mtu="$(sv_path_safe_mtu "$(uci -q get network."$SV_WG_IF".mtu)")"
+	ip link set dev "$SV_WG_IF" mtu "$mtu"
 	ip link set "$SV_WG_IF" up
 	sysctl -w net.ipv4.conf."$SV_WG_IF".rp_filter=2 >/dev/null 2>&1 || true
 	sv_path_ensure_fw

@@ -1845,7 +1845,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     if (wgAttempted) return false
 
     let normalizedConf = confText
-    // MTU 1420 только Сервер 3 (игры/Steam SDR); остальные слоты — 1200.
+    // Server profile takes priority; old API configurations keep slot defaults.
     const WG_MTU = resolveWgMtu(config)
     if (/^\s*MTU\s*=/m.test(normalizedConf)) {
       normalizedConf = normalizedConf.replace(/^\s*MTU\s*=.*/m, `MTU = ${WG_MTU}`)
@@ -1855,7 +1855,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
         (m) => m.trimEnd() + `\nMTU = ${WG_MTU}\n`,
       )
     }
-    sendLog(`[WG] MTU = ${WG_MTU}${WG_MTU >= 1420 ? ' (Сервер 3 / Steam SDR)' : ''}`)
+    sendLog(`[WG] MTU = ${WG_MTU}${WG_MTU >= 1420 ? ' (игровой профиль)' : ''}`)
     normalizedConf = normalizeWgConfText(normalizedConf)
 
     wgInstallInFlight = true

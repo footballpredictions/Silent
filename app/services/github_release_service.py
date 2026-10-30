@@ -208,6 +208,7 @@ def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
     has_apk = any(n.lower().endswith(".apk") for n in asset_names)
     has_linux = any(n.lower().endswith(".deb") for n in asset_names)
     has_openwrt = any(_asset_name_matches_platform(n, "openwrt") for n in asset_names)
+    has_keenetic = any(_asset_name_matches_platform(n, "keenetic") for n in asset_names)
     lines = [f"Клиенты Silent VPN v{version}.\n"]
     if has_pc:
         lines.append("- **Windows (ПК)** — установщик `.exe`")
@@ -217,6 +218,8 @@ def _release_body_for_assets(version: str, asset_names: list[str]) -> str:
         lines.append("- **Android** — `.apk`")
     if has_openwrt:
         lines.append("- **OpenWrt** — отдельные пакеты aarch64, ARMv7, mipsel и x86_64; установщик выбирает архитектуру автоматически")
+    if has_keenetic:
+        lines.append("- **Keenetic** — пакеты для Entware: aarch64, ARMv7, ARMv5, mipsel, mips, x86_64 и i386")
     lines.append(f"\nСкачивание: {landing}")
     return "\n".join(lines)
 

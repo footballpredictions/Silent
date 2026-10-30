@@ -34,6 +34,17 @@ def make_package(path,arch,version="1.0.171",mutate=None):
 
 
 class KeeneticTests(unittest.TestCase):
+    def test_release_description_includes_keenetic_when_its_packages_exist(self):
+        names = ["Silent.VPN.Setup.1.0.171.exe",
+                 "silent-vpn-openwrt-1.0.171-aarch64.tar.gz",
+                 "silent-vpn-keenetic-1.0.171-aarch64.tar.gz",
+                 "silent-vpn-keenetic-1.0.171-mips.tar.gz"]
+        body = gh._release_body_for_assets("1.0.171", names)
+        self.assertIn("**Windows (ПК)**", body)
+        self.assertIn("**OpenWrt**", body)
+        self.assertEqual(body.count("**Keenetic**"), 1)
+        self.assertNotIn("**Keenetic**", gh._release_body_for_assets("1.0.171", names[:2]))
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name);self.oldbase=us._BASE;us._BASE=str(self.root/"updates")
     def tearDown(self):us._BASE=self.oldbase;self.temp.cleanup()

@@ -1,5 +1,30 @@
 # APIS — Silent VPN
 
+## Пуш исходников (2026-10-30)
+
+По явнойкоманде «пуш»: backend/main78d4f13 — генераторGitHubdescriptionKeenetic;
+OpenWrt/openwrt d2959cb — очисткаRU/DNSOFF иошибкаCGI500при неудачномвосстановлении;
+Keenetic/keenetic25a5814 — толькоdisconnect-regressiontest. RemoteHEADвсех3подтверждены.
+БинарныйRelease/admin171 ужеопубликованы; повторныхдеплоев иизмененияAPIконтрактов нет.
+
+## Публикация OpenWrt171 и описание Keenetic (2026-10-30)
+
+По явному запросу владельца4новыхCPU пакетаOpenWrt171 опубликованы вserverupdate,
+GitHubReleasev1.0.171 иPagesreleases.json (3804b56). Версиясохранена.
+РеальныйGET `/api/admin/updates`200 показывает4новыеSHA/size/unpacked_size/build_id;
+publicGitHub4GET иserverdownload4SHAverified. Остальныеplatformmanifest иKeenetic7assets
+сохранены. ГенераторGitHubdescription теперь включаетKeenetic, модуль опубликован
+canonicalselecteddeploy; APIконтракты прежние. Sourcecommit/pushне выполнялись.
+
+## OpenWrt disconnect (локальный фикс, 2026-10-30)
+
+POST локальной панели `/cgi-bin/silent-api/disconnect` сохраняет прежний200
+`{"ok":true,"connected":false}` при успешной очистке. При ошибке восстановления
+сети возвращает500+detail, транспорт всё равно останавливается; раньше ошибка
+терялась и всегда возвращался200. Серверный API и Keenetic API не менялись.
+RU preference хранится, но runtime правила/DNS разрешены только при path.up.
+4CPU OpenWrt171 собраны локально; публикации и аппаратной приёмки пока нет.
+
 ## Точность availability (2026-10-29)
 
 GET `/api/admin/hive/availability` и `/availability/history` пересчитывают выводы

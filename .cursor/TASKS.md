@@ -1,5 +1,12 @@
 # TASKS — Silent VPN
 
+- [x] 2026-10-30: по команде «пуш» опубликованы исходники OpenWrt d2959cb, Keenetic25a5814 (толькоtest), backend78d4f13 (генераторописания);3remoteHEAD подтверждены. Содержательные diff/noBOM/LF/4архиваverified, чужойWIPсохранён; документы этойзадачи отдельнымчастичнымкоммитом, без повторногодеплоя/смены171.
+
+- [x] 2026-10-30: по запросу владельца опубликовать4собранныхOpenWrt пакета наGitHub ивadmin безbump1.0.171; исправить генераторGitHubbodyKeenetic (RED→GREEN,8+13tests,canonical18/source20PASS). Public4SHA/server4SHA/Pages4/adminHTTP200identitiesPASS, otherplatforms+Keeneticassets preserved, WDTTactive/NRestarts0/health200. Landingmetadata3804b56, sourcecommit/pushне выполнялись.
+
+- [x] 2026-10-30: исправить подтверждённое неполное выключение OpenWrt: cleanup RU/DNS, запрет OFF worker/fw reload reapply, передача ошибок восстановления до CGI500. 6runtime RED→GREEN/Windows+Linux,26policy+21path+4catalog+4CGI+16Linux uninstall PASS; Keenetic10network PASS, production Keenetic без изменений. Linux bash suite192:167PASS/25missingtools skips; Windows192:174PASS/17skip/1старыйlogging parseFAIL, этотtestPASSнаLinux. 4CPU OpenWrt171 собраны локально, SHA/содержимое5production файлов проверены, без публикации/commit/push.
+- [ ] 2026-10-30: аппаратно проверить симптом YouTube/новых соединений после OFF на исправленном OpenWrt; клиент уже удалён, LAN panel404, исходного сетевого снимка нет. Подтверждённые lifecycle дефекты исправлены, их причинность для конкретного YouTube доступа ещё не доказана.
+
 - [x] 2026-10-29: ложная блокировка исправлена в детекторе: agent_tcp info, минимум2 разных источника, HTTPS timeout warning без вывода о DPI, readonly latest/history reclassification. Canonical18preflight,58+12+9deploy и2browserPASS,19critical source hashes/manifest verified. Live8HTTP consistentdegraded, online156/156/156,5wdttPID/NRestarts/MTU прежние,health200. LifecycleSSHdeploy fixed RED→GREEN; финальный guard без повторного restart.
 
 - [x] 2026-10-29: по команде «деплой пуш» актуальная админка перепубликована canonical без restart API/VPN, source17/static443+2083/health5PASS; исходники main/android/pc/ios/keenetic/openwrt запушены и remote HEAD подтверждены. Коммиты и границы с чужим WIP записаны в Memory Bank; клиентские бинарные релизы не публиковались.

@@ -401,6 +401,14 @@ function TargetRow({ target }: { target: Target }) {
               const local = target.local[ch]
               const ru = target.ru[ch]
               const peer = target.peer[ch]
+              const errors = [
+                local && !local.ok && !local.inconclusive
+                  ? `Локально: ${local.detail || local.error_kind || 'причина не указана'}` : '',
+                !local && peer && !peer.ok && !peer.inconclusive
+                  ? `С соты: ${peer.detail || peer.error_kind || 'причина не указана'}` : '',
+                ru && Object.keys(ru.error_kinds).length > 0
+                  ? `Из РФ: ${Object.entries(ru.error_kinds).map(([k, v]) => `${k}×${v}`).join(', ')}` : '',
+              ].filter(Boolean).join('; ')
               return (
                 <tr key={ch} className="border-t border-[#1a1a1a]">
                   <td className="py-1 pr-3 text-[#bbb]">{channelLabel(ch)}</td>
@@ -410,8 +418,8 @@ function TargetRow({ target }: { target: Target }) {
                         {local.inconclusive ? (local.ok ? 'нет ответа (норма UDP)' : 'нет данных') : local.ok ? (ch === 'api_tls' || ch === 'tls_no_sni' ? 'TLS ok' : 'ok') : local.error_kind || 'fail'}
                       </span>
                     ) : peer ? (
-                      <span className={peer.ok ? 'text-emerald-400' : 'text-red-400'}>
-                        {peer.ok ? 'ok (с соты)' : peer.error_kind || 'fail'}
+                      <span title={peer.detail} className={peer.inconclusive ? 'text-[#888]' : peer.ok ? 'text-emerald-400' : 'text-red-400'}>
+                        {peer.inconclusive ? (peer.ok ? 'нет ответа (норма UDP)' : 'нет данных') : peer.ok ? 'ok (с соты)' : peer.error_kind || 'fail'}
                       </span>
                     ) : (
                       <span className="text-[#444]">—</span>
@@ -442,9 +450,7 @@ function TargetRow({ target }: { target: Target }) {
                     {ru?.median_latency_ms != null ? `${Math.round(ru.median_latency_ms)} мс` : '—'}
                   </td>
                   <td className="py-1 text-[#777]">
-                    {ru && Object.keys(ru.error_kinds).length > 0
-                      ? Object.entries(ru.error_kinds).map(([k, v]) => `${k}×${v}`).join(', ')
-                      : '—'}
+                    {errors || '—'}
                   </td>
                 </tr>
               )
@@ -554,8 +560,10 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
   const problems = (report?.verdicts || []).filter(v => v.kind !== 'ok')
   const servicePortOnly = problems.length > 0 && problems.every(v => v.kind === 'port_block' && v.channel === 'agent_tcp')
   const status = servicePortOnly ? 'degraded' : report?.status || 'unknown'
+  const partialCoverage = status === 'ok' && problems.some(v => ['unknown', 'no_vantage', 'probe_unconfirmed'].includes(v.kind))
   const meta = servicePortOnly
     ? { ...STATUS_META.degraded, label: 'Ограничен доступ к служебному API' }
+    : partialCoverage ? { ...STATUS_META.unknown, label: 'Часть проверок не подтверждена' }
     : STATUS_META[status] || STATUS_META.unknown
   const ruNodes = report?.vantage?.ru_nodes || []
 

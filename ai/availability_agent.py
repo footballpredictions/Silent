@@ -159,7 +159,8 @@ async def _run_local_probes(snap: TargetSnapshot) -> None:
         base = f"https://{snap.domain}" if snap.domain else f"https://{snap.host}"
         jobs.append(
             asyncio.ensure_future(
-                http_probe(f"{base}/api/health", CHANNEL_API_HTTP, timeout=timeout + 2)
+                http_probe(f"{base}/api/health", CHANNEL_API_HTTP, timeout=timeout + 2,
+                           connect_host=snap.host)
             )
         )
         if snap.domain:

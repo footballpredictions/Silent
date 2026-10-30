@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import logging
 import socket
 import ssl
@@ -38,13 +40,16 @@ CHECKHOST_HEADERS = {"Accept": "application/json", "User-Agent": "silent-availab
 _NODES_TTL_SEC = 6 * 3600
 
 _nodes_cache: dict[str, Any] = {"ts": 0.0, "nodes": {}}
+# SSH/provisioning uses the shared executor. Waiting for that queue is not a
+# DNS measurement; keep resolver work in a small, dedicated pool.
+_dns_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="availability-dns")
 
 
 # ---------------------------------------------------------------- локальные пробы
 
 
 def _os_error_kind(exc: BaseException) -> str:
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
         return ERR_TIMEOUT
     if isinstance(exc, ConnectionRefusedError):
         return ERR_REFUSED
@@ -129,15 +134,27 @@ async def tls_probe(
 
 
 async def http_probe(
-    url: str, channel: str, *, timeout: float = 8.0, expect: str = ""
+    url: str, channel: str, *, timeout: float = 8.0, expect: str = "", connect_host: str = ""
 ) -> ProbeResult:
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=False) as c:
-            resp = await c.get(url)
-    except BaseException as e:  # noqa: BLE001
+        request_url = httpx.URL(url)
+        options = {}
+        if connect_host:
+            # Test this endpoint independently of DNS while retaining its
+            # virtual host and TLS SNI. DNS has its own, separate result.
+            ipaddress.ip_address(connect_host)
+            options = {"headers": {"Host": request_url.netloc.decode("ascii")},
+                       "extensions": {"sni_hostname": request_url.host}}
+            request_url = request_url.copy_with(host=connect_host)
+        async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=False, trust_env=False) as c:
+            resp = await c.get(request_url, **options)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
         return ProbeResult(
-            channel=channel, ok=False, error_kind=_os_error_kind(e), detail=str(e)[:200]
+            channel=channel, ok=False, error_kind=_os_error_kind(e),
+            detail=(str(e).strip() or type(e).__name__)[:200]
         )
     latency = (time.monotonic() - started) * 1000
     body = resp.text[:200] if resp.content else ""
@@ -194,10 +211,13 @@ async def dns_probe(name: str, channel: str, timeout: float = 5.0) -> ProbeResul
         return tuple(sorted({i[4][0] for i in infos}))
 
     try:
-        ips = await asyncio.wait_for(asyncio.to_thread(_resolve), timeout)
-    except BaseException as e:  # noqa: BLE001
+        ips = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(_dns_executor, _resolve), timeout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
         return ProbeResult(
-            channel=channel, ok=False, error_kind=_os_error_kind(e), detail=str(e)[:200]
+            channel=channel, ok=False, error_kind=_os_error_kind(e),
+            detail=(str(e).strip() or type(e).__name__)[:200]
         )
     return ProbeResult(channel=channel, ok=bool(ips), resolved_ips=ips, detail=", ".join(ips))
 

@@ -13,6 +13,7 @@ from ai.availability_knowledge import (
     KIND_HTTP_STUB,
     KIND_HTTPS_DEGRADED,
     KIND_IP_BLACKHOLE,
+    KIND_LOCAL_HEALTH,
     KIND_MOBILE_SHUTDOWN,
     KIND_NO_VANTAGE,
     KIND_OK,
@@ -809,6 +810,22 @@ def classify_target(snap: TargetSnapshot) -> list[Verdict]:
 
     verdicts.extend(_client_verdicts(snap))
 
+    # DNS/HTTP are distinct from TCP reachability. Keep their failures visible
+    # without claiming the VPN is blocked or duplicating a known local outage.
+    if not any(v.kind == KIND_SERVICE_DOWN for v in verdicts):
+        for channel in (CHANNEL_API_HTTP, CHANNEL_DNS):
+            local = snap.local.get(channel)
+            if (local is None or local.ok or local.inconclusive
+                    or local.error_kind in PROBE_NOISE_KINDS
+                    or any(v.channel == channel for v in verdicts)):
+                continue
+            verdicts.append(_verdict(
+                snap, KIND_LOCAL_HEALTH, confidence=0.8,
+                summary=f"Локально не прошла проверка {channel_title(channel)}; доступность VPN оценивается отдельно.",
+                evidence=[local.detail or local.error_kind or "Проба не вернула причину отказа."],
+                channel=channel,
+            ))
+
     if not verdicts:
         if not snap.ru_channels():
             if snap.clients is None or not snap.clients.available:
@@ -888,7 +905,7 @@ def report_status(verdicts: list[Verdict]) -> str:
         return "down"
     if kinds & BLOCKING_KINDS:
         return "blocked"
-    if kinds & {KIND_ASN_PARTIAL, KIND_HTTPS_DEGRADED, KIND_THROTTLING, KIND_ROUTE_LOSS, KIND_ACTIVE_PROBING}:
+    if kinds & {KIND_ASN_PARTIAL, KIND_HTTPS_DEGRADED, KIND_THROTTLING, KIND_ROUTE_LOSS, KIND_ACTIVE_PROBING, KIND_LOCAL_HEALTH}:
         return "degraded"
     # «Неизвестно» только если из РФ не подтверждён ни один узел: когда Улей виден,
     # непроверенная снаружи сота не должна гасить общий статус.

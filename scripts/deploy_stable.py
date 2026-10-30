@@ -37,6 +37,8 @@ PREFLIGHT_TESTS = (
     "scripts/test_availability_polling_unit.py",
     "scripts/test_availability_unit.py",
     "scripts/test_availability_evidence_unit.py",
+    "scripts/test_availability_local_health_unit.py",
+    "scripts/test_availability_local_probes_unit.py",
     "scripts/test_session_presence_unit.py",
 )
 

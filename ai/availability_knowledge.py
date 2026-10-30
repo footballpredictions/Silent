@@ -31,6 +31,7 @@ KIND_ROUTE_LOSS = "route_loss"
 KIND_NO_VANTAGE = "no_vantage"
 KIND_UNKNOWN = "unknown"
 KIND_PROBE_UNCONFIRMED = "probe_unconfirmed"
+KIND_LOCAL_HEALTH = "local_health"
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,19 @@ class BlockMethod:
 
 
 _METHODS: tuple[BlockMethod, ...] = (
+    BlockMethod(
+        kind=KIND_LOCAL_HEALTH,
+        title="Локальная проверка не прошла",
+        severity="warning",
+        how_it_works=(
+            "HTTP или DNS с самого Улья не прошли проверку. Это отдельный результат: "
+            "успешная TCP-проба из РФ не отменяет его и не подтверждает работу всех каналов. "
+            "Такой отказ сам по себе не доказывает блокировку VPN."
+        ),
+        signals=("Есть ошибка локальной HTTP/DNS-пробы.",),
+        fixes=("Проверить причину в деталях канала и повторить локальную проверку.",),
+        commands=(),
+    ),
     BlockMethod(
         kind=KIND_PROBE_UNCONFIRMED,
         title="Внешняя проверка не подтверждена",

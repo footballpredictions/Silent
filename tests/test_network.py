@@ -99,6 +99,18 @@ exit 0
         self.assertIn("ipset create svk_vpn",log)
         self.assertNotIn("ipset flush",log)
         self.assertNotIn("route replace default dev svkeen\n",log)
+    def test_disconnect_cannot_be_undone_by_background_or_ndm_hooks(self):
+        result = self.invoke("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.run/"address").write_text("10.66.66.2/32\n")
+        result = self.invoke("down")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.run/"active").exists())
+        self.log.unlink()
+        for op in ("ensure", "restore"):
+            result = self.invoke(op)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), "")
     def test_api_ready_requires_active_tunnel(self):
         result=self.invoke("api-ready"); self.assertNotEqual(result.returncode,0)
         (self.run/"active").touch()

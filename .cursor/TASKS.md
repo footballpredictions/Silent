@@ -1,5 +1,7 @@
 # TASKS — Silent VPN
 
+- [x] 2026-10-30: отключить `SilentVPN-main.log` на рабочем столе в релизной ПК-сборке: guard `DEBUG_BUILD` в `mirrorMainLog`, syntax и VM no-file-writes PASS. По последующей команде «пуш» только log-hunk опубликован в origin/pc e0660ac, remote HEAD проверен; без сборки/публикации релиза, старый firewall WIP сохранён.
+
 - [x] 2026-10-30: по команде «пуш» опубликованы исходники OpenWrt d2959cb, Keenetic25a5814 (толькоtest), backend78d4f13 (генераторописания);3remoteHEAD подтверждены. Содержательные diff/noBOM/LF/4архиваverified, чужойWIPсохранён; документы этойзадачи отдельнымчастичнымкоммитом, без повторногодеплоя/смены171.
 
 - [x] 2026-10-30: по запросу владельца опубликовать4собранныхOpenWrt пакета наGitHub ивadmin безbump1.0.171; исправить генераторGitHubbodyKeenetic (RED→GREEN,8+13tests,canonical18/source20PASS). Public4SHA/server4SHA/Pages4/adminHTTP200identitiesPASS, otherplatforms+Keeneticassets preserved, WDTTactive/NRestarts0/health200. Landingmetadata3804b56, sourcecommit/pushне выполнялись.

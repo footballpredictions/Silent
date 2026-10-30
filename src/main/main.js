@@ -548,8 +548,9 @@ function resolveMainFileLogPath() {
   return mainFileLogPath
 }
 
-/** VPN/WG/капча → stderr (для mac-test-cycle) + файл на Desktop. */
+/** Диагностика debug-сборки: stderr и файл; в релизе запись отключена. */
 function mirrorMainLog(line) {
+  if (!buildFlags.DEBUG_BUILD) return
   const s = String(line || '').trim()
   if (!s) return
   try {

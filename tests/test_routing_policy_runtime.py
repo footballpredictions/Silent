@@ -6,7 +6,10 @@ import test_path_runtime as runtime
 
 @unittest.skipUnless(runtime.SHELL, 'POSIX shell required')
 class PolicyRuntimeTests(unittest.TestCase):
-    run_shell = runtime.RouterRuntimeTests.run_shell
+    def run_shell(self, script, library="path.sh"):
+        # These cases exercise an active tunnel. OFF is covered separately.
+        return runtime.RouterRuntimeTests.run_shell(
+            self, 'touch "$SV_RUN/path.up"\n' + script, library)
 
     def test_reconnect_restores_cached_destinations_before_reporting_ready(self):
         # A reconnect reloads fw4; the browser still holds its DNS answers.
@@ -306,7 +309,9 @@ done
 
 @unittest.skipUnless(runtime.SHELL, 'POSIX shell required')
 class AdditivePolicyRuntimeTests(unittest.TestCase):
-    run_shell = runtime.RouterRuntimeTests.run_shell
+    def run_shell(self, script, library="path.sh"):
+        return runtime.RouterRuntimeTests.run_shell(
+            self, 'touch "$SV_RUN/path.up"\n' + script, library)
 
     def refresh(self, preserve):
         return self.run_shell(r'''

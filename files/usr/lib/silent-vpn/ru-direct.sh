@@ -16,6 +16,33 @@ sv_ru_enabled() {
 	[ "$(uci -q get silent-vpn.main.ru_direct 2>/dev/null)" = "1" ]
 }
 
+sv_ru_active() {
+	[ -f "$SV_RUN/path.up" ] && sv_ru_enabled
+}
+
+# Called with the policy writer lock held. Keep preferences and learned IP
+# snapshots for the next connection, but detach every live bypass component.
+sv_ru_deactivate() {
+	local code=0
+	sv_catalog_dns_stop || code=1
+	uci -q delete dhcp.silent_ru || true
+	uci -q delete dhcp.silent_ru_vpn || true
+	uci commit dhcp || code=1
+	rm -f "$SV_RU_DNS"
+	sv_ru_clear_policy
+	return "$code"
+}
+
+sv_ru_stop() {
+	local code
+	sv_ru_lock_wait || return 1
+	if sv_ru_enabled; then sv_ru_snapshot_sets; fi
+	sv_ru_deactivate
+	code=$?
+	sv_ru_unlock
+	return "$code"
+}
+
 sv_ru_wan_route() {
 	local routes
 	# netifd's interface named "wan" can be down while a modem/WWAN is online.
@@ -208,9 +235,9 @@ sv_ru_firewall_reload() {
 	sv_ru_lock_wait || return 1
 	# fw4 recreates our included sets empty. Save the latest DNS answers before
 	# that happens; phones/browsers can keep using them without another lookup.
-	if sv_ru_enabled; then sv_ru_snapshot_sets; fi
+	if sv_ru_active; then sv_ru_snapshot_sets; fi
 	sv_ru_firewall_restart || code=$?
-	if sv_ru_enabled; then
+	if sv_ru_active; then
 		sv_ru_ensure_nft && sv_ru_restore_sets || code=1
 	fi
 	sv_ru_unlock
@@ -218,7 +245,7 @@ sv_ru_firewall_reload() {
 }
 
 sv_ru_maintain() {
-	sv_ru_enabled || return 0
+	sv_ru_active || return 0
 	if ! sv_ru_policy_ready; then
 		sv_ru_ensure_nft || return 1
 	fi
@@ -287,14 +314,11 @@ sv_ru_seed_vpn_ips() {
 }
 
 sv_ru_apply_inner() {
-	if ! sv_ru_enabled; then
-		sv_catalog_dns_stop || return 1
-		rm -f "$SV_RU_DNS"
-		uci -q delete dhcp.silent_ru || true
-		uci -q delete dhcp.silent_ru_vpn || true
-		uci commit dhcp
-		sv_ru_clear_policy
-		rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips" "$SV_RUN/policy.applied" "$SV_RUN/policy.applied.json"
+	if ! sv_ru_active; then
+		sv_ru_deactivate || return 1
+		if ! sv_ru_enabled; then
+			rm -f "$SV_RUN/sv_ru.ips" "$SV_RUN/sv_ru_vpn.ips" "$SV_RUN/policy.applied" "$SV_RUN/policy.applied.json"
+		fi
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 		sv_log "ru-direct off"
 		return 0
@@ -334,7 +358,7 @@ sv_ru_apply() {
 
 sv_ru_refresh() {
 	local now last revision applied preserve=0
-	sv_ru_enabled || return 0
+	sv_ru_active || return 0
 	. "$SV_LIB/routing-policy.sh"
 	# Capture the active generation before a validated fetch replaces the cache.
 	sv_policy_remember_applied >/dev/null 2>&1 || true
@@ -347,7 +371,7 @@ sv_ru_refresh() {
 	fi
 	# Network failover must not hold the writer lock needed by a reconnect.
 	sv_ru_lock || return 0
-	if ! sv_ru_enabled; then sv_ru_unlock; return 0; fi
+	if ! sv_ru_active; then sv_ru_unlock; return 0; fi
 	sv_policy_use_cache
 	revision="$(jsonfilter -i "$SV_VAR/routing-policy.json" -e '@.revision' 2>/dev/null)"
 	applied="$(cat "$SV_RUN/policy.applied" 2>/dev/null)"

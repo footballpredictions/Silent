@@ -143,8 +143,11 @@ case "$OP" in
 		;;
 	disconnect)
 		require_session
-		sv_disconnect_full
-		json_out 200 '{"ok":true,"connected":false}'
+		if sv_disconnect_full; then
+			json_out 200 '{"ok":true,"connected":false}'
+		else
+			json_out 500 '{"detail":"Не удалось полностью восстановить настройки сети. Повторите отключение VPN."}'
+		fi
 		;;
 	profile)
 		require_session

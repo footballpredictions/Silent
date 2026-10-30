@@ -18,6 +18,23 @@ CONNECTED = SESSION[SESSION.index("sv_session_connected()"):SESSION.index("sv_co
 
 @unittest.skipUnless(SHELL, "POSIX shell required for panel CGI scenarios")
 class PanelCgiTests(unittest.TestCase):
+    def test_disconnect_cgi_reports_failed_cleanup(self):
+        source = (ROOT / 'files/www/cgi-bin/silent-api').read_text(encoding='utf-8')
+        source = source.replace('SV_LIB="/usr/lib/silent-vpn"', '')
+        for name in ['common', 'hive', 'session']:
+            source = source.replace(f'. "$SV_LIB/{name}.sh"', '')
+        with tempfile.TemporaryDirectory() as directory:
+            output = self.run_script(directory, r'''
+sv_mkdir() { :; }
+sv_http_allow_lan() { return 0; }
+sv_session_active() { return 0; }
+sv_disconnect_full() { return 1; }
+PATH_INFO=/disconnect
+REQUEST_METHOD=POST
+''' + source)
+            self.assertIn('Status: 500', output)
+            self.assertNotIn('"ok":true', output)
+
     def test_exclusions_cgi_does_not_report_success_when_policy_fails(self):
         source = (ROOT / 'files/www/cgi-bin/silent-api').read_text(encoding='utf-8')
         source = source.replace('SV_LIB="/usr/lib/silent-vpn"', '')

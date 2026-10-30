@@ -46,7 +46,12 @@ sv_path_drop_blackhole() {
 }
 
 sv_path_clear() {
-	sv_path_dns_restore
+	local code=0
+	# Disable background reapplication before waiting for an in-flight writer.
+	rm -f "$SV_RUN/path.up"
+	. "$SV_LIB/ru-direct.sh"
+	sv_ru_stop || code=1
+	sv_path_dns_restore || code=1
 	sv_path_drop_blackhole
 	sv_path_kernel_restore
 	sv_path_offload_restore
@@ -58,6 +63,7 @@ sv_path_clear() {
 	uci -q commit network
 	ifdown "$SV_WG_IF" >/dev/null 2>&1 || true
 	rm -f "$SV_RUN/path.up" "$SV_VAR/wg.conf"
+	return "$code"
 }
 
 sv_path_write_conf() {
@@ -468,7 +474,9 @@ sv_path_dns_restore() {
 	local option value ipb
 	. "$SV_LIB/catalog-dns.sh"
 	sv_catalog_dns_stop || return 1
-	[ -d "$SV_VAR/dns.before" ] || return 0
+	# Also reload after removing bypass DNS sections when no upstream snapshot
+	# exists (for example, disconnecting an incomplete connection).
+	[ -d "$SV_VAR/dns.before" ] || { sv_path_dns_restart; return $?; }
 	ipb="$(sv_path_ip)"
 	for option in server noresolv; do
 		uci -q delete "dhcp.@dnsmasq[0].$option" || true

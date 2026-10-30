@@ -11,6 +11,12 @@ sv_catalog_dns_selected() {
 }
 sv_catalog_dns_stop() {
 	[ -f "$SV_RUN/catalog-dns.upstream" ] || return 0
+	# Stop the resolver even if restoring UCI fails; retain the upstream backup
+	# on failure so a subsequent disconnect/recovery can retry restoration.
+	if [ -x "$SV_CATALOG_SERVICE" ]; then
+		"$SV_CATALOG_SERVICE" stop || return 1
+	fi
+	rm -f "$SV_RUN/catalog-dns.ready" "$SV_RUN/catalog-dns.source"
 	uci -q del_list 'dhcp.@dnsmasq[0].server=127.0.0.1#15354' || true
 	if [ -z "$(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null)" ]; then
 		for server in $(cat "$SV_RUN/catalog-dns.upstream"); do
@@ -19,7 +25,6 @@ sv_catalog_dns_stop() {
 		done
 	fi
 	uci commit dhcp || return 1
-	[ ! -x "$SV_CATALOG_SERVICE" ] || "$SV_CATALOG_SERVICE" stop
 	rm -f "$SV_RUN/catalog-dns.ready" "$SV_RUN/catalog-dns.source" "$SV_RUN/catalog-dns.upstream"
 }
 sv_catalog_dns_bind() {

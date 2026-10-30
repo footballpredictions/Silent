@@ -65,10 +65,12 @@ sv_connect_full() {
 }
 
 sv_disconnect_full() {
+	local code=0
 	sv_log "----- disconnect -----"
 	sv_hive_disconnect >/dev/null || true
-	sv_path_clear
+	sv_path_clear || code=1
 	sv_cloak_stop
 	rm -f "$SV_RUN/connected"
 	sv_log "path down"
+	return "$code"
 }

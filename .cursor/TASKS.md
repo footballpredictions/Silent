@@ -1,5 +1,7 @@
 # TASKS — Silent VPN
 
+- [x] 2026-10-30: исправить расхождение availability summary/details в админке: local_health warning/degraded, отдельный DNS executor, HTTP к известномуIP сHost/SNI, корректные httpx timeout/details; UI причины локальных отказов/нейтральный partial coverage/UDP inconclusive. 4+5новых/58+12+4+9старых/backend20preflight/UI1280+390+evidence/build/detector PASS. Canonical4Python+UI опубликованы, source19 verified. Живой ручной цикл57с: HTTP/DNS OK,5active/151online, history+3GET согласованы, Сота2 внешняя служебная проба unconfirmed, health6.8ms/WDTT778/NRestarts0. По последующей команде «запуш» source9files опубликованы в origin/main0bea6c4, remote HEAD подтверждён; посторонний WIP сохранён.
+
 - [x] 2026-10-30: отключить `SilentVPN-main.log` на рабочем столе в релизной ПК-сборке: guard `DEBUG_BUILD` в `mirrorMainLog`, syntax и VM no-file-writes PASS. По последующей команде «пуш» только log-hunk опубликован в origin/pc e0660ac, remote HEAD проверен; без сборки/публикации релиза, старый firewall WIP сохранён.
 
 - [x] 2026-10-30: по команде «пуш» опубликованы исходники OpenWrt d2959cb, Keenetic25a5814 (толькоtest), backend78d4f13 (генераторописания);3remoteHEAD подтверждены. Содержательные diff/noBOM/LF/4архиваverified, чужойWIPсохранён; документы этойзадачи отдельнымчастичнымкоммитом, без повторногодеплоя/смены171.

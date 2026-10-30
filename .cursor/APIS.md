@@ -1,5 +1,20 @@
 # APIS — Silent VPN
 
+## Availability: локальные ошибки и неполный охват (2026-10-30)
+
+Опубликован warning-kind `local_health` для conclusive local HTTP/DNS ошибок:
+он даёт report.status=degraded, без вывода о блокировке VPN/автосмены IP/порта.
+При успешных проверенных узлах и неполных внешних измерениях прежний statusok
+сохраняет scoped summary, UI показывает «Часть проверок не подтверждена».
+В деталях видны локальные и peer причины; UDP silence остаётся inconclusive.
+DNS-проба больше не использует общую очередь SSH/provisioning; HTTP проверяет
+целевойIP с прежнимHost/SNI. Клиентский DNS/API-маршрут не менялся.
+Ручной POST `/api/admin/hive/availability/run` проверен: цикл57с, HTTP/DNSOK,
+history/last_status/3GET согласованы. Сота2 TCP9100 с2RU unconfirmed при живом
+локальномAPI; сведения о неполном охвате не скрываются. Canonical20preflight,
+source19 и публикацияUI443/2083PASS. По последующей команде «запуш» исходники
+опубликованы в origin/main0bea6c4, remote HEAD проверен; повторного деплоя не было.
+
 ## Пуш исходников (2026-10-30)
 
 По явнойкоманде «пуш»: backend/main78d4f13 — генераторGitHubdescriptionKeenetic;

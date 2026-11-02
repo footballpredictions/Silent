@@ -156,6 +156,10 @@ func RunSession(
 	defer sessCancel()
 
 	// Keepalive goroutine (TURN binding request)
+	var quality *relayQuality
+	if d.adaptive.Load() != nil {
+		quality = &relayQuality{}
+	}
 	var sessionWg sync.WaitGroup
 	sessionWg.Add(1)
 	go func() {
@@ -167,7 +171,13 @@ func RunSession(
 			case <-sessCtx.Done():
 				return
 			case <-t.C:
-				tc.SendBindingRequest()
+				if quality == nil {
+					tc.SendBindingRequest()
+				} else {
+					started := time.Now()
+					_, probeErr := tc.SendBindingRequest()
+					quality.observe(time.Since(started), probeErr, time.Now())
+				}
 			}
 		}
 	}()
@@ -327,8 +337,9 @@ func RunSession(
 
 	// Регистрация в диспетчере
 	slot := &WorkerSlot{
-		ID:     sessionID,
-		SendCh: make(chan []byte, workerSendBuf),
+		ID:      sessionID,
+		SendCh:  make(chan []byte, workerSendBuf),
+		quality: quality,
 	}
 	d.Register(slot)
 	defer d.Unregister(slot)

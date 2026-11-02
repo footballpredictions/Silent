@@ -69,6 +69,8 @@ val androidAuditTest = providers.gradleProperty("androidAuditTest").orNull == "t
 
 val whitelistCatalogTest = providers.gradleProperty("whitelistCatalogTest").orNull == "true"
 val transportLab = providers.gradleProperty("transportLab").orNull == "true"
+val udpRelayQuality = providers.gradleProperty("udpRelayQuality").orNull == "true"
+require(!udpRelayQuality || transportLab) { "udpRelayQuality requires the isolated transportLab debug build" }
 require(!transportLab || !whitelistCatalogTest) { "Choose only one private debug variant" }
 if (transportLab) {
     gradle.taskGraph.whenReady {
@@ -120,6 +122,7 @@ android {
     buildTypes {
         release {
             buildConfigField("boolean", "TRANSPORT_LAB", "false")
+            buildConfigField("boolean", "UDP_RELAY_QUALITY", "false")
             buildConfigField("boolean", "WHITELIST_CATALOG_TEST", "false")
             isMinifyEnabled = true
             isShrinkResources = true
@@ -140,6 +143,7 @@ android {
         }
         debug {
             buildConfigField("boolean", "TRANSPORT_LAB", transportLab.toString())
+            buildConfigField("boolean", "UDP_RELAY_QUALITY", udpRelayQuality.toString())
             isMinifyEnabled = false
             applicationIdSuffix = when { transportLab -> ".transporttest"; whitelistCatalogTest -> ".catalogtest"; else -> ".debug" }
             if (transportLab) versionNameSuffix = "-udp-20261102"

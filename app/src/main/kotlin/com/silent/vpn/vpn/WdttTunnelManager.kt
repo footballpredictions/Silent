@@ -182,6 +182,7 @@ object WdttTunnelManager {
         val activeHashCount: Int = HashChannelHelper.MAX_HASHES,
         val captchaMode: String = "auto",
         val vkAuthMode: String = "vkcalls",
+        val adaptiveRelays: Boolean = false,
         val apiWgConfig: String? = null,
         val isBootstrap: Boolean = false,
         /** Быстрый WG из кеша конфига (плитка QS, холодный старт). */
@@ -543,6 +544,7 @@ object WdttTunnelManager {
                                 "-vk-auth-mode", sanitizeVkAuthMode(params.vkAuthMode),
                             ),
                         )
+                        if (params.adaptiveRelays && !params.isBootstrap) add("-adaptive-relays")
                         systemDnsForLibclient(appContext).let { dns ->
                             add("-sys-dns")
                             add(dns)

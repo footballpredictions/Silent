@@ -38,8 +38,9 @@ const (
 )
 
 type WorkerSlot struct {
-	ID     int
-	SendCh chan []byte
+	ID      int
+	SendCh  chan []byte
+	quality *relayQuality
 }
 
 type Dispatcher struct {
@@ -54,6 +55,13 @@ type Dispatcher struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	stats      *Stats
+	adaptive   atomic.Pointer[relayScheduler]
+}
+
+// Enable only before starting workers in the opt-in test build. Existing ready
+// connections stay registered, including paths receiving a lower traffic share.
+func (d *Dispatcher) EnableAdaptiveRelays() {
+	d.adaptive.CompareAndSwap(nil, &relayScheduler{})
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
@@ -159,6 +167,12 @@ func (d *Dispatcher) readLoop() {
 
 		sent := false
 		idx := d.rrIndex % nw
+		if d.rrCount == 0 {
+			if adaptive := d.adaptive.Load(); adaptive != nil {
+				idx = adaptive.next(ws, idx, time.Now())
+				d.rrIndex = idx
+			}
+		}
 
 		// Пробуем текущий worker (chunk affinity)
 		w := ws[idx]

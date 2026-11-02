@@ -656,6 +656,7 @@ class SilentVpnService : Service() {
                     activeHashCount = activeHashCount,
                     captchaMode = vkCred.captchaMode,
                     vkAuthMode = vkCred.vkAuthMode,
+                    adaptiveRelays = com.silent.vpn.BuildConfig.UDP_RELAY_QUALITY && !isBootstrap,
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
                     fastWgCache = fastWgCache,

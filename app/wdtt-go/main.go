@@ -167,6 +167,7 @@ func main() {
 	connPassword := flag.String("password", "", "пароль подключения")
 	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs/manual)")
 	vkAuthMode := flag.String("vk-auth-mode", "vkcalls", "режим VK TURN-кредов (vkcalls/legacy)")
+	adaptiveRelays := flag.Bool("adaptive-relays", false, "opt-in conservative UDP relay quality scheduling")
 	fingerprint := flag.String("fingerprint", "chrome", "браузерный фингерпринт (chrome, safari, ios, android, firefox)")
 	clientIdsFlag := flag.String("client-ids", "", "ID клиентов VK через запятую")
 	sysDnsFlag := flag.String("sys-dns", "", "DNS оператора с Android (через запятую)")
@@ -314,6 +315,9 @@ func main() {
 	go stats.RunLoop(shutdownCh)
 
 	disp := NewDispatcher(ctx, localConn, stats)
+	if *adaptiveRelays {
+		disp.EnableAdaptiveRelays()
+	}
 	defer disp.Shutdown()
 
 	configCh := make(chan string, 1)

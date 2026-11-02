@@ -1,4 +1,4 @@
-param([switch]$NativeOnly)
+param([switch]$NativeOnly, [switch]$AdaptiveRelays)
 $ErrorActionPreference = 'Stop'
 $taskRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $taskApp = Join-Path $taskRoot 'app'
@@ -43,9 +43,12 @@ try {
 if (!$NativeOnly) {
     Push-Location $taskApp
     try {
-        & ./gradlew.bat '-PtransportLab=true' testDebugUnitTest assembleDebug
+        $taskGradleArgs = @('-PtransportLab=true')
+        if ($AdaptiveRelays) { $taskGradleArgs += '-PudpRelayQuality=true' }
+        & ./gradlew.bat @taskGradleArgs testDebugUnitTest assembleDebug
         if ($LASTEXITCODE -ne 0) { throw 'UDP tests/APK build failed' }
-        $taskRelease = Join-Path $taskRoot 'releases/SilentVPN-udp-clean-1.0.171-20261102.apk'
+        $taskName = if ($AdaptiveRelays) { 'SilentVPN-udp-relay-quality-1.0.171-20261102.apk' } else { 'SilentVPN-udp-clean-1.0.171-20261102.apk' }
+        $taskRelease = Join-Path $taskRoot "releases/$taskName"
         New-Item -ItemType Directory -Path (Split-Path $taskRelease) -Force | Out-Null
         $taskApkDirectory = Join-Path $taskApp 'build/outputs/apk/debug'
         $taskMetadata = Get-Content -LiteralPath (Join-Path $taskApkDirectory 'output-metadata.json') -Raw | ConvertFrom-Json

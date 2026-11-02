@@ -1,7 +1,9 @@
 # TASKS — Silent VPN
 
 - [x] 2026-11-02: пуш текущей UDP-only версии со старым форматом лога/уведомления: Android 1e0ad5e, remote HEAD verified; без production restart/deploy.
-- [ ] 2026-11-02: пункт2 — opt-in адаптивное качество UDP-релеев с консервативным fallback, тестами деградации/восстановления и без закрытия живых каналов; визуал/старую статистику не менять.
+- [x] 2026-11-02: пункт2, первый клиентский этап — opt-in UDP relay quality готов и push86df23f verified. Старые соединения/chunk8/queue/retry/статистика/UI сохранены; 6 новых/fullGo/vet/Linux race+348Android+4ABI/подпись/UIbytes PASS. Private APK65378585/6e38d8ba… временно опубликована/fullGET verified; URL/границы в MemoryBank.
+- [ ] Полевой A/B пилота relay quality на SIM владельца. Это только клиентское исходящее распределение; серверный download/goodput отдельно, оба пункта завершёнными не считать.
+- [ ] После тестирования удалить только manual/udp-quality-812d93f7c01487cf61164a22/SilentVPN-udp-relay-quality-1.0.171-20261102.apk; автоTTL нет.
 - [ ] 2026-11-02: пункт3 — уточнить автоподбор внутри UDP или разных транспортов; вопрос отправлен. Не возвращать TCP/TLS молча, не выдавать TURN RTT за полезную скорость всего VPN.
 
 - [x] 2026-11-02: вернуть старый вид логов/уведомления (только активные воркеры и трафик) с сохранением рабочего UDP и пересобрать. Stats/dispatcher reverted, лишние счётчики session удалены; Go/vet, 4 ABI, same package/signer, DEX identical и packaged old format PASS; APK udp-clean 65358761 bytes / 0aa55e5a… готова и временно опубликована; full HTTPS GET/SHA/size/MIME PASS, OTA прежний/WDTT778/NRestarts0/health200. URL/receipt в Memory Bank.

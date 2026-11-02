@@ -422,8 +422,10 @@ func parseVKCallsTURNAddresses(resp map[string]interface{}) []string {
 			log.Printf("[VKCalls] turn_server.urls[%d]=<non-string %T>, skipping", i, u)
 			continue
 		}
-		clean := strings.Split(s, "?")[0]
-		addr := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+		addr, err := validatedTURNURL(s)
+		if err != nil {
+			continue
+		}
 		log.Printf("[VKCalls] turn_server.urls[%d]=%s", i, addr)
 		addrs = append(addrs, addr)
 	}

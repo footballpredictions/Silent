@@ -633,10 +633,11 @@ class SilentVpnService : Service() {
                 )
             }
 
-            val vkCred = EntryPointAccessors.fromApplication(
+            val launchRepo = EntryPointAccessors.fromApplication(
                 applicationContext,
                 AppEntryPoint::class.java,
-            ).silentRepository().resolveVkCredLaunchParams()
+            ).silentRepository()
+            val vkCred = launchRepo.resolveVkCredLaunchParams()
 
             WdttTunnelManager.traceApp(
                 "service_connect",
@@ -650,7 +651,8 @@ class SilentVpnService : Service() {
                     vkHashes = libclientHashes.ifEmpty { wdttHashes },
                     wdttPassword = obj.getString("wdtt_password"),
                     deviceId = libclientDeviceId,
-                    workers = totalWorkers,
+                    workers = if (com.silent.vpn.BuildConfig.TRANSPORT_LAB && !isBootstrap)
+                        launchRepo.resolveWorkersForLibclient(activeHashCount) else totalWorkers,
                     activeHashCount = activeHashCount,
                     captchaMode = vkCred.captchaMode,
                     vkAuthMode = vkCred.vkAuthMode,

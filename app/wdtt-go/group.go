@@ -90,6 +90,13 @@ func WorkerGroup(
 	}
 
 	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров", groupID, creds.TurnURLs, len(workerIDs))
+	if _, err := selectUDPEndpoint(creds.TurnURLs, 0, tp.Host, tp.Port); err != nil {
+		log.Printf("[ГРУППА #%d] %v", groupID, err)
+		if signalReady != nil {
+			safeCloseChan(signalReady)
+		}
+		return
+	}
 
 	var configRequestInFlight int32
 	var wg sync.WaitGroup

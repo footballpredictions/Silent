@@ -68,6 +68,15 @@ val forbiddenReleaseLibs = setOf("libolcrtc.so", "libolcrtc2.so", "libhev-socks5
 val androidAuditTest = providers.gradleProperty("androidAuditTest").orNull == "true"
 
 val whitelistCatalogTest = providers.gradleProperty("whitelistCatalogTest").orNull == "true"
+val transportLab = providers.gradleProperty("transportLab").orNull == "true"
+require(!transportLab || !whitelistCatalogTest) { "Choose only one private debug variant" }
+if (transportLab) {
+    gradle.taskGraph.whenReady {
+        require(allTasks.none { it.name.contains("Release", ignoreCase = true) }) {
+            "transportLab is debug-only; do not publish its private native libraries as a release"
+        }
+    }
+}
 
 android {
     namespace = "com.silent.vpn"
@@ -110,6 +119,7 @@ android {
 
     buildTypes {
         release {
+            buildConfigField("boolean", "TRANSPORT_LAB", "false")
             buildConfigField("boolean", "WHITELIST_CATALOG_TEST", "false")
             isMinifyEnabled = true
             isShrinkResources = true
@@ -129,9 +139,11 @@ android {
             buildConfigField("String", "LIBCLIENT_SHA256_X86", "\"$libclientShaX86\"")
         }
         debug {
+            buildConfigField("boolean", "TRANSPORT_LAB", transportLab.toString())
             isMinifyEnabled = false
-            applicationIdSuffix = if (whitelistCatalogTest) ".catalogtest" else ".debug"
-            resValue("string", "app_name", if (whitelistCatalogTest) "Silent VPN (каталог-тест)" else "Silent VPN (debug)")
+            applicationIdSuffix = when { transportLab -> ".transporttest"; whitelistCatalogTest -> ".catalogtest"; else -> ".debug" }
+            if (transportLab) versionNameSuffix = "-udp-20261102"
+            resValue("string", "app_name", when { transportLab -> "Silent VPN (UDP-тест)"; whitelistCatalogTest -> "Silent VPN (каталог-тест)"; else -> "Silent VPN (debug)" })
             buildConfigField("boolean", "WHITELIST_CATALOG_TEST", whitelistCatalogTest.toString())
             buildConfigField("String", "BOOTSTRAP_VK_HASH", "\"$debugBootstrapVkHash\"")
             // Debug: пустые pins → AppIntegrity пропускает проверки
@@ -172,7 +184,7 @@ android {
             if (whitelistCatalogTest) assets.srcDir("src/catalogTest/assets")
         }
         getByName("main") {
-            jniLibs.srcDirs("src/main/jniLibs")
+            jniLibs.setSrcDirs(listOf(if (transportLab) "src/transportLab/jniLibs" else "src/main/jniLibs"))
         }
     }
 }

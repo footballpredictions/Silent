@@ -89,35 +89,19 @@ func RunSession(
 	if len(creds.TurnURLs) == 0 {
 		return false, fmt.Errorf("нет TURN URL в учетных данных")
 	}
-	selectedURL := creds.TurnURLs[sessionID%len(creds.TurnURLs)]
-
-	urlhost, urlport, err := net.SplitHostPort(selectedURL)
+	turnConn, endpoint, err := dialUDPTURN(ctx, creds.TurnURLs, sessionID, tp)
 	if err != nil {
-		return false, fmt.Errorf("разбор TURN URL %q: %w", selectedURL, err)
+		return false, err
 	}
-	if tp.Host != "" {
-		urlhost = tp.Host
+	defer turnConn.Close()
+	stopTransport := context.AfterFunc(ctx, func() { _ = turnConn.Close() })
+	defer stopTransport()
+	turnAddr := net.JoinHostPort(endpoint.Host, endpoint.Port)
+	remoteAddress := turnAddr
+	if remote, ok := turnConn.(interface{ RemoteAddr() net.Addr }); ok && remote.RemoteAddr() != nil {
+		remoteAddress = remote.RemoteAddr().String()
 	}
-	if tp.Port != "" {
-		urlport = tp.Port
-	}
-	turnAddr := net.JoinHostPort(urlhost, urlport)
-
-	// Транспорт: всегда UDP
-	resolved, err := net.ResolveUDPAddr("udp", turnAddr)
-	if err != nil {
-		return false, fmt.Errorf("резолв TURN: %w", err)
-	}
-	c, err := dialUDPForTURN(resolved)
-	if err != nil {
-		return false, fmt.Errorf("подключение TURN UDP: %w", err)
-	}
-	defer c.Close()
-	_ = c.SetReadBuffer(socketBufSize)
-	_ = c.SetWriteBuffer(socketBufSize)
-	var turnConn net.PacketConn = &connectedUDPConn{c}
-
-	log.Printf("[СЕССИЯ #%d] TURN UDP (%s)", sessionID, turnAddr)
+	log.Printf("[СЕССИЯ #%d] TURN UDP (%s)", sessionID, remoteAddress)
 
 	// RequestedAddressFamily
 	var addrFamily turn.RequestedAddressFamily

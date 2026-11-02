@@ -1,5 +1,23 @@
 # TASKS — Silent VPN
 
+- [x] 2026-11-02: пуш текущей UDP-only версии со старым форматом лога/уведомления: Android 1e0ad5e, remote HEAD verified; без production restart/deploy.
+- [ ] 2026-11-02: пункт2 — opt-in адаптивное качество UDP-релеев с консервативным fallback, тестами деградации/восстановления и без закрытия живых каналов; визуал/старую статистику не менять.
+- [ ] 2026-11-02: пункт3 — уточнить автоподбор внутри UDP или разных транспортов; вопрос отправлен. Не возвращать TCP/TLS молча, не выдавать TURN RTT за полезную скорость всего VPN.
+
+- [x] 2026-11-02: вернуть старый вид логов/уведомления (только активные воркеры и трафик) с сохранением рабочего UDP и пересобрать. Stats/dispatcher reverted, лишние счётчики session удалены; Go/vet, 4 ABI, same package/signer, DEX identical и packaged old format PASS; APK udp-clean 65358761 bytes / 0aa55e5a… готова и временно опубликована; full HTTPS GET/SHA/size/MIME PASS, OTA прежний/WDTT778/NRestarts0/health200. URL/receipt в Memory Bank.
+- [ ] После тестирования удалить только manual/udp-clean-b50dfe9fa350074f17e9dd38/SilentVPN-udp-clean-1.0.171-20261102.apk; авто TTL нет.
+
+- [x] 2026-11-02: по результату владельца UDP~100Мбит/с удалены selector/TCP/TLS/preview/CLI, сохранены UDP/settings/workers и обычный UI. APK UDP-only65358761bytes/5bf37d6e…; Go/vet+348Android+4ABI/signature/same cert+package+exactsettings PASS. ВременныйHTTPS fullGET/SHA/size/MIME verified, OTA unchanged/WDTT778/NRestarts0/health200. URL иreceipt вMemoryBank; без production/deploy/push.
+- [ ] После полевого теста UDP-only удалить только manual/udp-test-1e81de8ae9c897cc61045288/SilentVPN-udp-test-1.0.171-20261102.apk;автоTTL нет. Скорость новой сборки проверяет владелец.
+
+- [x] 2026-11-02: по запросу владельца временно опубликовать APKtransportlab как manualHTTPSdownload; fullGET66281305/SHAexact,OTAunchanged,WDTT778/NRestarts0/health200. Пункты2/3adaptivequality/autocarrierне реализованы, не выдаватьручнойвыборзаавтоматизацию. URL/receiptвMemoryBank.
+- [ ] После завершения тестирования удалить только manual/transport-lab-0852c7196af8210c44d0e486/SilentVPN-transport-test-1.0.171-20261102.apk;таймернеустановлен.
+
+- [x] 2026-11-02: Androidprivate transporttestUDPTCP/TLS+9/27/63+safe diagnostics готов. APK66281305bytes/b055adf8… packaged4nativeSHA/ELF/signaturePASS,351Android+Go/vet+localTURN3modesPASS. API31emulatoractualpreferences/restart/disabled/copyQA PASS;release/mainlibclient/production/сервера/pushне менялись. READMEandroid/TRANSPORT-LAB.md. СкоростьнаSIMждётполевогоA/B.
+
+- [x] 2026-11-02: аудит скорости Android1–10приwhite lists противVLESSнаоднойSIM/месте: текущийVKUDPpath/RR/noqualitymetrics,2readonly5nodewindows,isolatedactualDTLS/obfsMTUaccounting,primaryresearchVP8/KCP/Xray. Audit/researchMDготовы,production/серверы/сессии/публикации/commit/pushнет. MTUрискgameотдельный,нетпричинностивсегосимптома.
+- [ ] 2026-11-02: воспроизвести именно проблемный мобильный путь наAndroid: activecarrier+nativeSHA,одинаковыйendpointSilent/VLESS1/4flows,RTT/loss/queue/goodput. Послеэтогоopt-intestquality-awareVKилиTCP/TLSpath,безмассовойсменысерверов. Покаэтоидеиаудита,неподтверждённыйperf-фикс.
+
 - [x] 2026-10-30: исправить расхождение availability summary/details в админке: local_health warning/degraded, отдельный DNS executor, HTTP к известномуIP сHost/SNI, корректные httpx timeout/details; UI причины локальных отказов/нейтральный partial coverage/UDP inconclusive. 4+5новых/58+12+4+9старых/backend20preflight/UI1280+390+evidence/build/detector PASS. Canonical4Python+UI опубликованы, source19 verified. Живой ручной цикл57с: HTTP/DNS OK,5active/151online, history+3GET согласованы, Сота2 внешняя служебная проба unconfirmed, health6.8ms/WDTT778/NRestarts0. По последующей команде «запуш» source9files опубликованы в origin/main0bea6c4, remote HEAD подтверждён; посторонний WIP сохранён.
 
 - [x] 2026-10-30: отключить `SilentVPN-main.log` на рабочем столе в релизной ПК-сборке: guard `DEBUG_BUILD` в `mirrorMainLog`, syntax и VM no-file-writes PASS. По последующей команде «пуш» только log-hunk опубликован в origin/pc e0660ac, remote HEAD проверен; без сборки/публикации релиза, старый firewall WIP сохранён.

@@ -1894,6 +1894,8 @@ async def list_promos(
 ):
     result = await db.execute(select(PromoCode).where(PromoCode.deleted_at.is_(None)).order_by(PromoCode.created_at.desc()))
     promos = result.scalars().all()
+    from app.services.promo_analytics import promo_campaigns, COUNT_KEYS
+    analytics = {row['code']:row for row in await promo_campaigns(db)}
     return [
         {
             "id": str(p.id),
@@ -1903,6 +1905,7 @@ async def list_promos(
             "extra_days": p.extra_days,
             "max_uses": p.max_uses,
             "use_count": p.use_count,
+            **{key:analytics.get(p.code.strip().upper(), {}).get(key, 0) for key in COUNT_KEYS},
             "is_active": p.is_active,
             "expires_at": p.expires_at,
         }
@@ -2027,6 +2030,8 @@ async def bonuses_stats(
         for u in promo_users_q.scalars().all()
     ]
 
+    from app.services.promo_analytics import promo_campaigns, promo_totals
+    campaigns = await promo_campaigns(db)
     return {
         "summary": {
             "referral_pairs_total": int(total_rewards or 0),
@@ -2040,7 +2045,22 @@ async def bonuses_stats(
         "top_inviters": top_inviters,
         "recent_referrals": recent,
         "pending_promo_registrations": promo_regs,
+        "promo_campaigns": campaigns,
+        "promo_summary": await promo_totals(db),
     }
+
+
+@router.get("/bonuses/promo-users")
+async def bonuses_promo_users(
+    code: str | None = Query(None, max_length=50),
+    activity: Literal['all', 'paid', 'paid_active', 'unpaid'] = 'all',
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.promo_analytics import promo_users
+    return await promo_users(db, code=code, activity=activity, offset=offset, limit=limit)
 
 
 # App updates (PC / Android)

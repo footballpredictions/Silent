@@ -2,6 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, Gift, Users, Tag, Trash2 } from 'lucide-react'
 
 type Tab = 'promo' | 'stats'
+type PromoCounts = { users_count: number; paid_users_count: number; subscribed_users_count: number; paid_active_users_count: number }
+type PromoUser = {
+  user_id: string; code: string; email: string; display_id: string; created_at: string; last_seen_at: string | null
+  has_paid: boolean; paid_count: number; paid_total: number; last_paid_at: string | null
+  has_active_subscription: boolean; active_until: string | null; paid_active_7d: boolean; vpn_online: boolean
+}
+type PromoUsers = { items: PromoUser[]; total: number; offset: number; limit: number; summary: PromoCounts }
+const dateTime = (value: string | null) => value ? new Date(value).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '—'
 
 export default function BonusesPage({ token }: { token: string }) {
   const [tab, setTab] = useState<Tab>('promo')
@@ -14,6 +22,16 @@ export default function BonusesPage({ token }: { token: string }) {
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const deleteDialog = useRef<HTMLDialogElement>(null)
+  const [statsError, setStatsError] = useState('')
+  const [promoCode, setPromoCode] = useState('')
+  const [promoActivity, setPromoActivity] = useState('all')
+  const [promoOffset, setPromoOffset] = useState(0)
+  const [promoUsers, setPromoUsers] = useState<PromoUsers | null>(null)
+  const [promoUsersBusy, setPromoUsersBusy] = useState(false)
+  const [promoUsersError, setPromoUsersError] = useState('')
+  const [promoRefresh, setPromoRefresh] = useState(0)
+  const promoSection = useRef<HTMLElement>(null)
+  const scrollToPromo = useRef(false)
 
   useEffect(() => {
     const dialog = deleteDialog.current
@@ -29,9 +47,13 @@ export default function BonusesPage({ token }: { token: string }) {
 
   const fetchStats = useCallback(async () => {
     setLoadingStats(true)
+    setStatsError('')
     try {
       const res = await fetch('/api/admin/bonuses/stats', { headers: { Authorization: `Bearer ${token}` } })
-      if (res.ok) setStats(await res.json())
+      if (!res.ok) throw new Error('stats')
+      setStats(await res.json())
+    } catch {
+      setStatsError('Не удалось загрузить статистику. Повторите попытку.')
     } finally {
       setLoadingStats(false)
     }
@@ -44,6 +66,40 @@ export default function BonusesPage({ token }: { token: string }) {
   useEffect(() => {
     if (tab === 'stats') fetchStats()
   }, [tab, fetchStats])
+
+  useEffect(() => {
+    if (tab !== 'stats') return
+    const controller = new AbortController()
+    setPromoUsersBusy(true)
+    setPromoUsersError('')
+    setPromoUsers(null)
+    const params = new URLSearchParams({ offset: String(promoOffset), limit: '50', activity: promoActivity })
+    if (promoCode) params.set('code', promoCode)
+    fetch(`/api/admin/bonuses/promo-users?${params}`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error('promo users')
+        const data: PromoUsers = await response.json()
+        if (!controller.signal.aborted) setPromoUsers(data)
+      }).catch(() => {
+        if (!controller.signal.aborted) setPromoUsersError('Не удалось загрузить пользователей промокода. Повторите попытку.')
+      }).finally(() => { if (!controller.signal.aborted) setPromoUsersBusy(false) })
+    return () => controller.abort()
+  }, [tab, token, promoCode, promoActivity, promoOffset, promoRefresh])
+
+  const openPromoStats = (code: string) => {
+    scrollToPromo.current = true
+    setPromoCode(code)
+    setPromoActivity('all')
+    setPromoOffset(0)
+    setTab('stats')
+  }
+
+  useEffect(() => {
+    if (tab === 'stats' && scrollToPromo.current && promoSection.current) {
+      promoSection.current.scrollIntoView({ block: 'start' })
+      scrollToPromo.current = false
+    }
+  }, [tab, promoCode])
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -166,7 +222,8 @@ export default function BonusesPage({ token }: { token: string }) {
                   <th className="text-left px-4 py-3">Код</th>
                   <th className="text-left px-4 py-3">Скидка</th>
                   <th className="text-left px-4 py-3">Бонус дней</th>
-                  <th className="text-left px-4 py-3">Использован</th>
+                  <th className="text-left px-4 py-3">Пользователи</th>
+                  <th className="text-left px-4 py-3">Применения при оплате</th>
                   <th className="text-left px-4 py-3">Истекает</th>
                   <th className="text-right px-4 py-3">Действия</th>
                 </tr>
@@ -177,7 +234,13 @@ export default function BonusesPage({ token }: { token: string }) {
                     <td className="px-4 py-3 font-mono font-bold">{p.code}</td>
                     <td className="px-4 py-3">{p.discount_percent}%</td>
                     <td className="px-4 py-3">+{p.extra_days} дн.</td>
-                    <td className="px-4 py-3 text-[#888]">{p.use_count} / {p.max_uses}</td>
+                    <td className="px-4 py-3">
+                      <button type="button" onClick={() => openPromoStats(p.code)} aria-label={`Статистика промокода ${p.code}`} className="text-left rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400">
+                        <span className="text-violet-300 hover:text-violet-200 underline underline-offset-4">{p.users_count ?? 0} с кодом</span>
+                        <span className="block text-xs text-[#aaa] mt-1">Оплатили: {p.paid_users_count ?? 0} · оплатили и активны: {p.paid_active_users_count ?? 0}</span>
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-[#aaa] whitespace-nowrap">{p.use_count} / {p.max_uses}</td>
                     <td className="px-4 py-3 text-[#888]">{p.expires_at ? String(p.expires_at).split('T')[0] : '—'}</td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -193,7 +256,7 @@ export default function BonusesPage({ token }: { token: string }) {
                   </tr>
                 ))}
                 {!promos.length && (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-[#555]">Промокодов пока нет</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-[#555]">Промокодов пока нет</td></tr>
                 )}
               </tbody>
             </table>
@@ -236,13 +299,14 @@ export default function BonusesPage({ token }: { token: string }) {
       {tab === 'stats' && (
         <div className="space-y-6">
           {loadingStats && !stats && <p className="text-sm text-[#666]">Загрузка…</p>}
+          {statsError && <p role="alert" className="text-sm text-red-400">{statsError} <button type="button" onClick={() => void fetchStats()} className="underline underline-offset-4">Повторить</button></p>}
           {s && (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
               {[
                 ['По рефералке', s.users_from_referral],
                 ['Ожидают оплату', s.referral_pending],
                 ['Награждено пар', s.referral_rewarded],
-                ['С промо (pending)', s.users_with_pending_promo],
+                ['Пользователей с промо', stats?.promo_summary?.users_count ?? s.users_with_pending_promo],
                 [`Лимит / +дней`, `${s.monthly_reward_limit} / +${s.bonus_days}`],
               ].map(([label, val]) => (
                 <div key={String(label)} className="bg-[#111] border border-[#222] rounded-xl p-4">
@@ -329,41 +393,99 @@ export default function BonusesPage({ token }: { token: string }) {
             </table>
           </div>
 
-          <div className="bg-[#111] border border-[#222] rounded-xl overflow-x-auto">
-            <div className="px-4 py-3 border-b border-[#222] font-semibold text-sm">
-              Регистрации с промокодом (ещё не применён при оплате)
+          <section ref={promoSection} className="bg-[#111] border border-[#222] rounded-xl overflow-hidden" aria-labelledby="promo-activity-title">
+            <div className="px-4 py-4 border-b border-[#222] space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 id="promo-activity-title" className="font-semibold text-sm">Промокоды: оплаты и активность</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label htmlFor="promo-code-filter" className="text-xs text-[#aaa]">Промокод</label>
+                  <select id="promo-code-filter" value={promoCode} onChange={event => { setPromoCode(event.target.value); setPromoOffset(0) }} className="max-w-full rounded-lg border border-[#333] bg-[#111] px-3 py-2 text-sm focus-visible:outline-violet-400">
+                    <option value="">Все коды</option>
+                    {(stats?.promo_campaigns || []).map((campaign: { code: string }) => <option key={campaign.code} value={campaign.code}>{campaign.code}</option>)}
+                    {promoCode && !stats?.promo_campaigns?.some((c: { code: string }) => c.code === promoCode) && <option value={promoCode}>{promoCode}</option>}
+                  </select>
+                  <label htmlFor="promo-activity-filter" className="sr-only">Оплата и активность</label>
+                  <select id="promo-activity-filter" value={promoActivity} onChange={event => { setPromoActivity(event.target.value); setPromoOffset(0) }} className="max-w-full rounded-lg border border-[#333] bg-[#111] px-3 py-2 text-sm focus-visible:outline-violet-400">
+                    <option value="all">Все пользователи</option>
+                    <option value="paid">Оплатившие</option>
+                    <option value="paid_active">Оплатили и активны</option>
+                    <option value="unpaid">Без оплат</option>
+                  </select>
+                  <button type="button" disabled={promoUsersBusy || loadingStats} onClick={() => { setPromoRefresh(value => value + 1); void fetchStats() }} className="rounded-lg border border-[#333] px-3 py-2 text-xs text-[#ccc] hover:bg-[#222] disabled:opacity-50">Обновить</button>
+                </div>
+              </div>
+              {promoUsers && <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm" aria-live="polite">
+                <span>Пользователей: <strong>{promoUsers.summary.users_count}</strong></span>
+                <span>Оплатили: <strong>{promoUsers.summary.paid_users_count}</strong>{promoUsers.summary.users_count > 0 && <span className="text-[#aaa]"> ({(100 * promoUsers.summary.paid_users_count / promoUsers.summary.users_count).toLocaleString('ru-RU', { maximumFractionDigits: 1 })}%)</span>}</span>
+                <span>Подписка действует: <strong>{promoUsers.summary.subscribed_users_count}</strong></span>
+                <span>Оплатили и активны: <strong className="text-emerald-400">{promoUsers.summary.paid_active_users_count}</strong></span>
+              </div>}
+              <p className="text-xs text-[#aaa] leading-relaxed">Учитываются пользователи, указавшие код при регистрации или оплате. Оплаты — успешные платежи этих пользователей. «Оплатили и активны» — есть действующая подписка и активность приложения за последние 7 дней после оплаты. Регистрация сама по себе сюда не входит.</p>
             </div>
-            <table className="w-full text-sm min-w-[480px]">
+            {promoUsersBusy && <p role="status" className="px-4 py-5 text-sm text-[#aaa]">Загрузка пользователей…</p>}
+            {promoUsersError && <p role="alert" className="px-4 py-5 text-sm text-red-400">{promoUsersError} <button type="button" onClick={() => setPromoRefresh(value => value + 1)} className="underline underline-offset-4">Повторить</button></p>}
+            <div className="promo-mobile-users sm:hidden divide-y divide-[#222]">
+              {(promoUsers?.items || []).map(u => <article key={`${u.user_id}-${u.code}`} className="px-4 py-4 space-y-2 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0"><p className="break-words">{u.email}</p><p className="text-xs text-[#aaa] mt-1">{u.display_id}</p></div>
+                  <span className="font-mono text-violet-300 shrink-0">{u.code}</span>
+                </div>
+                <p className={u.has_paid ? 'text-emerald-400' : 'text-[#aaa]'}>{u.has_paid ? `Оплачено ${u.paid_total.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽ · ${u.paid_count} платежей` : 'Не оплачивал'}</p>
+                {u.has_paid && <p className="text-xs text-[#aaa]">Последняя оплата: {dateTime(u.last_paid_at)}</p>}
+                <p className="text-xs text-[#aaa]">{u.has_active_subscription ? `Подписка до ${dateTime(u.active_until)}` : 'Нет действующей подписки'}</p>
+                {u.paid_active_7d && <p className="text-emerald-400">Оплатил и активен</p>}
+                {u.vpn_online && <p className="text-emerald-400">VPN онлайн</p>}
+                <p className="text-xs text-[#aaa]">Последняя активность: {dateTime(u.last_seen_at)}</p>
+                <p className="text-xs text-[#aaa]">Регистрация: {dateTime(u.created_at)}</p>
+              </article>)}
+              {!promoUsersBusy && !promoUsersError && promoUsers && !promoUsers.items.length && <p className="px-4 py-8 text-sm text-[#aaa]">Нет пользователей с выбранными условиями</p>}
+            </div>
+            <div className="hidden sm:block overflow-x-auto">
+            <table className="w-full text-sm min-w-[820px]" aria-label="Пользователи промокодов">
               <thead>
-                <tr className="border-b border-[#222] text-[#555] text-xs uppercase tracking-wider">
-                  <th className="text-left px-4 py-3">Источник</th>
+                <tr className="border-b border-[#222] text-[#aaa] text-xs uppercase tracking-wider">
                   <th className="text-left px-4 py-3">Пользователь</th>
                   <th className="text-left px-4 py-3">Промокод</th>
-                  <th className="text-left px-4 py-3">Дата</th>
+                  <th className="text-left px-4 py-3">Оплаты</th>
+                  <th className="text-left px-4 py-3">Подписка</th>
+                  <th className="text-left px-4 py-3">Активность</th>
                 </tr>
               </thead>
               <tbody>
-                {(stats?.pending_promo_registrations || []).map((u: any) => (
-                  <tr key={u.user_id} className="border-b border-[#1a1a1a]">
+                {(promoUsers?.items || []).map(u => (
+                  <tr key={`${u.user_id}-${u.code}`} className="border-b border-[#1a1a1a] align-top">
+                    <td className="px-4 py-3 max-w-[260px]">
+                      <div className="break-words">{u.email}</div>
+                      <div className="text-[11px] text-[#aaa] mt-1">{u.display_id} · регистрация {dateTime(u.created_at)}</div>
+                    </td>
+                    <td className="px-4 py-3 font-mono font-bold">{u.code}</td>
                     <td className="px-4 py-3">
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-300">промо</span>
+                      {u.has_paid ? <><div className="text-emerald-400">{u.paid_total.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽ · {u.paid_count} платежей</div><div className="text-xs text-[#aaa] mt-1">Последняя: {dateTime(u.last_paid_at)}</div></> : <span className="text-[#aaa]">Не оплачивал</span>}
                     </td>
                     <td className="px-4 py-3">
-                      <div>{u.email}</div>
-                      <div className="text-[11px] text-[#555]">{u.display_id}</div>
+                      {u.has_active_subscription ? <><div className="text-emerald-400">Действует</div><div className="text-xs text-[#aaa] mt-1">До {dateTime(u.active_until)}</div></> : <span className="text-[#aaa]">Нет действующей</span>}
                     </td>
-                    <td className="px-4 py-3 font-mono font-bold">{u.pending_promo_code}</td>
-                    <td className="px-4 py-3 text-[#888] text-xs">
-                      {u.created_at ? String(u.created_at).replace('T', ' ').slice(0, 16) : '—'}
+                    <td className="px-4 py-3">
+                      {u.vpn_online && <div className="text-emerald-400">VPN онлайн</div>}
+                      {u.paid_active_7d && <div className="text-emerald-400">Оплатил и активен</div>}
+                      <div className="text-xs text-[#aaa] mt-1">Последняя: {dateTime(u.last_seen_at)}</div>
                     </td>
                   </tr>
                 ))}
-                {!stats?.pending_promo_registrations?.length && (
-                  <tr><td colSpan={4} className="px-4 py-8 text-center text-[#555]">Нет регистраций с непромотанным промо</td></tr>
+                {!promoUsersBusy && !promoUsersError && promoUsers && !promoUsers.items.length && (
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-[#aaa]">Нет пользователей с выбранными условиями</td></tr>
                 )}
               </tbody>
             </table>
-          </div>
+            </div>
+            {promoUsers && promoUsers.total > 0 && <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-[#222] text-xs text-[#aaa]">
+              <span>Записи {promoOffset + 1}–{Math.min(promoOffset + promoUsers.items.length, promoUsers.total)} из {promoUsers.total}</span>
+              <div className="flex gap-2">
+                <button type="button" disabled={!promoOffset || promoUsersBusy} onClick={() => setPromoOffset(value => Math.max(0, value - 50))} className="rounded-lg border border-[#333] px-3 py-2 hover:bg-[#222] disabled:opacity-40">Назад</button>
+                <button type="button" disabled={promoOffset + 50 >= promoUsers.total || promoUsersBusy} onClick={() => setPromoOffset(value => value + 50)} className="rounded-lg border border-[#333] px-3 py-2 hover:bg-[#222] disabled:opacity-40">Далее</button>
+              </div>
+            </div>}
+          </section>
         </div>
       )}
     </div>

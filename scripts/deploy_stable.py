@@ -47,6 +47,7 @@ PREFLIGHT_TESTS = (
     "scripts/test_cell_disk_metrics_unit.py",
     "scripts/test_vps_cleanup_install_unit.py",
     "scripts/test_vps_cleanup_unit.py",
+    "scripts/test_promo_analytics_unit.py",
 )
 
 
@@ -82,6 +83,7 @@ CRITICAL_PYTHON = (
     'app/models/payment.py',
     'app/services/dashboard_node_stats.py',
     'app/services/vps_cleanup_settings.py', 'app/services/inactive_user_cleanup.py',
+    'app/services/promo_analytics.py',
 )
 
 

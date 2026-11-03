@@ -1,5 +1,15 @@
 # APIS — Silent VPN
 
+## Локальное восстановление API на сотах (2026-11-03)
+
+Добавлен encrypted `offline_api` в существующий `/v1/sync-manifest`, опциональный/по умолчанию выключен. На соте поддерживаются прежние DTO и маршруты `POST /api/auth/login`, `/auth/refresh`, `/vpn/device/register` (только уже зарегистрированное устройство), `/vpn/servers/select`, `/vpn/connect`, `/vpn/disconnect`; GET `/vpn/config`, `/vpn/servers`, `/vpn/hashes`, `/users/me`. Подробные границы/rollout/отключение: `STANDBY-RECOVERY.md`.
+
+Основной путь proxy к Улью сохраняется. Успешные ответы и4xx Улья авторитетны, network/5xx допускают snapshot; recovery proxy ограничен общим бюджетом8с. После прежних3healthfail готовый snapshot обслуживается сразу. DNAT-controller/пороги не менялись. Новый offline handler не меняет WG/WDTT, peer manifest не превращён в глобальный список устройств. Работает прежний GETCONF и старый config schema; Android/PC/UI не менялись.
+
+Для старых JWT используется отдельная verified-only таблица SHA256-grants; неизвестный JWT→503 (без logout/доверия к произвольному sub). При нормальных запросах/выдаче token grants пишутся асинхронно,2DBtasks/queue32/3с, в свежий snapshot попадают на очередной синхронизации. Offline password login выдаёт предписанную Ульем пару scope`vpn-recovery-v1`, абсолютный срок1ч; refresh не расширяет scope/срок. Offline refresh прежнего клиента сохраняет его исходный refresh-token для нормального продолжения после возвращения Улья. Улей не выдаёт scoped-токену admin/account writes/новое устройство.
+
+Ключи per-cell Fernet передаются SSH0600; основной JWT_SECRET не реплицируется. Срок снимка1ч, кеш сборки/шифрованиядо60с с invalidate для revoke, manifest readcache по inode/mtime/size. Регистрация нового аккаунта/нового устройства, платежи и изменение аккаунта остаются центральными. Доступность VK/TURN, физической ноды и достижимого клиентом API этот режим не заменяет.
+
 ## Availability: локальные ошибки и неполный охват (2026-10-30)
 
 Опубликован warning-kind `local_health` для conclusive local HTTP/DNS ошибок:

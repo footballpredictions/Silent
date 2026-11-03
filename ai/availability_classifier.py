@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from ai.availability_knowledge import (
+    KIND_CLIENT_DEGRADED,
     KIND_ACTIVE_PROBING,
     KIND_ASN_PARTIAL,
     KIND_DNS_POISONING,
@@ -72,8 +73,6 @@ MIN_FAILURE_NODES = 2
 _APP_HTTP_MARKERS = ("HTTP 401", "HTTP 403", "HTTP 404", "HTTP 500", "HTTP 502", "HTTP 503")
 # Минимум клиентских отказов, ниже которого не делаем выводов по телеметрии.
 CLIENT_MIN_FAILURES = 5
-# Доля мобильных отказов, при которой это уже режим мобильной сети, а не наш IP.
-MOBILE_SHARE = 0.7
 # Во сколько раз RTT из РФ должен превышать контрольный, чтобы звать это шейпингом.
 THROTTLE_RTT_FACTOR = 3.0
 THROTTLE_RTT_FLOOR_MS = 250.0
@@ -641,75 +640,35 @@ def _client_verdicts(snap: TargetSnapshot) -> list[Verdict]:
     signals = snap.clients
     if signals is None or signals.failures < CLIENT_MIN_FAILURES:
         return []
-    out: list[Verdict] = []
-
-    mobile = int(signals.by_network.get("mobile", 0))
-    if signals.failures and mobile / signals.failures >= MOBILE_SHARE:
-        transport = [c for c in snap.ru_channels() if c != CHANNEL_DNS]
-        if transport and all(snap.ru[c].all_ok for c in transport):
-            carriers = sorted(signals.by_carrier.items(), key=lambda kv: -kv[1])[:3]
-            out.append(
-                _verdict(
-                    snap,
-                    KIND_MOBILE_SHUTDOWN,
-                    confidence=0.7,
-                    summary="Отказы почти только на мобильных сетях — ограничения у операторов.",
-                    evidence=[
-                        f"{mobile} из {signals.failures} отказов за {signals.window_minutes} мин "
-                        f"пришли с network_type=mobile.",
-                        f"Операторы: {', '.join(f'{k}×{v}' for k, v in carriers) or 'не переданы'}.",
-                        "Внешние пробы из РФ при этом проходят — наш IP доступен.",
-                    ],
-                )
-            )
-
-    # Внешние сервисы не умеют честно проверять наш UDP (wdtt/WG не отвечают на мусор),
-    # поэтому UDP-доступность из РФ различаем по стадии отказа у клиентов.
-    handshake = signals.stage(STAGE_HANDSHAKE)
-    dead = signals.stage(STAGE_TUNNEL_DEAD)
-    early = signals.stage(STAGE_TCP) + signals.stage(STAGE_TLS)
     api_ok = any(snap.ru[c].all_ok for c in snap.ru_channels() if c in TCP_CHANNELS)
+    if not api_ok:
+        return []
 
-    if api_ok and (dead + signals.short_lived_tunnels) >= CLIENT_MIN_FAILURES:
-        out.append(
-            _verdict(
-                snap,
-                KIND_PROTOCOL_FINGERPRINT,
-                confidence=0.7 if signals.short_lived_tunnels else 0.6,
-                summary="Туннель поднимается и умирает — похоже на DPI по отпечатку потока.",
-                evidence=[
-                    f"{dead} отказов tunnel_dead и {signals.short_lived_tunnels} короткоживущих "
-                    f"туннелей за {signals.window_minutes} мин.",
-                    f"На стадиях tcp/tls отказов только {early} — транспорт до сервера доходит.",
-                    "TCP-порты из РФ отвечают: адрес и порт не заблокированы.",
-                ],
-            )
+    # Anonymous failure-only telemetry has no independent device count, success
+    # denominator or matched network control. It cannot establish DPI, UDP
+    # filtering or an operator shutdown, even when many reports share a stage.
+    dead = signals.stage(STAGE_TUNNEL_DEAD)
+    handshake = signals.stage(STAGE_HANDSHAKE)
+    early = signals.stage(STAGE_TCP) + signals.stage(STAGE_TLS)
+    if dead >= CLIENT_MIN_FAILURES:
+        summary = "Клиенты сообщают о самопроизвольных обрывах туннеля; причина не установлена."
+    elif handshake >= CLIENT_MIN_FAILURES:
+        summary = "Клиенты сообщают об ошибках рукопожатия; причина не установлена."
+    else:
+        summary = "Есть клиентские сообщения о сбоях; причина не установлена."
+    return [
+        _verdict(
+            snap, KIND_CLIENT_DEGRADED, confidence=0.6, summary=summary,
+            evidence=[
+                f"{signals.failures} сообщений о сбоях за {signals.window_minutes} мин; "
+                "число независимых устройств и доля успешных подключений неизвестны.",
+                f"Стадии: tunnel_dead={dead}, handshake={handshake}, tcp/tls={early}.",
+                f"В отчётах {signals.short_lived_tunnels} коротких сессий; "
+                "это не дополнительные отказы к указанному числу сообщений.",
+                "TCP-пробы из РФ проходят; они не подтверждают доставку UDP на проблемном клиентском пути.",
+            ],
         )
-    elif api_ok and handshake >= CLIENT_MIN_FAILURES and handshake > early:
-        udp = signals.transport("udp")
-        udp_share = (udp / handshake) if handshake else 0.0
-        kind = KIND_UDP_BLOCK if udp_share >= 0.7 else KIND_PROTOCOL_FINGERPRINT
-        out.append(
-            _verdict(
-                snap,
-                kind,
-                confidence=0.6,
-                summary=(
-                    "Рукопожатие по UDP не завершается, при этом TCP к тому же адресу живой."
-                    if kind == KIND_UDP_BLOCK
-                    else "Рукопожатие не завершается при доступном порте — признак DPI."
-                ),
-                evidence=[
-                    f"{handshake} отказов на стадии handshake против {early} на tcp/tls.",
-                    f"Из них по UDP-транспорту: {udp}.",
-                    "TCP-порты из РФ отвечают — значит это не блок IP и не падение сервиса.",
-                ],
-                channel=CHANNEL_WDTT_UDP if kind == KIND_UDP_BLOCK else "",
-                port=snap.wdtt_port if kind == KIND_UDP_BLOCK else 0,
-            )
-        )
-
-    return out
+    ]
 
 
 def _throttling_verdict(snap: TargetSnapshot) -> Verdict | None:
@@ -905,7 +864,7 @@ def report_status(verdicts: list[Verdict]) -> str:
         return "down"
     if kinds & BLOCKING_KINDS:
         return "blocked"
-    if kinds & {KIND_ASN_PARTIAL, KIND_HTTPS_DEGRADED, KIND_THROTTLING, KIND_ROUTE_LOSS, KIND_ACTIVE_PROBING, KIND_LOCAL_HEALTH}:
+    if kinds & {KIND_ASN_PARTIAL, KIND_HTTPS_DEGRADED, KIND_THROTTLING, KIND_ROUTE_LOSS, KIND_ACTIVE_PROBING, KIND_LOCAL_HEALTH, KIND_CLIENT_DEGRADED}:
         return "degraded"
     # «Неизвестно» только если из РФ не подтверждён ни один узел: когда Улей виден,
     # непроверенная снаружи сота не должна гасить общий статус.

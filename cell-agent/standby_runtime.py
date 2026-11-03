@@ -55,6 +55,9 @@ _pending_never_hs: dict[str, float] = {}
 _last_gc_at = 0.0
 _wg_counts: dict[str, int] = {"total": 0, "never_hs": 0, "live_3m": 0, "last_removed": 0}
 _wg_live_pub_list: list[str] = []
+_manifest_cache: dict | None = None
+_manifest_stamp = None
+_manifest_lock = threading.RLock()
 
 
 class InternalOnlineRequest(BaseModel):
@@ -69,13 +72,24 @@ class InternalOnlineResponse(BaseModel):
 
 
 def _load_manifest() -> dict | None:
+    global _manifest_cache, _manifest_stamp
     try:
-        if not HIVE_MANIFEST_PATH.is_file():
-            return None
-        data = json.loads(HIVE_MANIFEST_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
+        with _manifest_lock:
+            stat = HIVE_MANIFEST_PATH.stat()
+            stamp = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            if stamp != _manifest_stamp:
+                data = json.loads(HIVE_MANIFEST_PATH.read_text(encoding="utf-8"))
+                if not isinstance(data,dict):
+                    return None
+                _manifest_cache, _manifest_stamp = data, stamp
+            return _manifest_cache
     except Exception:
         return None
+
+
+from standby_api import OfflineSnapshot
+
+_offline_api = OfflineSnapshot(_load_manifest)
 
 
 def _device_from_manifest(manifest: dict, device_id: str) -> dict | None:
@@ -1074,11 +1088,37 @@ def mount_failover_routes(app: FastAPI) -> None:
     async def hive_public_failover(rest: str, request: Request):
         if not is_public_failover_path(rest):
             raise HTTPException(status_code=404, detail="not found")
+        recoverable = rest.strip('/') in {'auth/login','auth/refresh','users/me','vpn/config',
+                                         'vpn/device/register','vpn/servers','vpn/servers/select',
+                                         'vpn/hashes','vpn/connect','vpn/disconnect'}
+        if recoverable and not _queen_healthy:
+            # Only after the existing three-failure health gate. Avoid paying
+            # the upstream timeout again for every step of the same reconnect.
+            try:
+                return JSONResponse(await _offline_api.respond(request,rest),headers={'Cache-Control':'no-store'})
+            except HTTPException as exc:
+                if exc.status_code!=503:
+                    raise
         # Живой proxy сота→Улей :80. :8000 — docker только localhost, RST рвёт клиент.
         try:
-            return await _proxy_queen(request, rest)
-        except HTTPException:
-            raise
+            # Bound the entire recovery attempt, not each of several upstream URLs.
+            if recoverable:
+                response = await asyncio.wait_for(_proxy_queen(request, rest), timeout=8.0)
+            else:
+                response = await _proxy_queen(request, rest)
+            if response.status_code < 500:
+                return response
+            try:
+                return JSONResponse(await _offline_api.respond(request,rest),headers={'Cache-Control':'no-store'})
+            except HTTPException as exc:
+                if exc.status_code==503:
+                    return response
+                raise
+        except HTTPException as exc:
+            if exc.status_code < 500:
+                raise
         except Exception as e:
             logger.warning("failover proxy: %s", e)
-        return _snapshot_response(rest)
+        if rest.strip('/') in ('health','vpn/theme','vpn/hive-meta'):
+            return _snapshot_response(rest)
+        return JSONResponse(await _offline_api.respond(request,rest),headers={'Cache-Control':'no-store'})

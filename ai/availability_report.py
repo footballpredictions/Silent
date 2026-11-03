@@ -83,6 +83,6 @@ def reclassify_report(report: dict[str, Any]) -> dict[str, Any]:
         summary=report_summary(verdicts, status),
         worst_severity=min((v.severity for v in verdicts),
                            key=lambda s: SEVERITY_ORDER.get(s, 9), default='info'),
-        classification_version=2,
+        classification_version=3,
     )
     return result

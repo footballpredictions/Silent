@@ -368,7 +368,7 @@ chmod 600 /etc/wdtt/wg_public.key
 
 echo "[hive] cell-agent..."
 python3 -m venv /opt/silent-vpn/cell-agent/venv
-/opt/silent-vpn/cell-agent/venv/bin/pip install -q fastapi 'uvicorn[standard]' psutil httpx
+/opt/silent-vpn/cell-agent/venv/bin/pip install -q fastapi 'uvicorn[standard]' psutil httpx 'cryptography>=41' 'bcrypt>=4'
 
 AGENT_SECRET=$(cat /tmp/hive_agent_secret.txt)
 cat > /etc/systemd/system/silent-cell-agent.service << AGEOF
@@ -475,7 +475,7 @@ def upgrade_cell_agent_via_ssh(
             f"sed -i 's@^ExecStart=.*@ExecStart=/opt/silent-vpn/cell-agent/venv/bin/python -m agent_http --host 0.0.0.0 --port {agent_port}@' "
             f"/etc/systemd/system/silent-cell-agent.service; "
             f"systemctl daemon-reload; "
-            f"/opt/silent-vpn/cell-agent/venv/bin/pip install -q psutil httpx 2>/dev/null; "
+            f"/opt/silent-vpn/cell-agent/venv/bin/pip install -q psutil httpx 'cryptography>=41' 'bcrypt>=4' 2>/dev/null; "
             f"systemctl restart silent-cell-agent; sleep 2; "
             f"curl -sf http://127.0.0.1:{agent_port}/health",
             timeout=90,

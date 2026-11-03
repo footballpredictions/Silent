@@ -37,9 +37,11 @@ PREFLIGHT_TESTS = (
     "scripts/test_availability_polling_unit.py",
     "scripts/test_availability_unit.py",
     "scripts/test_availability_evidence_unit.py",
+    "scripts/test_availability_client_evidence_unit.py",
     "scripts/test_availability_local_health_unit.py",
     "scripts/test_availability_local_probes_unit.py",
     "scripts/test_session_presence_unit.py",
+    "scripts/test_standby_api_unit.py",
 )
 
 
@@ -62,12 +64,16 @@ CRITICAL_PYTHON = (
     'app/main.py', 'app/api/admin.py', 'app/api/hive.py',
     'app/services/hive_service.py', 'app/services/hive_slots.py',
     'app/services/wg_peer_gc.py', 'app/services/session_presence.py',
-    'app/services/availability_store.py', 'app/services/vpn_service.py',
+    'app/services/availability_store.py', 'app/services/hive_incidents.py', 'app/services/vpn_service.py',
     'app/services/vpn_kick.py', 'app/services/vpn_deny_net.py',
     'app/services/hive_profiles.py', 'app/services/node_profile_runtime.py',
     'ai/availability_agent.py', 'ai/availability_classifier.py',
     'ai/availability_model.py', 'ai/availability_probes.py',
     'ai/availability_knowledge.py', 'ai/availability_report.py',
+    'app/core/deps.py', 'app/api/auth.py', 'app/services/standby_auth_grants.py',
+    'app/services/standby_snapshot.py', 'app/services/hive_standby.py',
+    'app/services/hive_cell_sync.py', 'app/services/hive_cell_agent_auto.py',
+    'app/services/hive_provision_service.py',
 )
 
 
@@ -244,10 +250,29 @@ def main() -> None:
     parser.add_argument("--python-only", nargs="+", metavar="PATH", help="Only existing app/ai Python files; keep UI/compose/cell-agent unchanged")
     parser.add_argument("--with-admin-ui", action="store_true", help="Also publish the built admin UI with --python-only")
     parser.add_argument("--admin-ui-only", action="store_true", help="Publish and verify only static admin assets without restarting API/VPN")
+    parser.add_argument("--cell-agent-source-only", action="store_true", help="Publish agent bundle only; requires an active controlled-rollout lease")
     parser.add_argument("--with-cell-agent-source", action="store_true", help="Publish the SHIPPED agent source bundle with --python-only")
     parser.add_argument("--with-nginx", action="store_true", help="Publish docker/nginx.conf with --python-only")
     args = parser.parse_args()
     dist = BACKEND_ROOT / "admin-ui" / "dist"
+    if args.cell_agent_source_only:
+        if args.python_only or args.admin_ui_only or args.with_admin_ui or args.with_cell_agent_source or args.with_nginx:
+            parser.error('--cell-agent-source-only cannot be combined with other deployment flags')
+        _preflight()
+        client = connect()
+        try:
+            _verify_deploy_sources(client)
+            check = "import asyncio,time; from app.database import AsyncSessionLocal; from app.models import AppSetting\nasync def main():\n async with AsyncSessionLocal() as db:\n  row=await db.get(AppSetting,'standby_agent_rollout_hold_until'); assert row and float(row.value)>time.time()+60, 'controlled rollout lease required'\nasyncio.run(main())"
+            command = f'docker exec -e PYTHONPATH=/app {CONTAINER} python -c {shlex.quote(check)}'
+            _, out, err = client.exec_command(command, timeout=20)
+            if out.channel.recv_exit_status()!=0:
+                raise SystemExit('Active controlled-rollout lease required; bundle was not uploaded')
+            with client.open_sftp() as sftp:
+                _upload_cell_agent_source(sftp,client)
+        finally:
+            client.close()
+        print('Done: cell-agent source only, API/nginx/VPN unchanged')
+        return
     if args.admin_ui_only:
         if args.python_only or args.with_admin_ui or args.with_cell_agent_source or args.with_nginx:
             parser.error("--admin-ui-only cannot be combined with backend deployment flags")

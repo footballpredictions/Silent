@@ -11,6 +11,27 @@ from deploy_stable import _selected_python_paths
 
 
 class SelectionTests(unittest.TestCase):
+    def test_cell_agent_source_only_never_restarts_backend(self):
+        client=MagicMock()
+        out=MagicMock();out.channel.recv_exit_status.return_value=0
+        client.exec_command.return_value=(None,out,None)
+        with patch.object(sys,'argv',['deploy_stable.py','--cell-agent-source-only']), \
+             patch.object(deploy_stable,'_preflight'),patch.object(deploy_stable,'connect',return_value=client), \
+             patch.object(deploy_stable,'_verify_deploy_sources',return_value={}), \
+             patch.object(deploy_stable,'_upload_cell_agent_source') as upload, \
+             patch.object(deploy_stable,'_restart_and_verify') as restart,patch.object(deploy_stable,'_upload_py_tree') as tree:
+            deploy_stable.main()
+        upload.assert_called_once();restart.assert_not_called();tree.assert_not_called()
+
+    def test_agent_bundle_requires_rollout_lease_before_upload(self):
+        client=MagicMock();out=MagicMock();out.channel.recv_exit_status.return_value=1
+        client.exec_command.return_value=(None,out,None)
+        with patch.object(sys,'argv',['deploy_stable.py','--cell-agent-source-only']), \
+             patch.object(deploy_stable,'_preflight'),patch.object(deploy_stable,'connect',return_value=client), \
+             patch.object(deploy_stable,'_verify_deploy_sources',return_value={}),patch.object(deploy_stable,'_upload_cell_agent_source') as upload:
+            with self.assertRaises(SystemExit):deploy_stable.main()
+        upload.assert_not_called()
+
     def test_connection_stays_open_through_final_source_verification(self):
         client = MagicMock()
         closed = False

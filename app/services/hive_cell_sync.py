@@ -24,6 +24,8 @@ def invalidate_manifest_cache() -> None:
     """Force next sync_all_cell_manifests to push (subscription revoke)."""
     global _last_manifest_version
     _last_manifest_version = 0
+    from app.services.standby_snapshot import invalidate_snapshot_cache
+    invalidate_snapshot_cache()
 
 
 async def manifest_version(db: AsyncSession) -> int:
@@ -50,10 +52,10 @@ async def manifest_version(db: AsyncSession) -> int:
     return count * 1_000_000 + deleted_count * 1_000_003 + ((ts + user_ts) % 1_000_000)
 
 
-async def build_cell_manifest(db: AsyncSession, cell: HiveCell) -> dict:
+async def build_cell_manifest(db: AsyncSession, cell: HiveCell, *, offline_common: dict | None = None) -> dict:
     from app.services.hive_standby import build_cell_manifest_enriched
 
-    return await build_cell_manifest_enriched(db, cell)
+    return await build_cell_manifest_enriched(db, cell, offline_common=offline_common)
 
 
 async def push_manifest_to_cell(cell: HiveCell, manifest: dict) -> bool:
@@ -123,8 +125,11 @@ async def sync_all_cell_manifests(db: AsyncSession) -> dict:
         return {"synced": 0, "skipped": True}
 
     version = await manifest_version(db)
+    from app.services.standby_snapshot import enabled_cells, cached_common
+    offline_enabled = await enabled_cells(db)
     if version == _last_manifest_version and _last_sync_at is not None:
-        return {"synced": 0, "skipped": True, "version": version}
+        if not offline_enabled or (datetime.utcnow() - _last_sync_at).total_seconds() < 60:
+            return {"synced": 0, "skipped": True, "version": version}
 
     result = await db.execute(
         select(HiveCell).where(
@@ -135,8 +140,16 @@ async def sync_all_cell_manifests(db: AsyncSession) -> dict:
     )
     workers = list(result.scalars().all())
     synced = 0
+    offline_common = None
+    if offline_enabled:
+        try:
+            offline_common = await cached_common(db)
+        except Exception:
+            # A recovery feature must never interrupt ordinary peer manifests.
+            logger.exception('Offline API snapshot unavailable')
+            offline_common = {}
     for cell in workers:
-        manifest = await build_cell_manifest(db, cell)
+        manifest = await build_cell_manifest(db, cell, offline_common=offline_common)
         if await push_manifest_to_cell(cell, manifest):
             synced += 1
 

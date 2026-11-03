@@ -1,5 +1,5 @@
 import uuid
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -15,6 +15,7 @@ bearer = HTTPBearer(auto_error=False)
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> User:
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
@@ -32,6 +33,22 @@ async def get_current_user(
 
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    from app.services.standby_auth_grants import remember_verified, standby_scope_allows
+    if payload.get("standby_until") and not standby_scope_allows(
+        payload, request.method if request else "", request.url.path if request else "",
+    ):
+        raise HTTPException(status_code=403, detail="Резервный сеанс разрешает подключение VPN и чтение профиля. Войдите снова для изменения аккаунта.")
+    if payload.get('standby_until') and request and request.url.path == '/api/vpn/device/register':
+        from app.models import Device
+        body = await request.json()
+        known = await db.scalar(select(Device.id).where(
+            Device.user_id == user.id, Device.is_active == True,
+            Device.device_fingerprint == body.get('device_fingerprint',''),
+        ))
+        if known is None:
+            raise HTTPException(status_code=403, detail='Для нового устройства войдите снова после восстановления Улья')
+    remember_verified(credentials.credentials, payload)
 
     return user
 

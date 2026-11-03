@@ -97,7 +97,8 @@ class DeletedUserVpnTests(unittest.IsolatedAsyncioTestCase):
         async def execute(query):
             return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [cell]))
         async def version(db): return 42
-        async def build(db, target): return {"devices": [{"id": "deleted", "vpn_allowed": False}]}
+        async def build(db, target, **kwargs): return {"devices": [{"id": "deleted", "vpn_allowed": False}]}
+        async def offline_disabled(db): return set()
         pushes = []
         async def push(target, manifest):
             pushes.append(manifest)
@@ -110,9 +111,11 @@ class DeletedUserVpnTests(unittest.IsolatedAsyncioTestCase):
                   push_manifest_to_cell=push, logger=logging.getLogger("deleted-user-test"))
         exec(compile(ast.Module(body=[fn], type_ignores=[]), "hive_cell_sync.py", "exec"), ns)
         db = SimpleNamespace(execute=execute)
-        self.assertEqual((await ns["sync_all_cell_manifests"](db))["synced"], 0)
-        self.assertEqual((await ns["sync_all_cell_manifests"](db))["synced"], 1)
-        self.assertTrue((await ns["sync_all_cell_manifests"](db))["skipped"])
+        offline = SimpleNamespace(enabled_cells=offline_disabled, cached_common=None)
+        with patch.dict(sys.modules, {'app.services.standby_snapshot':offline}):
+            self.assertEqual((await ns["sync_all_cell_manifests"](db))["synced"], 0)
+            self.assertEqual((await ns["sync_all_cell_manifests"](db))["synced"], 1)
+            self.assertTrue((await ns["sync_all_cell_manifests"](db))["skipped"])
         self.assertEqual(len(pushes), 2)
 
     def test_reconnect_uses_the_current_wdtt_ip_and_tombstones_never_include_keys(self):

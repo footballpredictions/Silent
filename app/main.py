@@ -26,6 +26,9 @@ async def lifespan(app: FastAPI):
     # Create DB tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        from app.services.standby_auth_grants import SCHEMA_SQL
+        await conn.execute(text(SCHEMA_SQL))
+        await conn.execute(text('CREATE INDEX IF NOT EXISTS ix_standby_grants_user ON standby_token_grants(user_id)'))
         await conn.execute(text(
             "ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS label VARCHAR(128) NOT NULL DEFAULT ''"
         ))

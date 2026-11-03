@@ -114,7 +114,7 @@ async def device_vpn_allowed(db: AsyncSession, user_id) -> bool:
     return await user_has_active_subscription(user, db)
 
 
-async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict:
+async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell, *, offline_common: dict | None = None) -> dict:
     """Manifest для автономии соты: устройства этой ноды и слота Сервер N, не вся БД."""
     from app.services.hive_cell_sync import manifest_version
 
@@ -157,7 +157,7 @@ async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict
         meta = None
     from app.services.vpn_deny_net import deleted_device_ids, deleted_manifest_entries
     revoked = deleted_manifest_entries(await deleted_device_ids(db), existing_ids=seen)
-    return {
+    manifest = {
         "version": version,
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "cell_id": str(cell.id),
@@ -185,3 +185,12 @@ async def build_cell_manifest_enriched(db: AsyncSession, cell: HiveCell) -> dict
             for d in devices
         ] + revoked,
     }
+    try:
+        from app.services.standby_snapshot import encrypt_for_cell
+        offline = await encrypt_for_cell(db, cell, offline_common)
+    except Exception:
+        # Do not break the existing manifest on an optional recovery failure.
+        offline = None
+    if offline is not None:
+        manifest['offline_api'] = offline
+    return manifest

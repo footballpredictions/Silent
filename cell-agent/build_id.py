@@ -15,6 +15,7 @@ SHIPPED = (
     "main.py",
     "standby_online.py",
     "standby_runtime.py",
+    "standby_api.py",
     "status_cache.py",
 )
 

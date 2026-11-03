@@ -299,10 +299,14 @@ async def _tokens_for_user(
             )
         except (AttributeError, TypeError) as e:
             logger.error("qr/login ensure_device_session skipped: %s", e)
-    return TokenResponse(
+    tokens = TokenResponse(
         access_token=create_access_token(user.id),
         refresh_token=create_refresh_token(user.id),
     )
+    from app.services.standby_auth_grants import remember_verified
+    for token in (tokens.access_token, tokens.refresh_token):
+        remember_verified(token, decode_token(token) or {})
+    return tokens
 
 
 def _device_from_dict(raw: dict | None) -> LoginDeviceInfo | None:
@@ -484,10 +488,26 @@ async def refresh(req: RefreshRequest, db: AsyncSession = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Пользователь не найден")
 
-    return TokenResponse(
+    if payload.get("standby_until"):
+        from app.services.standby_snapshot import recovery_tokens
+        try:
+            until = int(payload["standby_until"])
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=401, detail="Недействительный резервный сеанс")
+        if payload.get("standby_scope") != "vpn-recovery-v1" or until <= int(__import__('time').time()):
+            raise HTTPException(status_code=401, detail="Резервный сеанс истёк; войдите снова")
+        return TokenResponse(**recovery_tokens(user.id, until))
+
+    from app.services.standby_auth_grants import remember_verified
+    remember_verified(req.refresh_token, payload)
+
+    tokens = TokenResponse(
         access_token=create_access_token(user.id),
         refresh_token=create_refresh_token(user.id),
     )
+    for token in (tokens.access_token, tokens.refresh_token):
+        remember_verified(token, decode_token(token) or {})
+    return tokens
 
 
 @router.post("/forgot-password")

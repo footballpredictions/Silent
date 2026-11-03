@@ -186,9 +186,10 @@ def _classify(msg: str) -> tuple[str, str, list[str]]:
     if any(x in raw for x in ("timed out", "timeout", "read timeout", "connect timeout")):
         checks = [
             "Проверить RTT/потери между Ульем и сотой.",
-            "Проверить, не режутся ли порты/соединения DPI/фаерволом.",
+            "Проверить ответ cell-agent и нагрузку узла; сопоставить со статусом VPN в тот же момент.",
+            "Повторить проверку: один таймаут служебного запроса не устанавливает причину сбоя.",
         ]
-        return "network-timeout", "Сеть/таймаут (в т.ч. DPI или блокировка)", checks
+        return "network-timeout", "Таймаут служебного запроса: причина не установлена", checks
 
     if any(x in raw for x in ("name or service not known", "temporary failure in name resolution", "dns", "resolve")):
         checks = [
@@ -435,6 +436,13 @@ def _row_to_public(row: dict[str, Any]) -> dict[str, Any]:
                 checks = [str(x) for x in parsed]
         except Exception:
             checks = []
+    hint = row.get("hint") or "Требуется диагностика"
+    if row.get("category") == "network-timeout":
+        category, current_hint, current_checks = _classify(
+            f"{row.get('message') or ''} {row.get('details') or ''}"
+        )
+        if category == "network-timeout":
+            hint, checks = current_hint, current_checks
     return {
         "ts": _public_ts(row.get("ts")),
         "severity": row.get("severity") or "error",
@@ -442,7 +450,7 @@ def _row_to_public(row: dict[str, Any]) -> dict[str, Any]:
         "cell_name": row.get("cell_name"),
         "cell_ip": row.get("cell_ip"),
         "category": row.get("category") or "unknown",
-        "hint": row.get("hint") or "Требуется диагностика",
+        "hint": hint,
         "message": row.get("message") or "",
         "details": row.get("details") or "",
         "checks": checks,

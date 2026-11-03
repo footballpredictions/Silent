@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import HiveCell
+from app.models import HiveCell, AppSetting
 from app.services.hive_incidents import push_incident
 from app.services import hive_provision_service
 from app.services.hive_service import fetch_worker_cell_load, resolve_ssh_password
@@ -41,6 +41,13 @@ def should_attempt_agent_upgrade(
 async def auto_upgrade_cell_agents(db: AsyncSession) -> dict:
     if not settings.HIVE_CELL_AGENT_AUTO_UPGRADE_ENABLED:
         return {"checked": 0, "upgraded": 0, "skipped": True}
+
+    hold = await db.get(AppSetting, 'standby_agent_rollout_hold_until')
+    try:
+        if hold and float(hold.value) > time.time():
+            return {"checked": 0, "upgraded": 0, "skipped": "controlled_rollout"}
+    except (ValueError, TypeError):
+        pass
 
     try:
         target_id = hive_provision_service.cell_agent_build_id()

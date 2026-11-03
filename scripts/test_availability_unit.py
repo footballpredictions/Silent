@@ -17,6 +17,7 @@ from ai.availability_classifier import (  # noqa: E402
     report_summary,
 )
 from ai.availability_knowledge import (  # noqa: E402
+    KIND_CLIENT_DEGRADED,
     KIND_ASN_PARTIAL,
     KIND_DNS_POISONING,
     KIND_HTTP_STUB,
@@ -469,7 +470,7 @@ def test_throttling_needs_control_vantage():
     assert KIND_THROTTLING not in _kinds(snap2)
 
 
-def test_mobile_shutdown_from_client_telemetry():
+def test_mobile_client_telemetry_is_a_warning_without_operator_attribution():
     snap = _queen()
     snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=5)
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=5)
@@ -483,10 +484,11 @@ def test_mobile_shutdown_from_client_telemetry():
         by_transport={"udp": 24},
     )
     kinds = _kinds(snap)
-    assert KIND_MOBILE_SHUTDOWN in kinds
+    assert KIND_CLIENT_DEGRADED in kinds
+    assert KIND_MOBILE_SHUTDOWN not in kinds
 
 
-def test_fingerprint_when_tunnel_dies_after_connect():
+def test_tunnel_disconnects_need_independent_evidence_before_dpi_attribution():
     snap = _queen()
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=5)
     snap.clients = ClientSignals(
@@ -499,12 +501,12 @@ def test_fingerprint_when_tunnel_dies_after_connect():
         short_lived_tunnels=12,
     )
     verdicts = classify_target(snap)
-    fp = [v for v in verdicts if v.kind == KIND_PROTOCOL_FINGERPRINT]
-    assert fp
-    assert any("обход" in f.lower() or "обфускац" in f.lower() for f in fp[0].fixes)
+    warnings = [v for v in verdicts if v.kind == KIND_CLIENT_DEGRADED]
+    assert warnings and warnings[0].severity == "warning"
+    assert not any(v.kind == KIND_PROTOCOL_FINGERPRINT for v in verdicts)
 
 
-def test_udp_block_from_client_handshake_failures():
+def test_client_handshake_failures_alone_do_not_establish_udp_block():
     snap = _queen()
     snap.ru[CHANNEL_API_TCP] = _agg(CHANNEL_API_TCP, ok=5)
     snap.clients = ClientSignals(
@@ -515,7 +517,8 @@ def test_udp_block_from_client_handshake_failures():
         by_network={"wifi": 12, "mobile": 8},
         by_transport={"udp": 18},
     )
-    assert KIND_UDP_BLOCK in _kinds(snap)
+    assert KIND_CLIENT_DEGRADED in _kinds(snap)
+    assert KIND_UDP_BLOCK not in _kinds(snap)
 
 
 def test_few_client_failures_do_not_trigger_verdict():

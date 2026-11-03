@@ -1,5 +1,12 @@
 # TASKS — Silent VPN
 
+- [x] 2026-11-03: внедрить recovery API на4сотах для существующих аккаунтов/устройств. ASGI RED9→GREEN21, PGreadonly1284users/1746devices, canonical28sources/22preflight/health41/64ms/kick0. Source-only bundle безAPIrestart, canary по одной: WDTT PID/NRestarts/ifindex/25+34+16+6liveпиров/DNAT unchanged. Real ordinary JWT verifier→digest registry→encrypted manifest→ASGI all4 legacy_access200/config200/refresh200/unknown503. 69healthsamples/70sec mean21.7ms/max264.1ms. Release4/4/build98d27575dbe55154/hold0. Инструкция/disable STANDBY-RECOVERY.md; usertokenswarm up до следующей синхронизации, absoluteTTL1ч, newdevices/paymentsцентральные. Никакого WDTTrestart/livefault/UI/Android/пункт3/push; физический phone outage отдельно не тестировали.
+
+- [x] 2026-11-03: проверить границы независимости сот. Runtime4standbySHA exact/localfaulthealth/theme200/config503;5WDTTactive,снимкиfresh. НайденреальныйAPI-path outageСоты4→Улей13:46:51–13:47:50МСК. Пользовательскийтрафикпосредствомотдельнойсоты; новыйconfig/authцентральные, cachedslotsчастичноавтономны.
+- [ ] Выяснить причину одновременных отказов у4клиентов: работавшие туннели/новые подключения, точный текст/оператор/версия. Получен текст письма «на всех серверах тайм аут»; точный этап/клиент/оператор/лог по нему не определяется. Не считать исправление ярлыка DPI исправлением самих обрывов. Теперь отдельно поручено внедрение recovery API, см. задачу выше.
+
+- [x] 2026-11-03: исправить неподтверждённый вывод DPI и советы отсутствующих транспортов. 9tunnel_dead/3short/TCPok →client_degradedwarning;6RED→GREEN+58/12+actualreplayPASS. Canonical4Python/21preflight/runtime20sourcePASS; liveGET/history/knowledge/incidents/rawPGpreserved иmanual63.67s/all5ok/136online/health5.1ms/WDTT778/NRestarts0/kick0. Commit/push не запрошены.
+
 - [x] 2026-11-02: пуш текущей UDP-only версии со старым форматом лога/уведомления: Android 1e0ad5e, remote HEAD verified; без production restart/deploy.
 - [x] 2026-11-02: пункт2, первый клиентский этап — opt-in UDP relay quality готов и push86df23f verified. Старые соединения/chunk8/queue/retry/статистика/UI сохранены; 6 новых/fullGo/vet/Linux race+348Android+4ABI/подпись/UIbytes PASS. Private APK65378585/6e38d8ba… временно опубликована/fullGET verified; URL/границы в MemoryBank.
 - [ ] Полевой A/B пилота relay quality из пункта2 на SIM владельца. Это клиентское исходящее распределение; прирост скорости на его сети пока не проверен. Пункт3 отменён.

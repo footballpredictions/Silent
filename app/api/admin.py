@@ -1877,7 +1877,7 @@ async def list_promos(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(PromoCode).order_by(PromoCode.created_at.desc()))
+    result = await db.execute(select(PromoCode).where(PromoCode.deleted_at.is_(None)).order_by(PromoCode.created_at.desc()))
     promos = result.scalars().all()
     return [
         {
@@ -1893,6 +1893,23 @@ async def list_promos(
         }
         for p in promos
     ]
+
+
+@router.delete("/promo/{promo_id}")
+async def delete_promo(
+    promo_id: uuid_mod.UUID,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    # Keep the original row for payment settlement and historical attribution.
+    promo = await db.scalar(select(PromoCode).where(PromoCode.id == promo_id).with_for_update())
+    if promo is None:
+        raise HTTPException(status_code=404, detail="Промокод не найден")
+    if promo.deleted_at is None:
+        promo.is_active = False
+        promo.deleted_at = datetime.utcnow()
+        await db.commit()
+    return {"message": "Промокод удалён"}
 
 
 @router.get("/bonuses/stats")

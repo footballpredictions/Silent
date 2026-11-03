@@ -42,6 +42,7 @@ PREFLIGHT_TESTS = (
     "scripts/test_availability_local_probes_unit.py",
     "scripts/test_session_presence_unit.py",
     "scripts/test_standby_api_unit.py",
+    "scripts/test_admin_promo_delete_unit.py",
 )
 
 
@@ -74,6 +75,7 @@ CRITICAL_PYTHON = (
     'app/services/standby_snapshot.py', 'app/services/hive_standby.py',
     'app/services/hive_cell_sync.py', 'app/services/hive_cell_agent_auto.py',
     'app/services/hive_provision_service.py',
+    'app/models/payment.py',
 )
 
 

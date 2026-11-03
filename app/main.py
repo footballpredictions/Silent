@@ -373,6 +373,9 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS first_payment_only BOOLEAN NOT NULL DEFAULT FALSE"
         ))
         await conn.execute(text(
+            "ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP"
+        ))
+        await conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_referral_code "
             "ON users (referral_code) WHERE referral_code IS NOT NULL"
         ))

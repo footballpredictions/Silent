@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Plus, Gift, Users, Tag } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Plus, Gift, Users, Tag, Trash2 } from 'lucide-react'
 
 type Tab = 'promo' | 'stats'
 
@@ -10,6 +10,17 @@ export default function BonusesPage({ token }: { token: string }) {
   const [form, setForm] = useState({ code: '', discount_percent: 0, extra_days: 0, max_uses: 1, expires_at: '' })
   const [creating, setCreating] = useState(false)
   const [loadingStats, setLoadingStats] = useState(false)
+  const [promoToDelete, setPromoToDelete] = useState<{ id: string; code: string } | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  const deleteDialog = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    const dialog = deleteDialog.current
+    if (!dialog) return
+    if (promoToDelete && !dialog.open) dialog.showModal()
+    if (!promoToDelete && dialog.open) dialog.close()
+  }, [promoToDelete])
 
   const fetchPromos = useCallback(async () => {
     const res = await fetch('/api/admin/promo', { headers: { Authorization: `Bearer ${token}` } })
@@ -48,6 +59,29 @@ export default function BonusesPage({ token }: { token: string }) {
   }
 
   const s = stats?.summary
+
+  const removePromo = async () => {
+    if (!promoToDelete || deleting) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      const res = await fetch(`/api/admin/promo/${encodeURIComponent(promoToDelete.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setDeleteError(typeof body.detail === 'string' ? body.detail : 'Не удалось удалить промокод. Повторите попытку.')
+        return
+      }
+      setPromos(current => current.filter(p => p.id !== promoToDelete.id))
+      setPromoToDelete(null)
+    } catch {
+      setDeleteError('Не удалось удалить промокод. Проверьте соединение и повторите попытку.')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -134,6 +168,7 @@ export default function BonusesPage({ token }: { token: string }) {
                   <th className="text-left px-4 py-3">Бонус дней</th>
                   <th className="text-left px-4 py-3">Использован</th>
                   <th className="text-left px-4 py-3">Истекает</th>
+                  <th className="text-right px-4 py-3">Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -144,16 +179,59 @@ export default function BonusesPage({ token }: { token: string }) {
                     <td className="px-4 py-3">+{p.extra_days} дн.</td>
                     <td className="px-4 py-3 text-[#888]">{p.use_count} / {p.max_uses}</td>
                     <td className="px-4 py-3 text-[#888]">{p.expires_at ? String(p.expires_at).split('T')[0] : '—'}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => { setDeleteError(''); setPromoToDelete({ id: p.id, code: p.code }) }}
+                        className="p-1.5 rounded-lg transition-colors hover:bg-red-500/20 text-[#888] hover:text-red-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+                        title="Удалить промокод"
+                        aria-label={`Удалить промокод ${p.code}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {!promos.length && (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-[#555]">Промокодов пока нет</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-[#555]">Промокодов пока нет</td></tr>
                 )}
               </tbody>
             </table>
           </div>
         </>
       )}
+
+      <dialog
+        ref={deleteDialog}
+        role="alertdialog"
+        aria-labelledby="promo-delete-title"
+        aria-describedby="promo-delete-description"
+        onCancel={event => { if (deleting) event.preventDefault(); else setPromoToDelete(null) }}
+        onClose={() => { setPromoToDelete(null); setDeleteError('') }}
+        className="!m-auto w-[calc(100%_-_2rem)] max-w-md bg-[#111] text-[#e5e7eb] border border-[#222] rounded-xl p-6 backdrop:bg-black/70"
+      >
+        <h2 id="promo-delete-title" className="text-lg font-semibold">Удалить промокод?</h2>
+        <p id="promo-delete-description" className="mt-3 text-sm text-[#aaa] leading-relaxed">
+          Промокод <span className="font-mono font-semibold text-white">{promoToDelete?.code}</span> исчезнет из списка и станет недоступен для новых применений.
+          {' '}Созданные платежи и выданные бонусы сохранятся.
+        </p>
+        {deleteError && <p role="alert" className="mt-3 text-sm text-red-400">{deleteError}</p>}
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            autoFocus
+            onClick={() => setPromoToDelete(null)}
+            disabled={deleting}
+            className="px-4 py-2 rounded-lg border border-[#333] bg-[#1a1a1a] text-sm font-medium hover:bg-[#222] disabled:opacity-50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#888]"
+          >Отмена</button>
+          <button
+            type="button"
+            onClick={() => void removePromo()}
+            disabled={deleting}
+            className="px-4 py-2 rounded-lg border border-red-500/30 bg-red-500/15 text-red-400 text-sm font-medium hover:bg-red-500/25 disabled:opacity-50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+          >{deleting ? 'Удаляем…' : 'Удалить'}</button>
+        </div>
+      </dialog>
 
       {tab === 'stats' && (
         <div className="space-y-6">

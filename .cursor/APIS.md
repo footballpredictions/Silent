@@ -1,5 +1,9 @@
 # APIS — Silent VPN
 
+## Удаление промокода из админки (2026-11-03)
+
+`DELETE /api/admin/promo/{promo_id}`: действующая admin-сессия, UUID,404 для неизвестного ID,200 при повторном удалении. Строка PromoCode остаётся для истории и завершения созданных платежей; `is_active=False`, `deleted_at` UTC. Добавочная nullable `promo_codes.deleted_at TIMESTAMP` мигрируется startup; GET `/api/admin/promo` исключает только строки с deleted_at, прежние inactive без удаления сохраняются. Public promo/check/checkout применяют прежний is_active gate; суммы/выданные подписки/история и счётчики при удалении не меняются. Активный UI BonusesPage для /promo и /bonuses: Trash2+тёмное подтверждение, отмена/Escape/busy/retry/error. Старый неиспользуемый PromoPage не менялся. DELETE действительного production-промокода в QA не вызывается: реальныеHTTPпроверки только на отсутствующемUUID послеDBпроверки.
+
 ## Локальное восстановление API на сотах (2026-11-03)
 
 Добавлен encrypted `offline_api` в существующий `/v1/sync-manifest`, опциональный/по умолчанию выключен. На соте поддерживаются прежние DTO и маршруты `POST /api/auth/login`, `/auth/refresh`, `/vpn/device/register` (только уже зарегистрированное устройство), `/vpn/servers/select`, `/vpn/connect`, `/vpn/disconnect`; GET `/vpn/config`, `/vpn/servers`, `/vpn/hashes`, `/users/me`. Подробные границы/rollout/отключение: `STANDBY-RECOVERY.md`.

@@ -43,6 +43,7 @@ class PromoCode(Base):
     max_uses: Mapped[int] = mapped_column(default=1)
     use_count: Mapped[int] = mapped_column(default=0)
     is_active: Mapped[bool] = mapped_column(default=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     first_payment_only: Mapped[bool] = mapped_column(default=False, server_default="false")

@@ -174,6 +174,7 @@ async def main():
    assert code==0,'backup failed'
    current=await db.get(AppSetting,'standby_offline_cells_v1')
    enabled=json.loads(current.value) if current else []
+   enabled_before=list(enabled)
    try:
     try:
      upgrade_cell_agent_via_ssh(node.public_ip,password,link_capacity_mbps=float(node.link_capacity_mbps or 1000))
@@ -206,7 +207,7 @@ async def main():
     result.update(wdtt_unchanged=True,live_peers_preserved=sum(v['live'] for v in before['peers'].values()),dnat_unchanged=True)
     print(json.dumps(result))
    except BaseException:
-    await setting(db,'standby_offline_cells_v1',json.dumps([x for x in enabled if x!=str(node.id)]))
+    await setting(db,'standby_offline_cells_v1',json.dumps(enabled_before))
     await db.commit()
     _run(ssh,'cp '+backup+'/*.py /opt/silent-vpn/cell-agent/ && systemctl restart silent-cell-agent',timeout=25)
     raise

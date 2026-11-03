@@ -309,6 +309,7 @@ def _collect_status() -> dict:
     wdtt_active = False
     cpu_percent = 0.0
     memory_percent = 0.0
+    disk_total_gb = disk_used_gb = disk_percent = None
     network_interface = None
     network_mbps_rx = 0.0
     network_mbps_tx = 0.0
@@ -334,6 +335,15 @@ def _collect_status() -> dict:
         memory_percent = round(float(psutil.virtual_memory().percent), 1)
     except Exception:
         cpu_percent, memory_percent = _read_linux_load(cpu_interval=0.2)
+    try:
+        import psutil
+
+        disk = psutil.disk_usage("/")
+        disk_total_gb = round(disk.total / (1024**3), 1)
+        disk_used_gb = round(disk.used / (1024**3), 1)
+        disk_percent = round(float(disk.percent), 1)
+    except Exception:
+        pass
     try:
         network_interface, network_mbps_rx, network_mbps_tx, network_util_percent, network_link_capacity_mbps, network_link_sysfs_mbps = _network_status(0.2)
     except Exception:
@@ -392,6 +402,9 @@ def _collect_status() -> dict:
         "cpu_model": cpu_model or None,
         "cpu_freq_base_mhz": cpu_freq_base_mhz,
         "memory_total_gb": _memory_total_gb(),
+        "disk_total_gb": disk_total_gb,
+        "disk_used_gb": disk_used_gb,
+        "disk_percent": disk_percent,
         "agent_build_id": agent_build_id(),
         "olcrtc_units": 0,
         "olcrtc_peers_est": 0,

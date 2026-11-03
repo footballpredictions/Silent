@@ -1,5 +1,9 @@
 # APIS — Silent VPN
 
+## Диск выбранной соты на дашборде (2026-11-03)
+
+`GET /v1/status` агента дополнен optional `disk_total_gb`, `disk_used_gb`, `disk_percent` для корневого диска хоста. Существующий status-cache/CPU/RAM/network/WDTT-поля сохраняются; ошибка чтения диска даётnull только этим метрикам. Backend fetch_worker_cell_load пропускает валидные finite/nonnegative числа (нулевое использование допустимо), а dashboard_system_for_node передаёт данные выбранной соты в прежние поля `system`. Старый агент без новых полей остаётся совместим. `/api/admin/stats?light=true&fast=true&node_id=UUID` теперь может показать существующий Disk ProgressBar; frontend/стили/прочие карточки не меняются. Защита от регрессии: test_cell_disk_metrics_unit.py, test_dashboard_node_stats_unit.py и runtime source guard dashboard_node_stats.
+
 ## Удаление промокода из админки (2026-11-03)
 
 `DELETE /api/admin/promo/{promo_id}`: действующая admin-сессия, UUID,404 для неизвестного ID,200 при повторном удалении. Строка PromoCode остаётся для истории и завершения созданных платежей; `is_active=False`, `deleted_at` UTC. Добавочная nullable `promo_codes.deleted_at TIMESTAMP` мигрируется startup; GET `/api/admin/promo` исключает только строки с deleted_at, прежние inactive без удаления сохраняются. Public promo/check/checkout применяют прежний is_active gate; суммы/выданные подписки/история и счётчики при удалении не меняются. Активный UI BonusesPage для /promo и /bonuses: Trash2+тёмное подтверждение, отмена/Escape/busy/retry/error. Старый неиспользуемый PromoPage не менялся. DELETE действительного production-промокода в QA не вызывается: реальныеHTTPпроверки только на отсутствующемUUID послеDBпроверки.

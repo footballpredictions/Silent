@@ -1,5 +1,19 @@
 # MEMORY BANK — Silent VPN Project
 
+## Пуш метрик диска сот по команде владельца (2026-11-03)
+
+Владелец явно разрешил commit/push уже внедрённого исправления диска сот. Публикуются collector/adapter/dashboard mapping,25preflight/30source guard, regression test, сохранение прежних recovery flags при rollback и текущие заметки.6tests/реальные rawstatus+dashboard4/4/release534b0d1a72c96062 PASS. Публикация без нового деплоя/рестартов/изменений UI; старые routing_policy WIP и исторические изменения документов остаются вне коммита. Remote HEAD проверяется через существующую gh-авторизацию.
+
+## Дашборд: диск сот исправлен и опубликован (2026-11-03)
+
+Владелец сообщил: ресурсы Улья показывают диск, соты — нет. Воспроизведено реальными HTTP на4сотах: agent98d27575dbe55154 не содержит3diskfields, /api/admin/stats?light=true&fast=true&node_id=UUID даёт3null; Улей57.1GB/34.8GB/61%. Причина подтверждена в3местах: cell-agent._collect_status не собирал диск; fetch_worker_cell_load не передавал его; _system_from_cell_load задавалNone. УUI уже есть готовый ProgressBar с условием !=null, frontend/стили/дашбордовый layout не меняются. Никакого диагноза неисправности VPSдисков по отсутствующей метрике.
+
+Новый scripts/test_cell_disk_metrics_unit.py — настоящая цепочка collector→HTTPloadadapter→dashboardmapping с подменой OS/HTTP adapters:6tests, RED3fail→GREEN6/0.217s. Покрыты диск с нулевым использованием, legacyбезполей, ошибкаdisk_usage без потериCPU/RAM, invalid/NaN/Inf/negative. Сбор psutil.disk_usage('/') на хосте, nullableполяприошибке; backend валидирует только новые optionaldiskfields и сохраняет0. Dashboard использует значения соты, вместоNone. Остальные поля неизменны.
+
+Canonical deploy2Python+cell-agent source выполнен безUIbuild:25preflight/30runtime-source guard/no-store443+2083/4cellallowlist PASS, health44мс/kick20s0/WDTTactive. dashboard_node_stats включён вcriticalguard против возврата старогоNone. С существующим auto-upgrade lease1800с выполнено последовательное обновление server5→server2→server3→server4, без параллельных рестартов агентов. На каждом WDTT PID/NRestarts/ifindex/live AllowedIPs/DNAT unchanged; сохранены8/22/39/12живыхпиров. Вrollout исправлено восстановление исходногоenabledсписка приrollback, чтобы повторный upgrade дляметрик не выключал ранее работающий recovery API.
+
+Live raw /v1/status и настоящий admin GET /stats совпадают по3diskfields на4/4: Сота1=8.5/57.1GB(14.9%),Сота2=7.0/57.1GB(12.2%),AIСота3=6.7/95.8GB(7%),Сота4=5.7/57.1GB(10%). Улей прежний34.8/57.1GB(61%); CPU/RAMpresent накаждой. Release4/4: общий agent_build_id534b0d1a72c96062, hold0, прежний recoveryshadow config200/refresh200/unknown503 PASS. Никакого WDTTrestart/сменыVPN/измененийfrontend. Push текущейзадачинезапрошен. Артефакты .playwright-mcp/cell-disk-{before,after,red,tests,deploy,release,rollout-server2,rollout-server3,rollout-server4,rollout-server5}-20261103.* и check-cell-disk-20261103.py. Старые routing_policy WIP/исторические документы сохранены.
+
 ## Пуш удаления промокодов по команде владельца (2026-11-03)
 
 Последующей командой «пуш» владелец разрешил commit/push уже опубликованной доработки промокодов. Состав: только BonusesPage, DELETE/admin+model/startup migration, regression test/deploy guard и текущие заметки.6promo+13checkouttests/desktop-mobileQA/build/23preflight/29runtimesources/live GET-schema-404-401 PASS уже выполнены; повторного деплоя/рестартов при push нет. Routing WIP и старые исторические правки документов остаются вне коммита. Remote main проверяется с существующей gh-авторизацией без подтверждения с ПК.

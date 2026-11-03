@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import math
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -819,6 +820,19 @@ async def probe_cell_agent(cell: HiveCell, password: str | None = None) -> dict:
     return await cell_agent_handshake(cell.api_url, pwd)
 
 
+def _disk_metric(value, *, positive: bool = False, maximum: float | None = None) -> float | None:
+    """Optional agent metrics must not discard the rest of a node's status."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0 or (positive and number <= 0):
+        return None
+    if maximum is not None and number > maximum:
+        return None
+    return round(number, 1)
+
+
 async def fetch_worker_cell_load(
     cell: HiveCell,
     *,
@@ -879,6 +893,9 @@ async def fetch_worker_cell_load(
                 else None
             ),
             "memory_total_gb": round(float(data.get("memory_total_gb") or 0), 1) or None,
+            "disk_total_gb": _disk_metric(data.get("disk_total_gb"), positive=True),
+            "disk_used_gb": _disk_metric(data.get("disk_used_gb")),
+            "disk_percent": _disk_metric(data.get("disk_percent"), maximum=100),
             "wdtt_active": bool(data.get("wdtt_active")),
             "agent_build_id": (data.get("agent_build_id") or None),
             "wg_peers_total": int(data.get("wg_peers_total") or 0),

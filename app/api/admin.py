@@ -895,6 +895,7 @@ class VpsCleanupRequest(BaseModel):
     interval_days: int | None = None
     journal_max_mb: int | None = None
     run_now: bool | None = None
+    inactive_users_enabled: bool | None = None
 
 
 @router.get("/settings/vps-cleanup")
@@ -911,18 +912,32 @@ async def get_vps_cleanup_settings(
 @router.post("/settings/vps-cleanup")
 async def set_vps_cleanup_settings(
     req: VpsCleanupRequest,
+    background_tasks: BackgroundTasks,
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.vps_cleanup_settings import set_vps_cleanup
+    from app.services.vps_cleanup_settings import set_vps_cleanup, wake_vps_cleanup_host
 
-    return await set_vps_cleanup(
+    result = await set_vps_cleanup(
         db,
         enabled=req.enabled,
         interval_days=req.interval_days,
         journal_max_mb=req.journal_max_mb,
         run_now=req.run_now,
+        inactive_users_enabled=req.inactive_users_enabled,
     )
+    if result.get('run_now'):
+        background_tasks.add_task(wake_vps_cleanup_host)
+    return result
+
+
+@router.get("/settings/vps-cleanup/inactive-preview")
+async def preview_cleanup_users(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.inactive_user_cleanup import preview_inactive_users
+    return await preview_inactive_users(db)
 
 
 class GrantSubscriptionRequest(BaseModel):

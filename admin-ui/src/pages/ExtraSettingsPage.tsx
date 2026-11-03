@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Settings } from 'lucide-react'
 import RoutingPolicySettings from '../components/RoutingPolicySettings'
 
@@ -11,6 +11,8 @@ type ThreatStatus = {
   note?: string
 }
 
+type CleanupPreview = { candidate_users: number; candidate_devices: number; cutoff: string; batch_limit: number }
+
 type CleanupStatus = {
   enabled: boolean
   interval_days?: number
@@ -19,6 +21,11 @@ type CleanupStatus = {
   last_run_at?: string | null
   last_summary?: string | null
   note?: string
+  inactive_users_enabled?: boolean
+  status?: string
+  started_at?: string | null
+  error?: string | null
+  result?: { steps?: { name: string; status: string; error?: string }[] }
 }
 
 export default function ExtraSettingsPage({ token }: { token: string }) {
@@ -37,6 +44,10 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
   const [busy, setBusy] = useState<'reg' | 'skipMail' | 'threat' | 'cleanup' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [cleanupPollError, setCleanupPollError] = useState<string | null>(null)
+  const [cleanupConfirm, setCleanupConfirm] = useState<{ patch: Partial<CleanupStatus> & { enabled: boolean }; preview: CleanupPreview } | null>(null)
+  const cleanupDialog = useRef<HTMLDialogElement>(null)
+  const cleanupRunning = cleanup.run_now || cleanup.status === 'queued' || cleanup.status === 'running'
 
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
@@ -82,6 +93,7 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
         note: threatData.note,
       })
       setCleanup({
+        ...cleanupData,
         enabled: !!cleanupData.enabled,
         interval_days: cleanupData.interval_days ?? 7,
         journal_max_mb: cleanupData.journal_max_mb ?? 200,
@@ -100,6 +112,31 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
   useEffect(() => {
     load()
   }, [])
+
+  useEffect(() => {
+    if (loading) return
+    let cancelled = false
+    const timer = window.setInterval(async () => {
+      if (busy === 'cleanup') return
+      try {
+        const response = await fetch('/api/admin/settings/vps-cleanup', { headers: { Authorization: `Bearer ${token}` } })
+        if (!response.ok) throw new Error('poll')
+        const data: CleanupStatus = await response.json()
+        if (!cancelled) {
+          setCleanup(current => ({ ...data, interval_days: current.interval_days, journal_max_mb: current.journal_max_mb }))
+          setCleanupPollError(null)
+        }
+      } catch {
+        if (!cancelled) setCleanupPollError('Не удалось обновить статус. Повторяем проверку автоматически.')
+      }
+    }, cleanupRunning ? 3000 : 15000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [token, loading, busy, cleanupRunning])
+
+  useEffect(() => {
+    if (cleanupConfirm && !cleanupDialog.current?.open) cleanupDialog.current?.showModal()
+    if (!cleanupConfirm && cleanupDialog.current?.open) cleanupDialog.current.close()
+  }, [cleanupConfirm])
 
   const toggleReg = async () => {
     setBusy('reg')
@@ -208,14 +245,16 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
           interval_days: patch.interval_days ?? cleanup.interval_days ?? 7,
           journal_max_mb: patch.journal_max_mb ?? cleanup.journal_max_mb ?? 200,
           run_now: patch.run_now,
+          inactive_users_enabled: patch.inactive_users_enabled ?? cleanup.inactive_users_enabled ?? false,
         }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         setError(data.detail || 'Не удалось сохранить автоочистку')
-        return
+        return false
       }
       setCleanup({
+        ...data,
         enabled: !!data.enabled,
         interval_days: data.interval_days ?? 7,
         journal_max_mb: data.journal_max_mb ?? 200,
@@ -225,7 +264,7 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
         note: data.note,
       })
       if (patch.run_now) {
-        setSuccess('Очистка поставлена в очередь — хост подхватит в ближайшие минуты')
+        setSuccess('Запуск запрошен. Статус и результат появятся в карточке очистки.')
       } else if (data.enabled && !cleanup.enabled) {
         setSuccess('Автоочистка включена — первый прогон скоро на Улье')
       } else if (!data.enabled) {
@@ -233,9 +272,32 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
       } else {
         setSuccess('Параметры автоочистки сохранены')
       }
+      setCleanupPollError(null)
+      return true
+    } catch {
+      setError('Не удалось сохранить автоочистку. Повторите попытку.')
+      return false
     } finally {
       setBusy(null)
     }
+  }
+
+  const requestCleanup = async (patch: Partial<CleanupStatus> & { enabled: boolean }) => {
+    const deletesUsers = patch.inactive_users_enabled ?? cleanup.inactive_users_enabled
+    if (!deletesUsers || !(patch.run_now || (patch.enabled && !cleanup.enabled) || patch.inactive_users_enabled === true)) {
+      await saveCleanup(patch)
+      return
+    }
+    setBusy('cleanup')
+    setError(null)
+    try {
+      const response = await fetch('/api/admin/settings/vps-cleanup/inactive-preview', { headers: { Authorization: `Bearer ${token}` } })
+      if (!response.ok) throw new Error('preview')
+      const preview: CleanupPreview = await response.json()
+      setCleanupConfirm({ patch, preview })
+    } catch {
+      setError('Не удалось проверить неактивные аккаунты. Очистка не запущена; повторите попытку.')
+    } finally { setBusy(null) }
   }
 
   return (
@@ -385,16 +447,17 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-medium text-white">Автоочистка Улья (диск)</h2>
             <p className="text-xs text-[#666] mt-1.5 leading-relaxed">
-              Раз в N дней (и сразу при включении): journal, apt cache, /tmp deploy-скрипты,
-              неиспользуемые Docker images и build cache. Volumes, БД и OTA-файлы не трогает.
+              По расписанию или вручную: старые журналы, кеш пакетов и сборки,
+              устаревшие временные скрипты. Удаление неактивных аккаунтов включается отдельно.
             </p>
           </div>
           <button
             type="button"
             role="switch"
+            aria-label="Автоочистка Улья по расписанию"
             aria-checked={cleanup.enabled}
             disabled={loading || busy !== null}
-            onClick={() => void saveCleanup({ enabled: !cleanup.enabled })}
+            onClick={() => void requestCleanup({ enabled: !cleanup.enabled })}
             className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
               cleanup.enabled ? 'bg-purple-500' : 'bg-[#333]'
             }`}
@@ -415,7 +478,7 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
               min={1}
               max={30}
               value={cleanup.interval_days ?? 7}
-              disabled={loading || busy !== null || !cleanup.enabled}
+              disabled={loading || busy !== null}
               onChange={(e) =>
                 setCleanup((c) => ({
                   ...c,
@@ -433,7 +496,7 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
               max={2000}
               step={50}
               value={cleanup.journal_max_mb ?? 200}
-              disabled={loading || busy !== null || !cleanup.enabled}
+              disabled={loading || busy !== null}
               onChange={(e) =>
                 setCleanup((c) => ({
                   ...c,
@@ -445,13 +508,30 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
           </label>
         </div>
 
+        <label className="flex items-start gap-3 text-sm text-[#ccc]">
+          <input
+            type="checkbox"
+            checked={!!cleanup.inactive_users_enabled}
+            disabled={loading || busy !== null || !!cleanupRunning}
+            onChange={event => void requestCleanup({ enabled: cleanup.enabled, inactive_users_enabled: event.target.checked, run_now: false })}
+            className="mt-1 accent-purple-500"
+          />
+          <span>
+            Удалять аккаунты без активности более 3 месяцев
+            <span className="block mt-1 text-xs text-[#aaa] leading-relaxed">
+              Действующие подписки, администраторы и живые VPN-подключения сохраняются.
+              Перед удалением проверяются все серверы.
+            </span>
+          </span>
+        </label>
+
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            disabled={loading || busy !== null || !cleanup.enabled}
+            disabled={loading || busy !== null}
             onClick={() =>
               void saveCleanup({
-                enabled: true,
+                enabled: cleanup.enabled,
                 interval_days: cleanup.interval_days,
                 journal_max_mb: cleanup.journal_max_mb,
                 run_now: false,
@@ -463,10 +543,10 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
           </button>
           <button
             type="button"
-            disabled={loading || busy !== null || !cleanup.enabled}
+            disabled={loading || busy !== null || !!cleanupRunning}
             onClick={() =>
-              void saveCleanup({
-                enabled: true,
+              void requestCleanup({
+                enabled: cleanup.enabled,
                 interval_days: cleanup.interval_days,
                 journal_max_mb: cleanup.journal_max_mb,
                 run_now: true,
@@ -478,26 +558,51 @@ export default function ExtraSettingsPage({ token }: { token: string }) {
           </button>
         </div>
 
-        <div className="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] px-3 py-2.5 space-y-1.5 text-xs text-[#888]">
+        <div aria-live="polite" className="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] px-3 py-2.5 space-y-1.5 text-xs text-[#aaa]">
           <p>
             Статус:{' '}
             <span className="text-[#ccc]">
-              {cleanup.enabled ? 'вкл' : 'выкл'}
-              {cleanup.run_now ? ' · в очереди' : ''}
+              {({ queued: 'В очереди', running: 'Выполняется', succeeded: 'Завершено', partial: 'Завершено частично', failed: 'Ошибка' } as Record<string, string>)[cleanup.status || ''] || (cleanup.run_now ? 'В очереди' : 'Ожидает запуска')}
             </span>
             {' · '}
-            раз в {cleanup.interval_days ?? 7} дн. · journal ≤ {cleanup.journal_max_mb ?? 200} МБ
+            {cleanup.enabled ? `расписание: раз в ${cleanup.interval_days ?? 7} дн.` : 'расписание выключено'}
           </p>
+          {cleanup.status === 'running' && cleanup.started_at && <p>Начало: {new Date(cleanup.started_at).toLocaleString('ru-RU')}</p>}
           <p>
             Последний прогон:{' '}
-            <span className="text-[#ccc]">{cleanup.last_run_at || 'ещё не было'}</span>
+            <span className="text-[#ccc]">{cleanup.last_run_at ? new Date(cleanup.last_run_at).toLocaleString('ru-RU') : 'ещё не было'}</span>
           </p>
           {cleanup.last_summary && (
-            <p className="font-mono text-[11px] text-[#aaa] break-all">{cleanup.last_summary}</p>
+            <p className="text-xs text-[#ccc] break-words">{cleanup.last_summary}</p>
           )}
+          {(cleanup.error || cleanupPollError) && <p role="alert" className="text-red-400 break-words">{cleanup.error || cleanupPollError}</p>}
+          {cleanup.result?.steps?.filter(step => step.status === 'error').map(step => <p key={step.name} className="text-red-400 break-words">{step.error}</p>)}
           {cleanup.note && <p className="text-[#555] leading-relaxed pt-1">{cleanup.note}</p>}
         </div>
       </div>
+      <dialog
+        ref={cleanupDialog}
+        role="alertdialog"
+        aria-labelledby="cleanup-confirm-title"
+        aria-describedby="cleanup-confirm-description"
+        onCancel={event => { if (busy === 'cleanup') event.preventDefault(); else setCleanupConfirm(null) }}
+        onClose={() => setCleanupConfirm(null)}
+        className="!m-auto w-[calc(100%_-_2rem)] max-w-md rounded-xl border border-[#222] bg-[#111] p-6 text-[#e5e7eb] backdrop:bg-black/70"
+      >
+        <h2 id="cleanup-confirm-title" className="text-lg font-semibold">{cleanupConfirm?.patch.run_now ? 'Запустить очистку аккаунтов?' : 'Включить очистку аккаунтов?'}</h2>
+        <div id="cleanup-confirm-description" className="mt-3 space-y-3 text-sm text-[#aaa] leading-relaxed">
+          <p>Без активности с {cleanupConfirm && new Date(cleanupConfirm.preview.cutoff).toLocaleDateString('ru-RU')}: предварительно {cleanupConfirm?.preview.candidate_users ?? 0} аккаунтов и {cleanupConfirm?.preview.candidate_devices ?? 0} устройств.</p>
+          <p>Действующие подписки и живые подключения защищены. Если проверка хотя бы одного сервера не удалась, аккаунты не удаляются.</p>
+          <p>Аккаунты и их данные удаляются без восстановления, до {cleanupConfirm?.preview.batch_limit ?? 100} аккаунтов за запуск. {cleanupConfirm?.patch.run_now ? 'Очистка начнётся сейчас.' : 'Удаление будет выполняться вместе с очисткой по расписанию или вручную.'}</p>
+        </div>
+        {error && <p role="alert" className="mt-3 text-sm text-red-400">{error}</p>}
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" autoFocus disabled={busy === 'cleanup'} onClick={() => setCleanupConfirm(null)} className="rounded-lg border border-[#333] bg-[#1a1a1a] px-4 py-2 text-sm hover:bg-[#222] disabled:opacity-50">Отмена</button>
+          <button type="button" disabled={busy === 'cleanup'} onClick={async () => { if (cleanupConfirm && await saveCleanup(cleanupConfirm.patch)) setCleanupConfirm(null) }} className="rounded-lg border border-red-500/30 bg-red-500/15 px-4 py-2 text-sm text-red-400 hover:bg-red-500/25 disabled:opacity-50">
+            {busy === 'cleanup' ? 'Сохраняем…' : cleanupConfirm?.patch.run_now ? 'Запустить' : 'Включить'}
+          </button>
+        </div>
+      </dialog>
     </div>
   )
 }

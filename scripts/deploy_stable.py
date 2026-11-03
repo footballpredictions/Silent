@@ -45,6 +45,8 @@ PREFLIGHT_TESTS = (
     "scripts/test_admin_promo_delete_unit.py",
     "scripts/test_dashboard_node_stats_unit.py",
     "scripts/test_cell_disk_metrics_unit.py",
+    "scripts/test_vps_cleanup_install_unit.py",
+    "scripts/test_vps_cleanup_unit.py",
 )
 
 
@@ -79,6 +81,7 @@ CRITICAL_PYTHON = (
     'app/services/hive_provision_service.py',
     'app/models/payment.py',
     'app/services/dashboard_node_stats.py',
+    'app/services/vps_cleanup_settings.py', 'app/services/inactive_user_cleanup.py',
 )
 
 
@@ -207,7 +210,7 @@ def _upload_cell_agent_source(sftp, client) -> None:
         print('cell-agent source', path.name)
 
 
-def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None, cell_agent_source: bool = False, nginx_config: bool = False) -> None:
+def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None, cell_agent_source: bool = False, nginx_config: bool = False, vps_cleanup: bool = False) -> None:
     paths = _selected_python_paths(paths)
     if not paths:
         raise SystemExit("No Python files selected")
@@ -245,7 +248,11 @@ def _deploy_selected_python(paths: list[str], *, admin_ui: Path | None = None, c
                 sftp.put(str(BACKEND_ROOT / 'docker/nginx.conf'), remote)
                 print('selected nginx config')
         _restart_and_verify(client, expected_admin_index=admin_ui / 'index.html' if admin_ui else None)
-        _record_deploy_manifest(client, _verify_deploy_sources(client, verify_paths=paths))
+        manifest = _verify_deploy_sources(client, verify_paths=paths)
+        if vps_cleanup:
+            from deploy_vps_cleanup import install
+            manifest.update(install(client))
+        _record_deploy_manifest(client, manifest)
     finally:
         client.close()
 
@@ -258,7 +265,10 @@ def main() -> None:
     parser.add_argument("--cell-agent-source-only", action="store_true", help="Publish agent bundle only; requires an active controlled-rollout lease")
     parser.add_argument("--with-cell-agent-source", action="store_true", help="Publish the SHIPPED agent source bundle with --python-only")
     parser.add_argument("--with-nginx", action="store_true", help="Publish docker/nginx.conf with --python-only")
+    parser.add_argument("--with-vps-cleanup", action="store_true", help="Install the safe host cleaner after backend verification")
     args = parser.parse_args()
+    if args.with_vps_cleanup and not args.python_only:
+        parser.error('--with-vps-cleanup requires --python-only')
     dist = BACKEND_ROOT / "admin-ui" / "dist"
     if args.cell_agent_source_only:
         if args.python_only or args.admin_ui_only or args.with_admin_ui or args.with_cell_agent_source or args.with_nginx:
@@ -297,7 +307,7 @@ def main() -> None:
     if (not args.python_only or args.with_admin_ui) and not (dist / 'index.html').is_file():
         raise SystemExit("Сначала: cd admin-ui && npm run build")
     if args.python_only:
-        _deploy_selected_python(args.python_only, admin_ui=dist if args.with_admin_ui else None, cell_agent_source=args.with_cell_agent_source, nginx_config=args.with_nginx)
+        _deploy_selected_python(args.python_only, admin_ui=dist if args.with_admin_ui else None, cell_agent_source=args.with_cell_agent_source, nginx_config=args.with_nginx, vps_cleanup=args.with_vps_cleanup)
         return
     if args.with_admin_ui:
         parser.error("--with-admin-ui requires --python-only")

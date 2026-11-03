@@ -1,166 +1,67 @@
-"""Установка автоочистки Улья: journal / unused Docker / tmp + timer (опрос API)."""
+"""Install the host cleaner; backend publication invokes this via deploy_stable."""
 from __future__ import annotations
-
+import hashlib
 import io
-import textwrap
+from pathlib import Path
+import shlex
+from _deploy_common import connect
 
-from _deploy_common import connect, run
-
-BIN = "/usr/local/sbin/silent-vps-cleanup.sh"
-SYNC = "/usr/local/sbin/silent-vps-cleanup-tick.sh"
-
-
-def main() -> None:
-    client = connect()
-
-    cleanup_sh = textwrap.dedent(
-        f"""\
-        #!/bin/bash
-        # Safe hive cleanup — never touches docker volumes / .env / OTA update/
-        set -euo pipefail
-        JOURNAL_MB="${{1:-200}}"
-        BEFORE=$(df -B1 / | awk 'NR==2{{print $4}}')
-        journalctl --vacuum-size="${{JOURNAL_MB}}M" >/dev/null 2>&1 || true
-        apt-get clean >/dev/null 2>&1 || true
-        rm -rf /var/cache/apt/archives/*.deb 2>/dev/null || true
-        rm -f /tmp/deploy_*.sh /tmp/fix_*.sh /tmp/install_*.sh /tmp/remove_*.sh \\
-          /tmp/silent_*.sh /tmp/_*.py /tmp/check_*.py /tmp/hotfix_*.py 2>/dev/null || true
-        find /var/log -type f \\( -name '*.gz' -o -name '*.1' -o -name '*.old' \\) -mtime +14 -delete 2>/dev/null || true
-        find /var/log -type f -name '*.log' -size +200M -exec truncate -s 0 {{}} \\; 2>/dev/null || true
-        find /var/lib/docker/containers -name '*-json.log' -size +200M -exec truncate -s 50M {{}} \\; 2>/dev/null || true
-        docker container prune -f >/dev/null 2>&1 || true
-        docker image prune -af >/dev/null 2>&1 || true
-        docker builder prune -af >/dev/null 2>&1 || true
-        AFTER=$(df -B1 / | awk 'NR==2{{print $4}}')
-        FREED=$(( AFTER - BEFORE ))
-        FREED_MB=$(( FREED / 1024 / 1024 ))
-        AVAIL=$(df -h / | awk 'NR==2{{print $4}}')
-        echo "freed_approx_mb=${{FREED_MB}} avail=${{AVAIL}} journal_mb=${{JOURNAL_MB}}"
-        """
-    )
-
-    tick_sh = textwrap.dedent(
-        f"""\
-        #!/bin/bash
-        set -euo pipefail
-        ENV_FILE="/opt/silent-vpn/backend/.env"
-        SECRET=""
-        if [ -f "$ENV_FILE" ]; then
-          SECRET=$(grep -E '^INTERNAL_API_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\\r' | tr -d '"' | tr -d "'")
-        fi
-        [ -n "$SECRET" ] || {{ echo "[vps-cleanup] no INTERNAL_API_SECRET"; exit 0; }}
-
-        RESP=$(curl -fsS --connect-timeout 5 --max-time 15 \\
-          -H "X-Internal-Secret: $SECRET" \\
-          "http://127.0.0.1:8000/api/vpn/internal/vps-cleanup" || echo '{{}}')
-
-        ENABLED=$(echo "$RESP" | sed -n 's/.*"enabled"[[:space:]]*:[[:space:]]*\\(true\\|false\\).*/\\1/p' | head -1)
-        RUN_NOW=$(echo "$RESP" | sed -n 's/.*"run_now"[[:space:]]*:[[:space:]]*\\(true\\|false\\).*/\\1/p' | head -1)
-        INTERVAL=$(echo "$RESP" | sed -n 's/.*"interval_days"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' | head -1)
-        JOURNAL=$(echo "$RESP" | sed -n 's/.*"journal_max_mb"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' | head -1)
-        LAST=$(echo "$RESP" | sed -n 's/.*"last_run_at"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
-        INTERVAL=${{INTERVAL:-7}}
-        JOURNAL=${{JOURNAL:-200}}
-
-        if [ "$ENABLED" != "true" ]; then
-          echo "[vps-cleanup] disabled"
-          exit 0
-        fi
-
-        NEED=0
-        if [ "$RUN_NOW" = "true" ]; then
-          NEED=1
-        else
-          if [ -z "$LAST" ] || [ "$LAST" = "null" ]; then
-            NEED=1
-          else
-            # last_run older than interval_days?
-            LAST_EPOCH=$(date -u -d "$LAST" +%s 2>/dev/null || echo 0)
-            NOW_EPOCH=$(date -u +%s)
-            AGE_DAYS=$(( (NOW_EPOCH - LAST_EPOCH) / 86400 ))
-            if [ "$LAST_EPOCH" -eq 0 ] || [ "$AGE_DAYS" -ge "$INTERVAL" ]; then
-              NEED=1
-            fi
-          fi
-        fi
-
-        if [ "$NEED" -ne 1 ]; then
-          echo "[vps-cleanup] skip (next in <=${{INTERVAL}}d, last=$LAST)"
-          exit 0
-        fi
-
-        echo "[vps-cleanup] running journal=${{JOURNAL}}M interval=${{INTERVAL}}d"
-        SUMMARY=$({BIN} "$JOURNAL" 2>&1 | tail -1)
-        BODY=$(SUMMARY="$SUMMARY" python3 - <<'PY'
-import json, os
-print(json.dumps({{"summary": os.environ.get("SUMMARY", "")}}))
-PY
-)
-        curl -fsS --connect-timeout 5 --max-time 20 \\
-          -X POST "http://127.0.0.1:8000/api/vpn/internal/vps-cleanup/meta" \\
-          -H "Content-Type: application/json" \\
-          -H "X-Internal-Secret: $SECRET" \\
-          -d "$BODY" \\
-          >/dev/null || echo "[vps-cleanup] meta push failed"
-        echo "[vps-cleanup] done: $SUMMARY"
-        """
-    )
-
-    service = textwrap.dedent(
-        f"""\
-        [Unit]
-        Description=Silent VPN VPS cleanup tick (poll API)
-        After=network-online.target docker.service
-
-        [Service]
-        Type=oneshot
-        ExecStart={SYNC}
-        """
-    )
-
-    timer = textwrap.dedent(
-        """\
-        [Unit]
-        Description=Silent VPN VPS cleanup poll (API schedule)
-
-        [Timer]
-        OnBootSec=2min
-        OnUnitActiveSec=15min
-        RandomizedDelaySec=1min
-        Persistent=true
-
-        [Install]
-        WantedBy=timers.target
-        """
-    )
-
-    install = textwrap.dedent(
-        f"""\
-        #!/bin/bash
-        set -euo pipefail
-        systemctl daemon-reload
-        systemctl enable --now silent-vps-cleanup.timer
-        {SYNC} || echo "[vps-cleanup] initial tick deferred"
-        systemctl list-timers 'silent-vps-cleanup*' --no-pager || true
-        """
-    )
-
-    sftp = client.open_sftp()
-    for path, content in {
-        BIN: cleanup_sh,
-        SYNC: tick_sh,
-        "/etc/systemd/system/silent-vps-cleanup.service": service,
-        "/etc/systemd/system/silent-vps-cleanup.timer": timer,
-        "/tmp/install_vps_cleanup.sh": install,
-    }.items():
-        print(f"upload {path}")
-        sftp.putfo(io.BytesIO(content.encode("utf-8")), path)
-    sftp.close()
-    run(client, f"chmod +x {BIN} {SYNC} /tmp/install_vps_cleanup.sh", timeout=15)
-    run(client, "bash /tmp/install_vps_cleanup.sh 2>&1", timeout=180)
-    client.close()
-    print("Done — VPS cleanup timer installed")
+BIN='/usr/local/sbin/silent-vps-cleanup.sh'
+SYNC='/usr/local/sbin/silent-vps-cleanup-tick.sh'
+RUNNER='/usr/local/lib/silent-vpn/vps_cleanup.py'
 
 
-if __name__ == "__main__":
-    main()
+def run(client,command,*,timeout=30):
+    _,out,err=client.exec_command(command,timeout=timeout)
+    output=out.read().decode('utf-8',errors='replace')
+    error=err.read().decode('utf-8',errors='replace')
+    if out.channel.recv_exit_status():raise RuntimeError('Host cleanup installation failed: '+(error or output)[-400:])
+    if output.strip():print(output.strip())
+    return output
+
+
+def artifacts():
+    return {
+        RUNNER:Path(__file__).with_name('vps_cleanup_runner.py').read_text(encoding='utf-8'),
+        BIN:f'#!/bin/sh\nexec /usr/bin/python3 {RUNNER} --disk-only --journal-mb "${{1:-200}}"\n',
+        SYNC:f'#!/bin/sh\nexec /usr/bin/python3 {RUNNER}\n',
+        '/etc/systemd/system/silent-vps-cleanup.service':
+            '[Unit]\nDescription=Silent VPN safe host cleanup\nAfter=network-online.target docker.service\n\n'
+            f'[Service]\nType=oneshot\nExecStart=/usr/bin/python3 {RUNNER}\nTimeoutStartSec=10min\nNice=10\nIOSchedulingClass=idle\n',
+        '/etc/systemd/system/silent-vps-cleanup.timer':
+            '[Unit]\nDescription=Silent VPN cleanup schedule poll\n\n[Timer]\nOnBootSec=2min\n'
+            'OnUnitActiveSec=1min\nRandomizedDelaySec=5sec\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n',
+    }
+
+
+def install(client):
+    run(client,'systemctl stop silent-vps-cleanup.timer 2>/dev/null || true',timeout=15)
+    _,out,_=client.exec_command('systemctl is-active silent-vps-cleanup.service',timeout=10)
+    if out.read().decode().strip() in ('active','activating','deactivating'):
+        run(client,'systemctl start silent-vps-cleanup.timer',timeout=15)
+        raise RuntimeError('Текущая очистка ещё выполняется; установка отложена')
+    run(client,'install -d -m 755 /usr/local/lib/silent-vpn',timeout=15)
+    files=artifacts()
+    with client.open_sftp() as sftp:
+        for target,content in files.items():
+            data=content.encode('utf-8')
+            if target.endswith('.sh'):assert data.startswith(b'#!/') and b'\r\n' not in data
+            temp=target+'.installing'
+            sftp.putfo(io.BytesIO(data),temp)
+            sftp.chmod(temp,0o755 if target.endswith('.sh') else 0o644)
+            sftp.posix_rename(temp,target)
+    run(client,f'/usr/bin/python3 -m py_compile {RUNNER}',timeout=15)
+    expected={name:hashlib.sha256(content.encode()).hexdigest() for name,content in files.items()}
+    check='import hashlib,pathlib; expected='+repr(expected)+'; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in expected.items()); print("PASS cleanup host artifacts: "+str(len(expected)))'
+    run(client,'python3 -c '+shlex.quote(check),timeout=15)
+    run(client,'systemctl daemon-reload && systemctl reset-failed silent-vps-cleanup.service && systemctl enable --now silent-vps-cleanup.timer && systemctl start --no-block silent-vps-cleanup.service',timeout=25)
+    return {'host_cleanup_files':expected}
+
+
+def main():
+    client=connect()
+    try:install(client)
+    finally:client.close()
+
+
+if __name__=='__main__':main()

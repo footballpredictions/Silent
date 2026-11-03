@@ -30,7 +30,7 @@ cd backend
 | `scripts/deploy_update_backend.py` | `python scripts/deploy_update_backend.py` | OTA API (без .exe/.apk) + admin-ui/dist |
 | `scripts/deploy_wdtt_systemd.py` | `python scripts/deploy_wdtt_systemd.py` | wdtt-server как systemd на VPS |
 | `scripts/deploy_threat_dns.py` | `python scripts/deploy_threat_dns.py` | DNS-фильтр угроз (dnsmasq + HaGeZi TIF) на Улье |
-| `scripts/deploy_vps_cleanup.py` | `python scripts/deploy_vps_cleanup.py` | Автоочистка Улья (journal/Docker/tmp) + timer |
+| `scripts/deploy_vps_cleanup.py` | `python scripts/deploy_stable.py --python-only app/api/admin.py app/api/vpn.py app/schemas/vpn.py app/services/vps_cleanup_settings.py app/services/inactive_user_cleanup.py --with-admin-ui --with-vps-cleanup` | Установка host cleaner после проверки API; автоочистка и ручной запуск без перезапуска WDTT |
 | `scripts/deploy_telegram_proxy.py` | `python scripts/deploy_telegram_proxy.py` | MTProto (mtg) для Telegram + theme URL |
 | `scripts/deploy_hive.py` | `python scripts/deploy_hive.py` | Улей: Hive API, cell-agent, admin-ui/dist |
 | `scripts/deploy_olcrtc2_cell.py` | `python scripts/deploy_olcrtc2_cell.py [cell_ip]` | olcrtc2-srv на соту (дефолт Сота 1 `87.58.213.193`); **не** на Улей |

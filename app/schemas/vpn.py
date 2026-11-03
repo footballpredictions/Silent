@@ -139,6 +139,14 @@ class ThreatFilterMetaRequest(BaseModel):
 class VpsCleanupMetaRequest(BaseModel):
     """Host cleaner → backend: last run summary."""
     summary: str = ""
+    run_id: str | None = None
+    status: str = "succeeded"
+    result: dict | None = None
+    error: str | None = None
+
+
+class VpsCleanupRunRequest(BaseModel):
+    run_id: str
 
 
 class AppExclusionRequest(BaseModel):

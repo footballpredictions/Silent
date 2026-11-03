@@ -26,6 +26,7 @@ from app.schemas.vpn import (
     InternalOnlineResponse,
     ThreatFilterMetaRequest,
     VpsCleanupMetaRequest,
+    VpsCleanupRunRequest,
     PreferredServerRequest,
     VpnServersResponse,
     VpnServerInfo,
@@ -608,7 +609,29 @@ async def internal_vps_cleanup_meta(
     _require_internal_secret(x_internal_secret)
     from app.services.vps_cleanup_settings import update_vps_cleanup_meta
 
-    return await update_vps_cleanup_meta(db, summary=req.summary or "", clear_run_now=True)
+    return await update_vps_cleanup_meta(db, summary=req.summary or "", clear_run_now=True,
+        run_id=req.run_id, status=req.status, result=req.result, error=req.error)
+
+
+@router.post("/internal/vps-cleanup/claim")
+async def internal_vps_cleanup_claim(
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_internal_secret(x_internal_secret)
+    from app.services.vps_cleanup_settings import claim_vps_cleanup
+    return await claim_vps_cleanup(db)
+
+
+@router.post("/internal/vps-cleanup/inactive-users")
+async def internal_vps_cleanup_users(
+    req: VpsCleanupRunRequest,
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_internal_secret(x_internal_secret)
+    from app.services.vps_cleanup_settings import cleanup_inactive_users_for_job
+    return await cleanup_inactive_users_for_job(db, req.run_id)
 
 
 @router.post("/exclusions")

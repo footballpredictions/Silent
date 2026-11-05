@@ -466,12 +466,10 @@ fun MainScreen(
                         onToggle = onToggleAppearance,
                         color = fg,
                     )
-                    if (BuildConfig.DEBUG) {
-                        DebugLogButton(
-                            onClick = { showDebugLog = true },
-                            focusEnabled = !blockMainFocus,
-                        )
-                    }
+                    DebugLogButton(
+                        onClick = { showDebugLog = true },
+                        focusEnabled = !blockMainFocus,
+                    )
                 }
             }
 

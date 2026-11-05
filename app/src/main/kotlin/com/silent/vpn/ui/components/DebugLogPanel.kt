@@ -26,7 +26,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.silent.vpn.BuildConfig
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.util.rememberIsTv
 import com.silent.vpn.vpn.LogEntry
@@ -39,7 +38,6 @@ fun DebugLogButton(
     onClick: () -> Unit,
     focusEnabled: Boolean = true,
 ) {
-    if (!BuildConfig.DEBUG) return
     TvTextButton(
         onClick = onClick,
         enabled = focusEnabled,
@@ -55,7 +53,7 @@ fun DebugLogDialog(
     visible: Boolean,
     onDismiss: () -> Unit,
 ) {
-    if (!BuildConfig.DEBUG || !visible) return
+    if (!visible) return
     val context = LocalContext.current
     val isTv = rememberIsTv()
     val currentLogs by WdttTunnelManager.logs.collectAsStateWithLifecycle()

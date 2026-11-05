@@ -31,12 +31,11 @@ class RussianServicesDeviceTest {
         RussianServices.setEnabled(context, true)
         try {
             val active = resolveAppTunnelPolicy(context)
-            if (com.silent.vpn.BuildConfig.WHITELIST_CATALOG_TEST) {
-                assertEquals(before, active)
-            } else {
-                assertFalse(active.whitelist)
-                assertEquals(setOf(context.packageName), active.packages)
-            }
+            val automatic = setOf("ru.oneme.app").filter {
+                runCatching { context.packageManager.getPackageInfo(it, 0) }.isSuccess
+            }.toSet()
+            assertEquals(before.whitelist, active.whitelist)
+            assertEquals(before.packages + automatic, active.packages)
             assertEquals(bootstrap, resolveBootstrapExcludedApps(context))
             assertEquals(overlay, resolveAppTunnelPolicy(context, includeAppInTunnel = true))
             repo.saveExcludedApps(emptySet(), false)

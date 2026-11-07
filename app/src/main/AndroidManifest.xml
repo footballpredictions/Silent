@@ -168,9 +168,11 @@
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
+            <!-- Rebind when QS opens: an ACTIVE_TILE can keep its last enabled
+                 state after the app process dies, with no process left to refresh it. -->
             <meta-data
                 android:name="android.service.quicksettings.ACTIVE_TILE"
-                android:value="true" />
+                android:value="false" />
         </service>
 
         <service

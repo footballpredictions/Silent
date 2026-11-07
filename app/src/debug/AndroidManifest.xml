@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- ADB-only lifecycle fixture; excluded from all release APKs. -->
+        <activity
+            android:name="com.silent.vpn.service.TileOwnerFixtureActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:theme="@android:style/Theme.NoDisplay" />
+    </application>
+</manifest>

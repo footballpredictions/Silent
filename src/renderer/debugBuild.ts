@@ -4,5 +4,5 @@ declare const __DEBUG_BUILD__: boolean | undefined
 export const isDebugBuild =
   import.meta.env.DEV || (typeof __DEBUG_BUILD__ !== 'undefined' && __DEBUG_BUILD__)
 
-/** Кнопка «Лог» и строки WDTT/[WG] только в debug-сборке. */
-export const captureBuiltinLog = isDebugBuild
+/** Копируемый встроенный лог доступен и в release; debug-инструменты отдельны. */
+export const captureBuiltinLog = true

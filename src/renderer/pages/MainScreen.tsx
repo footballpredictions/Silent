@@ -65,7 +65,7 @@ import {
   stopOlcrtcHeartbeatLoop,
   stopOlcrtcLiveSyncLoop,
 } from '../bypassStore'
-import { isDebugBuild } from '../debugBuild'
+import { captureBuiltinLog, isDebugBuild } from '../debugBuild'
 import { telegramProxyDeepLink } from '../telegramProxyLink'
 import { notifyDisconnect } from '../vpnBackendSync'
 import { pushLog, logI, clearLogs } from '../debugLog'
@@ -1451,7 +1451,7 @@ export default function MainScreen({
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <ThemeModeToggle mode={appearanceMode} onToggle={toggleAppearance} color={fg} />
-          {isDevBuild && <DebugLogButton onClick={() => setShowDebugLog(true)} />}
+          {captureBuiltinLog && <DebugLogButton onClick={() => setShowDebugLog(true)} />}
           <WindowControls />
         </div>
       </div>
@@ -2151,7 +2151,7 @@ export default function MainScreen({
           )}
         </div>
       )}
-      {isDevBuild && <DebugLogPanel open={showDebugLog} onClose={() => setShowDebugLog(false)} />}
+      {captureBuiltinLog && <DebugLogPanel open={showDebugLog} onClose={() => setShowDebugLog(false)} />}
     </div>
   )
 }

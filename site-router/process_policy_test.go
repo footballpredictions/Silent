@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestRussianModeOverridesManualListsForEveryApplication(t *testing.T) {
+func TestRussianModeCombinesManualAppsAndDomainRules(t *testing.T) {
 	for _, dns := range [][]string{nil, {"1.1.1.1", "8.8.8.8"}} {
 		cfg := policyConfig{Whitelist: true, Excluded: []string{"game.exe"}, DNS: dns,
 			Targets: []string{"198.51.100.2/32"}, Russian: russianConfig{Enabled: true, Direct: []string{"ru"}}}
@@ -17,8 +17,8 @@ func TestRussianModeOverridesManualListsForEveryApplication(t *testing.T) {
 			if !p.direct(exe, netip.AddrFrom4(ip), 443) {
 				t.Fatalf("RU route missing for %q with DNS %v", exe, dns)
 			}
-			if p.direct(exe, netip.MustParseAddr("198.51.100.3"), 443) {
-				t.Fatalf("Manual exclusion remained active for %q", exe)
+			if p.direct(exe, netip.MustParseAddr("198.51.100.3"), 443) != (exe == "game.exe") {
+				t.Fatalf("Combined app policy incorrect for %q", exe)
 			}
 			if p.direct(exe, netip.AddrFrom4(ip), 53) {
 				t.Fatal("DNS was routed as an application flow")

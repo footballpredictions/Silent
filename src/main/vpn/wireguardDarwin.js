@@ -50,6 +50,14 @@ let lastHelperPath = null
 let lastWgGo = 'auto'
 let daemonStartPromise = null
 let russianDnsEnabled = false
+let dnsPolicyChain = Promise.resolve()
+
+// Policy ACK, its DNS write, background guards and teardown share one order.
+function enqueueDnsPolicy(operation) {
+  const next = dnsPolicyChain.then(operation, operation)
+  dnsPolicyChain = next.catch(() => {})
+  return next
+}
 
 function beginWgApply() {
   wgApplyEpoch += 1
@@ -710,21 +718,25 @@ async function removeHostBypassRoutes(excludeIPs, send, epoch = null) {
 }
 
 async function applyWgDns(send, dnsValue = WG_DNS) {
-  // Как на Windows/сервере: 1.1.1.1 + Яндекс 77.88.8.8 (не роутер — костыль после en0-бага).
-  const servers = pickDnsServers(russianDnsEnabled ? '10.66.66.53' : dnsValue)
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .slice(0, 3)
-  if (!servers.length) return
-  try {
-    const out = await helperOut(['dns-set', TUNNEL_NAME, servers.join(',')], 12000)
-    const lines = String(out || '').trim().split('\n').filter(Boolean)
-    const hint = lines.join(' | ')
-    send?.(`[WG] DNS на адаптере: ${servers.join(', ')}${hint ? ` (${hint})` : ''}`)
-  } catch (e) {
-    send?.(`[WG] DNS: ${e?.message || e}`, 'W')
-  }
+  const epoch = wgApplyEpoch
+  return enqueueDnsPolicy(async () => {
+    if (epoch !== wgApplyEpoch) return
+    // Как на Windows/сервере: 1.1.1.1 + Яндекс 77.88.8.8 (не роутер — костыль после en0-бага).
+    const servers = pickDnsServers(russianDnsEnabled ? '10.66.66.53' : dnsValue)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+    if (!servers.length) return
+    try {
+      const out = await helperOut(['dns-set', TUNNEL_NAME, servers.join(',')], 12000)
+      const lines = String(out || '').trim().split('\n').filter(Boolean)
+      const hint = lines.join(' | ')
+      send?.(`[WG] DNS на адаптере: ${servers.join(', ')}${hint ? ` (${hint})` : ''}`)
+    } catch (e) {
+      send?.(`[WG] DNS: ${e?.message || e}`, 'W')
+    }
+  })
 }
 
 /** Только шлюз LAN в bypass. DNS 77.88/1.1.1.1 идут через utun (как на PC). */
@@ -809,12 +821,15 @@ let lastAppliedDns = WG_DNS
 
 async function updateRussianPolicy(policy) {
   const epoch = wgApplyEpoch
-  const dns = pickDnsServers(lastAppliedDns).split(',').map(server => server.trim()).filter(Boolean)
-  const result = JSON.parse(await helperOut(['russian-policy', JSON.stringify({ russian: policy.russian || { enabled: false }, dns })], 12000))
-  if (result.ok !== true || epoch !== wgApplyEpoch) throw new Error('Применение обхода отменено')
-  await helperOut(['dns-set', TUNNEL_NAME, policy.russian?.enabled === true ? '10.66.66.53' : pickDnsServers(lastAppliedDns)], 12000)
-  if (epoch !== wgApplyEpoch) throw new Error('Применение обхода отменено')
-  russianDnsEnabled = policy.russian?.enabled === true
+  return enqueueDnsPolicy(async () => {
+    if (epoch !== wgApplyEpoch) throw new Error('Применение обхода отменено')
+    const dns = pickDnsServers(lastAppliedDns).split(',').map(server => server.trim()).filter(Boolean)
+    const result = JSON.parse(await helperOut(['russian-policy', JSON.stringify({ russian: policy.russian || { enabled: false }, excluded: policy.excluded || [], dns })], 12000))
+    if (result.ok !== true || epoch !== wgApplyEpoch) throw new Error('Применение обхода отменено')
+    await helperOut(['dns-set', TUNNEL_NAME, policy.russian?.enabled === true ? '10.66.66.53' : pickDnsServers(lastAppliedDns)], 12000)
+    if (epoch !== wgApplyEpoch) throw new Error('Применение обхода отменено')
+    russianDnsEnabled = policy.russian?.enabled === true
+  })
 }
 
 /** Периодически: NM может вернуть IPv6 RA / переписать resolv.conf. */
@@ -943,7 +958,7 @@ async function trySyncConf(runtimeDir, stableConf, send) {
 
 async function forceStopWireGuard(isDev, dirname, send) {
   const epoch = wgApplyEpoch
-  return enqueueWgStop(async () => {
+  return enqueueWgStop(() => enqueueDnsPolicy(async () => {
     if (epoch !== wgApplyEpoch) {
       send?.('[WG] stop отменён — уже новый connect')
       return
@@ -969,13 +984,13 @@ async function forceStopWireGuard(isDev, dirname, send) {
     } else {
       send?.('[WG] Не удалось снять wg-turn — helper / sudo ip link delete wg-turn', 'E')
     }
-  })
+  }))
 }
 
 async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
   const epoch = wgApplyEpoch
   await forceStopWireGuard(isDev, dirname, send)
-  await enqueueWgStop(async () => {
+  await enqueueWgStop(() => enqueueDnsPolicy(async () => {
     if (epoch !== wgApplyEpoch) {
       send?.('[WG] bypass не снимаем — уже новый connect')
       return
@@ -998,7 +1013,7 @@ async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
     if (epoch === wgApplyEpoch) {
       savedPhysicalGateway = null
     }
-  })
+  }))
 }
 
 async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs = [], options = {}) {

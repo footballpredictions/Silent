@@ -589,7 +589,7 @@ export default function AppExclusionsPanel({
             {russianDeliveryLabel(russianDelivery)}
           </p>
           <p className="text-xs mb-3" style={{ color: muted }}>
-            Другие исключения временно отключены. Ваши списки сохранены.
+            Исключения приложений действуют. Списки сайтов сохранены.
           </p>
           <p className="text-[13px] mb-1" style={{ color: muted, opacity: 0.7 }}>
             Сайты: {siteRules.length} сохранено

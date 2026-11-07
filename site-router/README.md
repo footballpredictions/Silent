@@ -4,8 +4,10 @@ Linux and macOS build this module as `resources/<platform>/wireguard-go`.
 The existing privileged helper starts it in the foreground, records its PID,
 passes the physical interface in `SILENT_LAN_IFACE`, and configures WireGuard
 through its normal UAPI socket. The separate `<interface>.policy.sock` is mode
-0600 and accepts live Russian-service policy updates. Manual process/site
-exclusions on these platforms continue using their existing implementation.
+0600 and accepts live Russian-service and exact application-exclusion updates.
+Linux resolves socket inode owners in /proc; macOS resolves numeric socket owners
+with lsof and the executable path with ps. Unknown or ambiguous owners receive
+no application exemption. Manual site rules retain their existing platform path.
 
 The opt-in `TestUnixKernelRouting` requires isolated mount, PID and network
 namespaces, a private `/run`, and a sysfs mount for that network namespace.
@@ -74,3 +76,5 @@ Windows reference: [IP_UNICAST_IF](https://learn.microsoft.com/en-us/windows/win
 uses an interface index in network byte order;
 [TCP owner table](https://learn.microsoft.com/en-us/windows/win32/api/tcpmib/ns-tcpmib-mib_tcptable_owner_pid)
 is independent of the selected site destinations.
+
+The macOS field parser uses the documented numeric NUL-delimited lsof output: https://github.com/lsof-org/lsof/blob/master/docs/manpage.md . No shell interpolation or destination-wide app bypass is used.

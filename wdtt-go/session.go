@@ -23,7 +23,7 @@ const (
 	sessionReadTimeout = 30 * time.Minute
 	readBufSize        = 1600
 	// Telegram latency experiment: чуть больше сокет-буфер (меньше дропа на burst видео).
-	socketBufSize      = 8 * 1024 * 1024
+	socketBufSize       = 8 * 1024 * 1024
 	keepaliveByte       = 0xFF
 	keepaliveInterval   = 15 * time.Second
 	accessCheckInterval = 30 * time.Second
@@ -73,34 +73,14 @@ func RunSession(
 	if len(creds.TurnURLs) == 0 {
 		return false, fmt.Errorf("нет TURN URL в учетных данных")
 	}
-	selectedURL := creds.TurnURLs[sessionID%len(creds.TurnURLs)]
-
-	urlhost, urlport, err := net.SplitHostPort(selectedURL)
+	turnConn, endpoint, err := dialUDPTURN(ctx, creds.TurnURLs, sessionID, tp)
 	if err != nil {
-		return false, fmt.Errorf("разбор TURN URL %q: %w", selectedURL, err)
+		return false, err
 	}
-	if tp.Host != "" {
-		urlhost = tp.Host
-	}
-	if tp.Port != "" {
-		urlport = tp.Port
-	}
-	turnAddr := net.JoinHostPort(urlhost, urlport)
-
-	// Транспорт: всегда UDP
-	resolved, err := net.ResolveUDPAddr("udp", turnAddr)
-	if err != nil {
-		return false, fmt.Errorf("резолв TURN: %w", err)
-	}
-	c, err := dialTurnUDP(resolved)
-	if err != nil {
-		return false, fmt.Errorf("подключение TURN UDP: %w", err)
-	}
-	defer c.Close()
-	_ = c.SetReadBuffer(socketBufSize)
-	_ = c.SetWriteBuffer(socketBufSize)
-	var turnConn net.PacketConn = &connectedUDPConn{c}
-
+	defer turnConn.Close()
+	stopTransport := context.AfterFunc(ctx, func() { _ = turnConn.Close() })
+	defer stopTransport()
+	turnAddr := net.JoinHostPort(endpoint.Host, endpoint.Port)
 	log.Printf("[СЕССИЯ #%d] TURN UDP (%s)", sessionID, turnAddr)
 
 	// RequestedAddressFamily

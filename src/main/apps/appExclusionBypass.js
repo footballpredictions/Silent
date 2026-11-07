@@ -33,7 +33,7 @@ let packsApplied = false
 
 function isExcludedTarget(p) {
   const s = String(p || '')
-  return /\.exe$/i.test(s) || /\.app$/i.test(s)
+  return require('./exclusionsPolicy').isBypassTarget(s)
 }
 
 function normalizeExe(p) {
@@ -388,53 +388,20 @@ async function tick() {
 }
 
 function startAppExclusionBypass(exePaths, send) {
-  if (require('./russianServices').enabled()) { void stopAppExclusionBypass(send); return }
   sendLog = typeof send === 'function' ? send : null
   activeExePaths = [...new Set((exePaths || []).filter(isExcludedTarget))]
-  packsApplied = false
-  if (timer) {
-    clearInterval(timer)
-    timer = null
-  }
-  if (process.platform === 'win32') {
-    void require('../vpn/browserRouter').updatePolicy({ excluded: activeExePaths }).catch(e => sendLog?.(`[Apps] ${e.message}`))
-    sendLog?.(`[Apps] исключения процессов: ${activeExePaths.length}`)
-    return
-  }
-  if (!activeExePaths.length) {
-    sendLog?.('[Apps] bypass: нет приложений — монитор выкл')
-    return
-  }
-  sendLog?.(
-    `[Apps] bypass монитор: ${activeExePaths.length} exe — ${activeExePaths.map(p => path.basename(p)).join(', ')}`,
-  )
-  void tick()
-  timer = setInterval(() => { void tick() }, POLL_MS)
+  if (timer) { clearInterval(timer); timer = null }
+  // Exact process routing is enforced inside the native TUN on every platform.
+  void require('../vpn/browserRouter').updatePolicy({ excluded: activeExePaths })
+    .catch(error => sendLog?.(`[Apps] ${error.message}`))
 }
 
 /** После поднятия WG шлюз уже известен — сразу накатить platform packs. */
 async function refreshAppExclusionBypassAfterTunnel(send) {
-  if (require('./russianServices').enabled()) { await stopAppExclusionBypass(send); return }
   if (send) sendLog = send
-  if (process.platform === 'win32') {
-    const { getActiveExcludedExePaths } = require('./vpnAppExclusions')
-    activeExePaths = getActiveExcludedExePaths()
-    await require('../vpn/browserRouter').updatePolicy({ excluded: activeExePaths })
-    return
-  }
-  if (!activeExePaths.length) {
-    let paths = []
-    try {
-      const { getActiveExcludedExePaths } = require('./vpnAppExclusions')
-      paths = getActiveExcludedExePaths()
-    } catch { /* ignore */ }
-    if (!paths.length) return
-    startAppExclusionBypass(paths, send)
-    return
-  }
-  packsApplied = false
-  await applyPlatformPacks(activeExePaths)
-  await tick()
+  const { getActiveExcludedExePaths } = require('./vpnAppExclusions')
+  activeExePaths = getActiveExcludedExePaths().filter(isExcludedTarget)
+  await require('../vpn/browserRouter').updatePolicy({ excluded: activeExePaths })
 }
 
 async function stopAppExclusionBypass(send) {
@@ -443,7 +410,9 @@ async function stopAppExclusionBypass(send) {
     timer = null
   }
   activeExePaths = []
-  if (process.platform === 'win32') {
+  const unixTunnel = process.platform === 'linux' ? require('../vpn/wireguardLinux')
+    : process.platform === 'darwin' ? require('../vpn/wireguardDarwin') : null
+  if (!unixTunnel || await unixTunnel.isTunnelUpAsync()) {
     await require('../vpn/browserRouter').updatePolicy({ excluded: [] })
   }
   packsApplied = false

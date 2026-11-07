@@ -133,7 +133,7 @@ function loadExclusionsState(filePath) {
 /** Пути .exe для текущей VPN-сессии (из сохранённого состояния). */
 function getExcludedExePathsForVpn(filePath) {
   return loadExclusionsState(filePath).exePaths.filter(
-    p => typeof p === 'string' && (/\.exe$/i.test(p) || /\.app$/i.test(p)),
+    p => typeof p === 'string' && require('./exclusionsPolicy').isBypassTarget(p),
   )
 }
 

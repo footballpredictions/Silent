@@ -62,7 +62,7 @@ test('invalid schema, suffixes and server errors retain the last validated cache
     assert.equal(new russian.RussianServices(f.dir).snapshot().revision, bundled.revision)
   } finally { f.close() }
 })
-test('production toggle IPC suppresses and restores manual routing without rewriting either list', async () => {
+test('production toggle IPC combines app exclusions and restores manual sites without rewriting lists', async () => {
   const f = fixture()
   try {
     const appFile = path.join(f.dir, 'app-exclusions.json')
@@ -81,7 +81,7 @@ test('production toggle IPC suppresses and restores manual routing without rewri
       app: { getPath: () => f.dir }, sendLog() {}, notifyRussianServices() {},
       require(name) {
         if (name === './vpn/browserRouter') return { updatePolicy: async policy => { policies.push(policy) } }
-        if (name === './apps/appExclusionBypass') return { stopAppExclusionBypass: async () => {} }
+        if (name === './apps/appExclusionBypass') return { stopAppExclusionBypass: async () => { policies.push({ excluded: [] }) } }
         if (name === './apps/vpnAppExclusions') return {
           getActiveExcludedExePaths: () => ['game.exe'],
           applyAppExclusionsForSession: paths => restored.push(paths),
@@ -96,7 +96,8 @@ test('production toggle IPC suppresses and restores manual routing without rewri
     const toggle = vm.runInContext(`(${handler})`, context)
     assert.equal((await toggle({}, true)).ok, true)
     assert.equal(policies.at(-1).russian.enabled, true)
-    assert.deepEqual(Array.from(policies.at(-1).excluded), [])
+    assert.deepEqual(Array.from(policies.at(-1).excluded), ['game.exe'])
+    assert.ok(policies.every(policy => policy.excluded?.includes('game.exe')), 'RU toggle temporarily removed an explicit app exclusion')
     assert.deepEqual(Array.from(policies.at(-1).targets), [])
     assert.equal((await toggle({}, false)).ok, true)
     assert.deepEqual(restored, [['game.exe'], ['example.com']])

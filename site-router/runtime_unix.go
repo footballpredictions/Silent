@@ -23,8 +23,7 @@ import (
 
 var physicalIndex uint32
 
-func ownerExe(flow, *processPolicy) string { return "" }
-func resetTCPConnection(flow) error        { return errors.New("reset through tunnel") }
+func resetTCPConnection(flow) error { return errors.New("reset through tunnel") }
 
 func servePolicy(listener net.Listener, adapter *routedTun) {
 	for {
@@ -41,7 +40,7 @@ func servePolicy(listener net.Listener, adapter *routedTun) {
 				return
 			}
 			adapter.dnsProxy.update(cfg.DNS)
-			changed := adapter.updatePolicy(policyConfig{Russian: cfg.Russian})
+			changed := adapter.updatePolicy(policyConfig{Russian: cfg.Russian, Excluded: cfg.Excluded, DNS: cfg.DNS})
 			json.NewEncoder(client).Encode(map[string]any{"ok": true, "changedFlows": changed})
 		}()
 	}
@@ -69,7 +68,8 @@ func runUnix() error {
 	adapter := &routedTun{ctx: ctx, Device: native, routes: make(map[flow]cachedRoute), fragments: make(map[fragmentKey]cachedRoute), resetTCP: resetTCPConnection}
 	adapter.policy.Store(newProcessPolicy(policyConfig{}))
 	adapter.dnsProxy = newTunnelDNS()
-	adapter.owner = func(flow) string { return "" }
+	adapter.owner = func(f flow) string { return ownerExe(f, adapter.policy.Load()) }
+	adapter.ownerSnapshot = applicationOwnerSnapshot
 	adapter.direct = newDirectStack(ctx, 9000, adapter.writePacket)
 	wg := device.NewDevice(adapter, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, "site-router: "))
 	defer wg.Close()

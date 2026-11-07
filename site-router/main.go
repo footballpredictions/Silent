@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,9 +35,11 @@ type command struct {
 	Policy *policyConfig `json:"policy"`
 }
 type cachedRoute struct {
-	direct  bool
-	expires time.Time
-	reset   []byte
+	direct      bool
+	appExcluded bool
+	owner       string
+	expires     time.Time
+	reset       []byte
 }
 type fragmentKey struct {
 	Source, Destination [4]byte
@@ -46,15 +49,16 @@ type fragmentKey struct {
 type routedTun struct {
 	ctx context.Context
 	tun.Device
-	policy    atomic.Pointer[processPolicy]
-	direct    *directStack
-	routes    map[flow]cachedRoute
-	fragments map[fragmentKey]cachedRoute
-	writeMu   sync.Mutex
-	owner     func(flow) string
-	routesMu  sync.Mutex
-	resetTCP  func(flow) error
-	dnsProxy  *tunnelDNS
+	policy        atomic.Pointer[processPolicy]
+	direct        *directStack
+	routes        map[flow]cachedRoute
+	fragments     map[fragmentKey]cachedRoute
+	writeMu       sync.Mutex
+	owner         func(flow) string
+	ownerSnapshot func(*processPolicy) func(flow) string
+	routesMu      sync.Mutex
+	resetTCP      func(flow) error
+	dnsProxy      *tunnelDNS
 }
 
 func (t *routedTun) choose(f flow, packet []byte) bool {
@@ -74,11 +78,11 @@ func (t *routedTun) choose(f flow, packet []byte) bool {
 			t.routes[f] = route
 		}
 		policy := t.policy.Load()
-		return route.direct && !(policy.russian.enabled() && policy.russian.mustVPN(remote.Addr()))
+		return route.direct && (route.appExcluded || !(policy.russian.enabled() && policy.russian.mustVPN(remote.Addr())))
 	}
 	policy := t.policy.Load()
 	exe := ""
-	if !policy.russian.enabled() {
+	if !policy.russian.enabled() || len(policy.excluded) > 0 {
 		exe = t.owner(f)
 	}
 	direct := policy.direct(exe, remote.Addr(), remote.Port())
@@ -95,7 +99,7 @@ func (t *routedTun) choose(f flow, packet []byte) bool {
 		ttl = 45 * time.Second
 	}
 	if len(t.routes) < 8192 {
-		t.routes[f] = cachedRoute{direct: direct, expires: time.Now().Add(ttl), reset: tcpResetReply(packet)}
+		t.routes[f] = cachedRoute{direct: direct, appExcluded: policy.appExcluded(exe), owner: exe, expires: time.Now().Add(ttl), reset: tcpResetReply(packet)}
 	}
 	return direct
 }
@@ -112,9 +116,16 @@ func (t *routedTun) updatePolicy(cfg policyConfig) int {
 	t.policy.Store(next)
 	// App/site edits cannot change this global mode, nor expire active RU TCP
 	// flows merely because a periodic identical policy ACK was requested.
-	if oldRussian && next.russian.enabled() && oldEpoch == next.russian.epoch() {
+	if oldRussian && next.russian.enabled() && oldEpoch == next.russian.epoch() && slices.Equal(oldPolicy.excluded, next.excluded) && slices.Equal(oldPolicy.dns, next.dns) {
 		t.routesMu.Unlock()
 		return 0
+	}
+	sameApps := slices.Equal(oldPolicy.excluded, next.excluded)
+	lookupOwner := t.owner
+	if sameApps && t.ownerSnapshot != nil {
+		lookupOwner = func(f flow) string { return t.routes[f].owner }
+	} else if !sameApps && t.ownerSnapshot != nil {
+		lookupOwner = t.ownerSnapshot(next)
 	}
 	changed := make([]flow, 0)
 	resets := make(map[flow][]byte)
@@ -128,10 +139,13 @@ func (t *routedTun) updatePolicy(cfg policyConfig) int {
 			continue
 		}
 		exe := ""
-		if !next.russian.enabled() {
-			exe = t.owner(f)
+		if !next.russian.enabled() || len(next.excluded) > 0 {
+			exe = lookupOwner(f)
 		}
 		if next.direct(exe, remote.Addr(), remote.Port()) == old.direct {
+			old.appExcluded = next.appExcluded(exe)
+			old.owner = exe
+			t.routes[f] = old
 			continue
 		}
 		delete(t.routes, f)

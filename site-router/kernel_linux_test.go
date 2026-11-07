@@ -227,6 +227,20 @@ while True:
 	check(connect(lookup("shop.ru")), "VPN")
 	policy(true)
 	check(connect(lookup("shop.ru")), "WAN")
+	// Two real application executables share one remote IP, with RU still ON.
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(policyConfig{Excluded: []string{python}, Russian: russianConfig{Enabled: true, Direct: []string{"ru"}, VPN: []string{"protected.ru"}}, DNS: []string{"9.9.9.9"}})
+	run("python3", helper, "russian-policy", string(payload))
+	check(connect("198.18.0.3"), "VPN")
+	response := run(python, "-c", "import socket; s=socket.create_connection(('198.18.0.3',18080),5); s.sendall(b'ping'); print(s.recv(4).decode().strip()); s.close()")
+	if strings.TrimSpace(response) != "WAN" {
+		t.Fatalf("Excluded executable shared-IP route: %q", response)
+	}
+	policy(true)
+	check(connect("198.18.0.3"), "VPN")
 	after, _ := os.ReadFile("/run/silent-vpn/wireguard-go.pid")
 	if string(after) != string(pid) {
 		t.Fatal("policy replaced VPN process")

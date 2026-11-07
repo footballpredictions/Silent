@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -372,10 +372,10 @@ func vkClockForLink(link string) *vkLinkClock {
 }
 
 var (
-	vkLinkLast          sync.Map // link в†’ *vkLinkClock
-	globalVkCallsMu     sync.Mutex
-	globalVkCallsLast   time.Time
-	globalVkFloodUntil  atomic.Int64 // unix nano вЂ” РїР°СѓР·Р° РїРѕСЃР»Рµ error_code=9
+	vkLinkLast         sync.Map // link в†’ *vkLinkClock
+	globalVkCallsMu    sync.Mutex
+	globalVkCallsLast  time.Time
+	globalVkFloodUntil atomic.Int64 // unix nano вЂ” РїР°СѓР·Р° РїРѕСЃР»Рµ error_code=9
 )
 
 func noteVkFloodCooldown() {
@@ -770,9 +770,9 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		if !ok {
 			continue
 		}
-		clean := strings.Split(urlStr, "?")[0]
-		address := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-		addresses = append(addresses, address)
+		if address, err := validatedTURNURL(urlStr); err == nil {
+			addresses = append(addresses, address)
+		}
 	}
 
 	if len(addresses) == 0 {

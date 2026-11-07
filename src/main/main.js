@@ -101,7 +101,7 @@ function sleep(ms) {
 
 const isDev = process.env.NODE_ENV === 'development'
 const isDebugBuild = !!buildFlags.DEBUG_BUILD || process.env.DEBUG_BUILD === '1' || !app.isPackaged
-const captureBuiltinLog = isDebugBuild
+const captureBuiltinLog = true
 const WIN_WIDTH = 265
 const WIN_HEIGHT = 606
 
@@ -1306,7 +1306,6 @@ ipcMain.handle('set-russian-services', async (_, enabled) => {
       const router = require('./vpn/browserRouter')
       const sites = require('./apps/siteBypass')
       const apps = require('./apps/vpnAppExclusions')
-      await require('./apps/appExclusionBypass').stopAppExclusionBypass(sendLog)
       await sites.clearSiteBypass(sendLog)
       if (enabled) {
         store.beginRefresh()
@@ -1340,10 +1339,10 @@ ipcMain.handle('set-russian-services', async (_, enabled) => {
 
 function prepareBrowserRoutingPolicy() {
   const russian = russianServices.configure(app.getPath('userData')).snapshot()
-  if (russian.enabled) return { whitelist: false, targets: [], domains: [], pendingDNS: false, excluded: [], russian }
+  const { getActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
+  if (russian.enabled) return { whitelist: false, targets: [], domains: [], pendingDNS: false, excluded: getActiveExcludedExePaths(), russian }
 
   const { loadSiteBypassState, defaultSiteBypassPath, initialBrowserPolicy } = require('./apps/siteBypass')
-  const { getActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
   const state = loadSiteBypassState(defaultSiteBypassPath(app.getPath('userData')))
   // DNS may be unreachable until this tunnel exists. Start with literal IP rules
   // and domains; post-start DNS observation/snapshot fills the domain addresses.

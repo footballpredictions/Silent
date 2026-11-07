@@ -25,7 +25,8 @@ RUN_DIR = "/var/run/silent-vpn"
 PID_FILE = os.path.join(RUN_DIR, "wireguard-go.pid")
 IFACE_FILE = os.path.join(RUN_DIR, "iface")
 HELPER_SOCK = os.path.join(RUN_DIR, "helper.sock")
-DNS_STATE = os.path.join(RUN_DIR, "dns-state.json")
+LEGACY_DNS_STATE = os.path.join(RUN_DIR, "dns-state.json")
+DNS_STATE = "/Library/Application Support/SilentVPN/dns-state.json"
 IPV6_STATE = os.path.join(RUN_DIR, "ipv6-state.json")
 STATE_FILE = os.path.join(RUN_DIR, "state")
 LAN_PROTECT_STATE = os.path.join(RUN_DIR, "lan-protect.json")
@@ -645,6 +646,29 @@ def _flush_dns_cache() -> None:
     run(["killall", "-HUP", "mDNSResponder"], check=False)
 
 
+def _read_dns_state() -> dict:
+    for path in (DNS_STATE, LEGACY_DNS_STATE):
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as source:
+                state = json.load(source)
+            if not isinstance(state.get("services"), dict):
+                raise ValueError("Invalid saved DNS state; preserving it")
+            return state
+    return {"services": {}, "v6": {}}
+
+
+def _save_dns_state(state: dict) -> None:
+    directory = os.path.dirname(DNS_STATE)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    temporary = DNS_STATE + ".tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as target:
+        json.dump(state, target)
+        target.flush()
+        os.fsync(target.fileno())
+    os.replace(temporary, DNS_STATE)
+
+
 def cmd_dns_set(args: list[str]) -> None:
     if len(args) < 2:
         die("dns-set <ifname> <dns,dns>")
@@ -654,42 +678,51 @@ def cmd_dns_set(args: list[str]) -> None:
     services = _dns_target_services()
     if not services:
         services = [s for s in _network_services() if not _SKIP_DNS_SVC.search(s)]
-    prev: dict = {"services": {}, "v6": {}}
+    previous = _read_dns_state()
+    previous.setdefault("v6", {})
     for svc in services:
-        cur = run_out(["networksetup", "-getdnsservers", svc])
-        if "There aren't any DNS Servers" in cur or not cur:
-            prev["services"][svc] = ["Empty"]
-        else:
-            prev["services"][svc] = [x.strip() for x in cur.splitlines() if x.strip()]
-        # IPv6 off на primary — иначе Happy Eyeballs висит на AAAA / blackhole ::/0
+        if svc not in previous["services"]:
+            current = run_out(["networksetup", "-getdnsservers", svc])
+            if "There aren't any DNS Servers" in current:
+                previous["services"][svc] = ["Empty"]
+            elif not current:
+                raise RuntimeError("Cannot read current DNS for " + svc)
+            else:
+                values = [x.strip() for x in current.splitlines() if x.strip()]
+                previous["services"][svc] = ["Empty"] if values == ["10.66.66.53"] else values
+            previous["v6"][svc] = "Automatic"
+    # Persist the original settings before any mutation; repeated dns-set must
+    # never replace the original DNS with our own tunnel resolver.
+    _save_dns_state(previous)
+    for svc in services:
         v6 = run_out(["networksetup", "-getinfo", svc])
-        prev["v6"][svc] = "Automatic"
         if "IPv6: Automatic" in v6 or "IPv6 IP address" in v6:
-            run(["networksetup", "-setv6off", svc], check=False)
-        run(["networksetup", "-setdnsservers", svc, *servers], check=False)
-    os.makedirs(RUN_DIR, exist_ok=True)
-    with open(DNS_STATE, "w", encoding="utf-8") as f:
-        json.dump(prev, f)
+            run(["networksetup", "-setv6off", svc])
+        run(["networksetup", "-setdnsservers", svc, *servers])
     _flush_dns_cache()
     print("OK dns " + ",".join(servers) + " services=" + ",".join(services))
 
 
 def cmd_dns_restore(_: list[str]) -> None:
-    st: dict = {}
-    if os.path.isfile(DNS_STATE):
-        try:
-            st = json.loads(open(DNS_STATE, encoding="utf-8").read() or "{}")
-        except Exception:
-            st = {}
-    for svc, servers in (st.get("services") or {}).items():
-        if not servers or servers == ["Empty"]:
-            run(["networksetup", "-setdnsservers", svc, "Empty"], check=False)
-        else:
-            run(["networksetup", "-setdnsservers", svc, *servers], check=False)
-    for svc in (st.get("v6") or {}):
-        run(["networksetup", "-setv6automatic", svc], check=False)
-    with contextlib.suppress(OSError):
-        os.remove(DNS_STATE)
+    state = _read_dns_state()
+    services = state.get("services") or {}
+    if not services:
+        # Upgrade recovery: old helpers kept the backup only in /var/run.
+        # Touch only our exact orphaned resolver, never arbitrary custom DNS.
+        for svc in _network_services():
+            if _SKIP_DNS_SVC.search(svc):
+                continue
+            current = run_out(["networksetup", "-getdnsservers", svc])
+            if current.strip() == "10.66.66.53":
+                run(["networksetup", "-setdnsservers", svc, "Empty"])
+    for svc, servers in services.items():
+        run(["networksetup", "-setdnsservers", svc, *(servers or ["Empty"])])
+    for svc in state.get("v6") or {}:
+        run(["networksetup", "-setv6automatic", svc])
+    # Failed restoration raises above and leaves the saved state for retry.
+    for path in (DNS_STATE, LEGACY_DNS_STATE):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
     _flush_dns_cache()
     print("OK dns-restore")
 
@@ -1197,6 +1230,12 @@ def handle_client(conn: socket.socket) -> None:
 def cmd_serve(_: list[str]) -> None:
     need_root()
     os.makedirs(RUN_DIR, exist_ok=True)
+    iface = current_iface()
+    if not iface or not iface_up(iface):
+        try:
+            cmd_dns_restore([])
+        except Exception as error:
+            print("WARN startup DNS recovery: " + str(error), file=sys.stderr, flush=True)
     with contextlib.suppress(OSError):
         os.remove(HELPER_SOCK)
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

@@ -5,6 +5,8 @@
  */
 
 function normalizePath(p) {
+  const value = String(p || '').trim().replace(/^["']|["']$/g, '')
+  if (process.platform === 'linux' && value.startsWith('/')) return value
   return String(p || '')
     .trim()
     .replace(/^["']|["']$/g, '')
@@ -13,8 +15,11 @@ function normalizePath(p) {
 }
 
 /** Windows .exe и macOS .app. Остальное в обход не берём. */
-function isBypassTarget(exe) {
-  return /\.exe$/i.test(exe) || /\.app$/i.test(exe)
+function isBypassTarget(exe, platform = process.platform) {
+  const value = String(exe || '').trim()
+  if (!value || /[\0\r\n]/.test(value)) return false
+  if (platform === 'linux') return value.startsWith('/') || /^[a-zA-Z0-9_.+-]+$/.test(value)
+  return /\.exe$/i.test(value) || /\.app$/i.test(value)
 }
 
 /**

@@ -2,6 +2,8 @@ package main
 
 import (
 	"net/netip"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -21,7 +23,17 @@ func newProcessPolicy(c policyConfig) *processPolicy {
 	p.domains = c.Domains
 	russian := newRussianRouter(c.Russian)
 	russian.dial = newPhysicalDialer(1500 * time.Millisecond).DialContext
-	return &processPolicy{sites: p, excluded: c.Excluded, dns: c.DNS, pendingDNS: c.PendingDNS, russian: russian}
+	excluded := append([]string(nil), c.Excluded...)
+	if runtime.GOOS == "linux" {
+		for index, selected := range excluded {
+			if filepath.IsAbs(selected) {
+				if canonical, err := filepath.EvalSymlinks(selected); err == nil {
+					excluded[index] = canonical
+				}
+			}
+		}
+	}
+	return &processPolicy{sites: p, excluded: excluded, dns: c.DNS, pendingDNS: c.PendingDNS, russian: russian}
 }
 
 func updatedProcessPolicy(old *processPolicy, c policyConfig) *processPolicy {
@@ -78,15 +90,11 @@ func isBrowser(exe string) bool {
 }
 
 func (p *processPolicy) appExcluded(exe string) bool {
-	if p.russian.enabled() {
-		return false
-	}
 	if exe == "" {
 		return false
 	}
-	n := normalizedExe(exe)
-	for _, e := range p.excluded {
-		if normalizedExe(e) == n || exeLeaf(e) == exeLeaf(exe) {
+	for _, selected := range p.excluded {
+		if matchesApplication(exe, selected, runtime.GOOS) {
 			return true
 		}
 	}
@@ -103,14 +111,14 @@ func (p *processPolicy) direct(exe string, dst netip.Addr, port uint16) bool {
 			return false
 		}
 	}
+	if p.appExcluded(exe) {
+		return true
+	}
 	if p.russian.enabled() {
 		return p.russian.direct(dst)
 	}
 	if exe == "" {
 		return false
-	}
-	if p.appExcluded(exe) {
-		return true
 	}
 	if !isBrowser(exe) {
 		return false

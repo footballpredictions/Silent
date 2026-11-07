@@ -3371,6 +3371,7 @@ class MainViewModel @Inject constructor(
                 loginSucceeded = applyLoginAfterQrTokens(repo.getApi(), syncTunnel = true)
             }
         }
+        check(loginSucceeded) { _authError.value ?: "Не удалось загрузить данные аккаунта. Повторите вход." }
         if (loginSucceeded) {
             disconnectBootstrapVpn(ctx)
             rememberWarmConnectFromCache()
@@ -3383,14 +3384,18 @@ class MainViewModel @Inject constructor(
         api: com.silent.vpn.data.SilentApi,
         syncTunnel: Boolean,
     ): Boolean {
-        if (!openLoginSession(api, clearTokensOnFailure = !syncTunnel)) {
-            return repo.isLoggedIn()
+        val sessionOpened = openLoginSession(api, clearTokensOnFailure = !syncTunnel)
+        if (!sessionOpened && !repo.isLoggedIn()) return false
+        if (syncTunnel && sessionOpened) {
+            syncLoginDataViaBootstrapTunnel(registerIfNeeded = false)
         }
-        if (syncTunnel) {
-            if (!syncLoginDataViaBootstrapTunnel(registerIfNeeded = false)) {
-                _vpnError.value = "Профиль не загрузился. Включите VPN на главном экране."
-            }
-        }
+        // QR may use a public API while the shared base still points at bootstrap.
+        // Load this account before goToMain(skipProfileFetch = true), including 402.
+        val response = api.getProfile()
+        val profile = response.takeIf { it.isSuccessful }?.body() ?: return false
+        applyServerProfile(profile, force = true)
+        repo.saveCachedProfile(profile)
+        profile.vk_user_id?.let { repo.saveVkUserId(it) }
         return true
     }
 

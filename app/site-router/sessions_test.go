@@ -16,6 +16,8 @@ func TestSessionsRelayPreservesMethodsAuthAndBody(t *testing.T) {
 		{"PATCH", "/api/users/devices/fixture-device", `{"device_name":"New name"}`},
 		{"DELETE", "/api/users/devices/fixture-device", ""},
 		{"POST", "/api/auth/refresh", `{"refresh_token":"fixture"}`},
+		{"POST", "/api/auth/qr/approve", `{"token":"fixture-session","payload":"silentvpn://qr?k=s&c=fixture-session"}`},
+		{"POST", "/api/auth/qr/user-code", ""},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			transport := sessionsRoundTrip(func(r *http.Request) (*http.Response, error) {
@@ -48,6 +50,19 @@ func TestSessionsRelayRejectsUnrelatedWrites(t *testing.T) {
 		w := httptest.NewRecorder()
 		otaHandler(sessionsRoundTrip(func(*http.Request) (*http.Response, error) { t.Fatal("unrelated write forwarded"); return nil, nil })).ServeHTTP(w, httptest.NewRequest("POST", path, nil))
 		if w.Code != 403 {
+			t.Errorf("%s: HTTP%d", path, w.Code)
+		}
+	}
+}
+
+func TestQrRelayRequiresAuthentication(t *testing.T) {
+	for _, path := range []string{"/api/auth/qr/approve", "/api/auth/qr/user-code"} {
+		w := httptest.NewRecorder()
+		otaHandler(sessionsRoundTrip(func(*http.Request) (*http.Response, error) {
+			t.Fatal("unauthenticated QR write forwarded")
+			return nil, nil
+		})).ServeHTTP(w, httptest.NewRequest("POST", path, nil))
+		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s: HTTP%d", path, w.Code)
 		}
 	}

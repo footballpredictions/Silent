@@ -3700,6 +3700,13 @@ suspend fun resolveOlcrtcConfigForConnect(): OlcrtcPublicConfig? {
         return withUserBackendApi { execute(getApi()) }
     }
 
+    /** QR confirmation shares the existing WG relay; never changes the main API base or VPN. */
+    suspend fun approveQrSession(req: QrApproveRequest): Response<QrApproveResponse> =
+        withSessionsApi { it.qrApprove(req) }
+
+    suspend fun fetchUserQrCode(): Response<QrUserCodeResponse> =
+        withSessionsApi { it.qrUserCode() }
+
     suspend fun fetchSessionsProfileLive(): Result<UserProfile> = runCatching {
         val response = withSessionsApi { it.getProfile() }
         if (!response.isSuccessful) error("profile HTTP ${response.code()}")

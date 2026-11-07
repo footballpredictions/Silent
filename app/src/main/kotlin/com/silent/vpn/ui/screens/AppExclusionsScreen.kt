@@ -33,11 +33,15 @@ import com.silent.vpn.ui.tv.TvIconButton
 import com.silent.vpn.ui.tv.TvPrimaryButton
 import com.silent.vpn.ui.tv.TvTextButton
 import com.silent.vpn.ui.tv.tvClickable
+import com.silent.vpn.ui.tv.tvTextFieldFocusRing
 import com.silent.vpn.util.rememberIsTv
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -200,10 +204,11 @@ private fun ModeChip(
     active: Boolean,
     fg: Color,
     bg: Color,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(if (active) fg else Color.Transparent)
             .border(1.dp, if (active) fg else fg.copy(0.25f), RoundedCornerShape(8.dp))
@@ -226,6 +231,9 @@ fun AppExclusionsScreen(
     val scope = rememberCoroutineScope()
     val isTv = rememberIsTv()
     val fieldColors = themeTextFieldColors(palette)
+    val backFocus = remember { FocusRequester() }
+    val russianFocus = remember { FocusRequester() }
+    val panesFocus = remember { FocusRequester() }
 
     var pane by remember { mutableStateOf(ExclusionsPane.Apps) }
     var russianDirect by remember { mutableStateOf(RussianServices.enabled(context)) }
@@ -443,7 +451,7 @@ fun AppExclusionsScreen(
                     },
                     singleLine = true,
                     enabled = !siteBusy,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldFocusRing(),
                     colors = fieldColors,
                 )
             },
@@ -470,7 +478,10 @@ fun AppExclusionsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TvTextButton(onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "exclusions") {
+            TvTextButton(
+                onClick = onBack, requestFocusOnOpen = true, requestFocusKey = "exclusions",
+                modifier = if (isTv) Modifier.focusRequester(backFocus).focusProperties { down = russianFocus } else Modifier,
+            ) {
                 Text("← Назад", fontSize = 12.sp, color = fg.copy(0.5f))
             }
             if (pane == ExclusionsPane.Sites && !russianDirect) {
@@ -487,6 +498,10 @@ fun AppExclusionsScreen(
 
         Row(
             Modifier.fillMaxWidth().padding(vertical = 12.dp)
+                .then(if (isTv) Modifier.focusRequester(russianFocus).focusProperties {
+                    up = backFocus
+                    down = if (russianDirect) FocusRequester.Default else panesFocus
+                } else Modifier)
                 .semantics { role = Role.Switch; stateDescription = if (russianDirect) "Включено" else "Выключено" }
                 .tvClickable(enabled = !siteBusy, onClick = {
                     try {
@@ -524,7 +539,7 @@ fun AppExclusionsScreen(
                 fontSize = 12.sp,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
-            Text("Другие исключения временно отключены. Ваши списки сохранены.", color = fg.copy(.5f), fontSize = 12.sp)
+            Text("Исключения приложений действуют. Списки сайтов сохранены.", color = fg.copy(.5f), fontSize = 12.sp)
             Spacer(Modifier.height(12.dp))
             Text("Сайты: ${siteRules.size} сохранено", color = fg.copy(.3f), fontSize = 13.sp)
             Text("Приложения: ${selected.size} сохранено", color = fg.copy(.3f), fontSize = 13.sp)
@@ -539,6 +554,7 @@ fun AppExclusionsScreen(
                 active = pane == ExclusionsPane.Sites,
                 fg = fg,
                 bg = bg,
+                modifier = if (isTv) Modifier.focusRequester(panesFocus).focusProperties { up = russianFocus } else Modifier,
                 onClick = { pane = ExclusionsPane.Sites },
             )
             ModeChip(
@@ -546,6 +562,7 @@ fun AppExclusionsScreen(
                 active = pane == ExclusionsPane.Apps,
                 fg = fg,
                 bg = bg,
+                modifier = if (isTv) Modifier.focusProperties { up = russianFocus } else Modifier,
                 onClick = { pane = ExclusionsPane.Apps },
             )
         }
@@ -585,7 +602,7 @@ fun AppExclusionsScreen(
                 OutlinedTextField(
                     value = newRule,
                     onValueChange = { newRule = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldFocusRing(),
                     placeholder = {
                         Text("домен или IP…", fontSize = 13.sp, color = palette.fieldPlaceholder)
                     },
@@ -897,7 +914,7 @@ private fun SearchFieldWithClear(
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        modifier = modifier,
+        modifier = modifier.tvTextFieldFocusRing(),
         placeholder = {
             Text(placeholder, fontSize = 13.sp, color = palette.fieldPlaceholder)
         },

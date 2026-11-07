@@ -11,6 +11,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -185,6 +187,22 @@ fun Modifier.tvMenuClickable(
     cornerRadius: Dp = 10.dp,
     onClick: () -> Unit,
 ): Modifier = tvClickable(enabled = enabled, cornerRadius = cornerRadius, onClick = onClick)
+
+/** Text fields own their focus target and input handling; add only the TV ring. */
+@OptIn(ExperimentalFoundationApi::class)
+fun Modifier.tvTextFieldFocusRing(cornerRadius: Dp = 12.dp): Modifier = composed {
+    if (!rememberIsTv()) return@composed this
+    var focused by remember { mutableStateOf(false) }
+    val requester = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
+    this
+        .bringIntoViewRequester(requester)
+        .onFocusChanged { state ->
+            focused = state.isFocused
+            if (state.isFocused) scope.launch { requester.bringIntoView() }
+        }
+        .tvFocusRingDrawOnTop(focused, cornerRadius, pill = false, ringOnly = true)
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 fun Modifier.tvToggleClickable(

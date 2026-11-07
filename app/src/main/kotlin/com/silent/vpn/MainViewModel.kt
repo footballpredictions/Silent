@@ -3196,7 +3196,7 @@ class MainViewModel @Inject constructor(
             _qrStatusText.value = ""
             _authError.value = null
             try {
-                val res = repo.getApi().qrUserCode()
+                val res = repo.fetchUserQrCode()
                 if (!res.isSuccessful) {
                     _authError.value = parseError(res.errorBody()?.string() ?: "") ?: "Не удалось получить QR"
                     return@launch
@@ -3297,13 +3297,7 @@ class MainViewModel @Inject constructor(
         val req = QrApproveRequest(token = parsed.code, payload = canonical)
         DebugLog.i("QR", "approve ${parsed.code.take(8)}… keepVpn=$keepVpn")
         if (keepVpn) {
-            return try {
-                repo.withUserBackendApi { repo.getApi().qrApprove(req) }
-            } catch (e: Exception) {
-                DebugLog.w("QR", "approve tunnel fail: ${e.message}, public")
-                repo.clearTunnelApiBase()
-                repo.getApi().qrApprove(req)
-            }
+            return repo.approveQrSession(req)
         }
         repo.clearTunnelApiBase()
         val publicRes = runCatching { repo.getApi().qrApprove(req) }.getOrNull()

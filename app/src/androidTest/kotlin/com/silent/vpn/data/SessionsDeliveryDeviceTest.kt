@@ -64,6 +64,11 @@ class SessionsDeliveryDeviceTest {
                             """{"access_token":"fixture-new","refresh_token":"fixture-refresh"}"""
                         }
                         !auth.endsWith("Bearer fixture-new") -> { status = 401; """{"detail":"expired"}""" }
+                        request[1] == "/api/auth/qr/approve" -> {
+                            check(JSONObject(bytes.toString(Charsets.UTF_8)).getString("token") == "fixture-session")
+                            """{"ok":true}"""
+                        }
+                        request[1] == "/api/auth/qr/user-code" -> """{"code":"fixture-code","payload":"silentvpn://qr?k=u&c=fixture-code","expires_in":120}"""
                         request[0] == "PATCH" -> { name = JSONObject(bytes.toString(Charsets.UTF_8)).getString("device_name"); "{}" }
                         request[0] == "DELETE" -> { deleted = true; "{}" }
                         else -> """{"id":"user","email":"fixture@example.test","display_id":"42","is_admin":false,"subscription":{"is_active":true,"days_left":10},"max_devices":3,"devices_count":${if (deleted) 0 else 1},"devices":${if (deleted) "[]" else "[{\"id\":\"other\",\"device_name\":${JSONObject.quote(name)},\"device_type\":\"android\",\"is_connected\":true}]"}}"""
@@ -92,11 +97,13 @@ class SessionsDeliveryDeviceTest {
             assertEquals("TV renamed", repo.fetchSessionsProfileLive().getOrThrow().devices.single().device_name)
             assertTrue(repo.deleteSession("other").isSuccessful)
             assertTrue(repo.fetchSessionsProfileLive().getOrThrow().devices.isEmpty())
+            assertTrue(repo.approveQrSession(QrApproveRequest(token = "fixture-session")).body()!!.ok)
+            assertEquals("fixture-code", repo.fetchUserQrCode().body()!!.code)
             assertEquals(originalBase, repo.getServerUrl())
             assertSame(process, processField.get(BrowserScopedTunnel))
             assertFalse(WdttTunnelManager.isApiOverlayActive())
             assertTrue(requests.contains("POST /api/auth/refresh"))
-            assertTrue(requests.all { it.substringAfter(' ') in setOf("/api/users/me", "/api/users/devices/other", "/api/auth/refresh") })
+            assertTrue(requests.all { it.substringAfter(' ') in setOf("/api/users/me", "/api/users/devices/other", "/api/auth/refresh", "/api/auth/qr/approve", "/api/auth/qr/user-code") })
             marker.set(false)
             assertTrue("A local response is not proof of upstream delivery", repo.fetchSessionsProfileLive().isFailure)
             marker.set(true)

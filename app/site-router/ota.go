@@ -163,9 +163,10 @@ func otaHandler(transport http.RoundTripper) http.Handler {
 		readOnly := r.Method == http.MethodGet && (r.URL.Path == "/api/updates/check" || r.URL.Path == "/api/updates/download/android" || r.URL.Path == "/api/vpn/routing-policy")
 		sessionRead := r.Method == http.MethodGet && r.URL.Path == "/api/users/me"
 		refresh := r.Method == http.MethodPost && r.URL.Path == "/api/auth/refresh"
+		qrWrite := r.Method == http.MethodPost && (r.URL.Path == "/api/auth/qr/approve" || r.URL.Path == "/api/auth/qr/user-code")
 		id := strings.TrimPrefix(r.URL.Path, "/api/users/devices/")
 		deviceWrite := id != r.URL.Path && len(id) > 0 && len(id) <= 128 && strings.Trim(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == "" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete)
-		if !readOnly && !sessionRead && !refresh && !deviceWrite {
+		if !readOnly && !sessionRead && !refresh && !qrWrite && !deviceWrite {
 			http.Error(w, "Endpoint not allowed", http.StatusForbidden)
 			return
 		}

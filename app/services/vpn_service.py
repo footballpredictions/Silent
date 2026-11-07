@@ -904,8 +904,6 @@ async def list_manual_vpn_servers(
         labels = []
         if profile['ai']:
             labels.append('для ИИ')
-        if profile['gaming']:
-            labels.append('игровой')
         title = slot_title(key) + (' · ' + ' · '.join(labels) if labels else '')
         online = await hive_service.count_online_on_cell(db, cell.id)
         if cell.is_queen:

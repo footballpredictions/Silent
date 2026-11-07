@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=silent-vpn
-PKG_VERSION:=1.0.171
+PKG_VERSION:=1.0.172
 PKG_RELEASE:=1
 PKG_LICENSE:=Proprietary
 PKG_MAINTAINER:=Silent VPN

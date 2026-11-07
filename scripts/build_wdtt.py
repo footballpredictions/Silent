@@ -28,7 +28,8 @@ def main() -> int:
     env_base = os.environ.copy()
     env_base["CGO_ENABLED"] = "0"
     env_base["GOOS"] = "linux"
-    env_base["GOTOOLCHAIN"] = env_base.get("GOTOOLCHAIN") or "local"
+    # Vendor kernel suffixes on 32-bit routers require the same fix as Android TV.
+    env_base["GOTOOLCHAIN"] = "go1.26.5"
     env_base.setdefault("GOPROXY", "https://proxy.golang.org,direct")
     for name, goarch, extra in TARGETS:
         dest = OUT / f"wdtt-client.{name}"

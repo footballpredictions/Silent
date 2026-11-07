@@ -459,6 +459,17 @@ def _patch_index_html_releases(html: str, releases: dict) -> str:
             f'        download_url: "{linux["download_url"]}",\n',
             "      },\n",
         ])
+    router_versions = {
+        platform: (releases.get(platform) or {}).get("version")
+        for platform in ("openwrt", "keenetic")
+    }
+    for platform, version in router_versions.items():
+        if version:
+            inline_parts.extend([
+                f"      {platform}: {{\n",
+                f"        version: {json.dumps(version)},\n",
+                "      },\n",
+            ])
     inline_parts.append("    };")
     inline = "".join(inline_parts)
     patched, n = re.subn(
@@ -516,6 +527,30 @@ def _patch_index_html_releases(html: str, releases: dict) -> str:
         patched, n = re.subn(pattern, repl, patched, count=1)
         if n != 1:
             logger.warning("index.html patch miss: %s", pattern)
+
+    if all(router_versions.values()):
+        from html import escape
+
+        ow = escape(str(router_versions["openwrt"]), quote=True)
+        kn = escape(str(router_versions["keenetic"]), quote=True)
+        shared = ow if ow == kn else ""
+        label = f"v{ow}" if shared else f"OpenWrt v{ow} · Keenetic v{kn}"
+
+        def router_badge(match: re.Match) -> str:
+            attributes = re.sub(
+                r'\sdata-(?:version|openwrt-version|keenetic-version)="[^"]*"',
+                "", match["attributes"],
+            )
+            return (f'<span{attributes} data-version="{shared}" '
+                    f'data-openwrt-version="{ow}" data-keenetic-version="{kn}">'
+                    f'{label}</span>')
+
+        patched, n = re.subn(
+            r'<span(?P<attributes>[^>]*\bid="openwrtVersion"[^>]*)>[^<]*</span>',
+            router_badge, patched, count=1,
+        )
+        if n != 1:
+            logger.warning("index.html patch miss: router version badge")
 
     return patched
 

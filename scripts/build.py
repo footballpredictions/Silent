@@ -108,7 +108,8 @@ def main():
     if not args.package_only:
         for name in selected:
             goarch, extra = TARGETS[name]
-            env = os.environ.copy(); env.update(GOOS="linux", GOARCH=goarch, CGO_ENABLED="0", GOTOOLCHAIN="local", **extra)
+            # Keep vendor-kernel startup compatibility on all 32-bit targets.
+            env = os.environ.copy(); env.update(GOOS="linux", GOARCH=goarch, CGO_ENABLED="0", GOTOOLCHAIN="go1.26.5", **extra)
             for binary, source in (("silent-keenetic", ROOT/"agent"), ("spass", ROOT.parent/"pc/wdtt-go")):
                 path = ROOT/"build/bin"/name/binary; path.parent.mkdir(parents=True, exist_ok=True)
                 print(f"Building {name}/{binary}", flush=True)

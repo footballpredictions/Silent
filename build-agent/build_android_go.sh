@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-compile wdtt libclient.so for Android (Linux host / Docker API container).
-# MUST stay in sync with android/app/build_android_go.bat (API 24 + Go ≥1.26.3).
+# MUST stay in sync with android/app/build_android_go.bat (API 24 + Go 1.26.5).
 set -euo pipefail
 
 APP_DIR="${1:?app dir required}"
@@ -15,7 +15,8 @@ source "$ROOT/ensure_go.sh"
 
 # Жёстко (не ${VAR:-default}): ensure_go мог уже выставить auto.
 # Go 1.26.0–1.26.2 на 32-bit Android 8–10 → SIGSYS exit 159 (go#77621).
-export GOTOOLCHAIN=go1.26.3
+# Go 1.26.5 also accepts vendor kernel release suffixes (golang/go#79893).
+export GOTOOLCHAIN=go1.26.5
 
 NDK_ROOT="$ANDROID_HOME/ndk"
 if [[ ! -d "$NDK_ROOT" ]]; then

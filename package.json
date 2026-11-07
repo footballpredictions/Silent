@@ -56,6 +56,7 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",
+      "signAndEditExecutable": true,
       "requestedExecutionLevel": "requireAdministrator"
     },
     "linux": {

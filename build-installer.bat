@@ -99,6 +99,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_windows_admin_manifest.ps1 -Path "!OUT_DIR!\win-unpacked\Silent VPN.exe"
+if errorlevel 1 (
+  echo Windows administrator manifest verification FAILED
+  exit /b 1
+)
+
 for %%F in ("!OUT_DIR!\Silent VPN Setup *.exe") do (
   echo.
   echo OK: %%~fF

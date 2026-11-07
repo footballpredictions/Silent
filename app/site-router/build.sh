@@ -23,12 +23,12 @@ build_abi() {
   local output="$ROUTER_DIR/../src/main/jniLibs/$abi/libsite-router.so"
   [[ -x "$COMPILER_DIR/$compiler" ]] || { echo "Missing NDK compiler: $compiler" >&2; exit 1; }
   mkdir -p "$(dirname -- "$output")"
-  env GOOS=android CGO_ENABLED=1 GOTOOLCHAIN=go1.26.3 GOARCH="$arch" \
+  env GOOS=android CGO_ENABLED=1 GOTOOLCHAIN=go1.26.5 GOARCH="$arch" \
     GOARM="$arm" GOARM64="$arm64" GOAMD64="$amd64" GO386="$x86" \
     CC="$COMPILER_DIR/$compiler" go build -trimpath -ldflags '-s -w' -o "$output" .
   echo "Built site-router $abi"
 }
-# API 24 matches the application's minSdk; Go >=1.26.3 fixes 32-bit Android SIGSYS.
+# API 24 matches minSdk; Go 1.26.5 fixes both 32-bit SIGSYS and vendor uname parsing.
 build_abi arm64-v8a arm64 aarch64-linux-android24-clang '' v8.0 '' ''
 build_abi armeabi-v7a arm armv7a-linux-androideabi24-clang 7 '' '' ''
 build_abi x86 386 i686-linux-android24-clang '' '' '' sse2

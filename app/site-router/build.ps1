@@ -16,7 +16,8 @@ foreach ($name in @('GOOS', 'GOARCH', 'CGO_ENABLED', 'CC', 'GOARM', 'GOARM64', '
     $routerEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
-    $env:GOOS='android'; $env:CGO_ENABLED='1'; $env:GOTOOLCHAIN='go1.26.3'
+    # Go 1.26.5 retains the Android seccomp fix and accepts vendor kernel suffixes.
+    $env:GOOS='android'; $env:CGO_ENABLED='1'; $env:GOTOOLCHAIN='go1.26.5'
     foreach ($target in $targets) {
         $env:GOARCH=$target.Arch; $env:CC="$compilerRoot/$($target.Compiler)"
         $env:GOARM = if ($target.Arch -eq 'arm') { '7' } else { '' }

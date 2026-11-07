@@ -63,7 +63,8 @@ set "GO_LDFLAGS=-s -w -checklinkname=0"
 REM Go 1.26.0–1.26.2: на 32-bit Android 8–10 (API 26–29) runtime пробует futex_time64,
 REM zygote seccomp даёт SIGSYS → exit 159 (libclient сразу падает). Фикс в go1.26.3+.
 REM https://github.com/golang/go/issues/77621
-set "GOTOOLCHAIN=go1.26.3"
+REM Go 1.26.5 also fixes vendor uname suffix parsing on 32-bit TV (go#79893).
+set "GOTOOLCHAIN=go1.26.5"
 
 cd /d "%GO_CLIENT_DIR%"
 go mod download

@@ -1,5 +1,13 @@
 # APIS — Silent VPN
 
+## Качество общего онлайна и границы проверки доступности (2026-11-09)
+
+`GET /api/admin/stats` users и `GET /api/admin/hive/summary` дополнены optional `online_status` (`fresh|stale|unknown`), `online_snapshot_at`, `online_observed_at` (Unix seconds), `online_stale_nodes`, `online_unknown_nodes`. `connected_devices` / `total_online_vpn` / `total_online_all` равны null при неизвестном общем итоге; это не ноль. `/api/admin/hive/cells` сохраняет integer online_count/total_online_count для совместимости и добавляет optional online_status/online_observed_at; новый UI скрывает число при unknown.
+
+Пропавшее `/v1/status` не заменяет измеренный онлайн числом is_connected из БД: до90с используется последнее подтверждённое измерение этой ноды с явным stale, далее unknown. Неуспешные опросы и чтения кеша не продлевают срок измерения. Новые успешные уменьшения/ноль отображаются сразу; shared Redis snapshot и старый scalar обновляются атомарно с защитой от старого параллельного сбора. При штатном отсутствии fresh snapshot обновление запрашивается не реже чем через20с следующего полла. Это только admin presentation; WG/WDTT/подписки/клиентские DTO не изменены.
+
+Availability UI показывает число фактических/запрошенных точек РФ и отдельно обозначает проверку IP/API: успешный ping/TCP/API не равен подтверждённой VPN-сессии с передачей данных. Прежние conservative verdicts/классификатор/автосмена IP/портов сохранены. Подробнее `backend/research/2026-11-09-online-snapshot-hotfix.md`.
+
 ## Аналитика промокодов: оплаты и активность (2026-11-03)
 
 `GET /api/admin/promo` сохраняет use_count/max_uses как число применений при оплате/лимит, добавляет users_count/paid_users_count/subscribed_users_count/paid_active_users_count. Новый read-only promo_analytics объединяет уникальные пары user_id+нормализованныйкод из pending_promo_code, Payment.promo_code и Subscription.promo_code. После успешной оплаты pending-код очищается прежним способом, но пользователь остаётся в аналитике через историю платежа. Никаких изменений квоты, сумм, скидок, checkout/notification или подписок.

@@ -1,3 +1,15 @@
+## Backend: онлайн и SMTP исправлены, задеплоены и опубликованы (2026-11-09)
+
+По команде владельца исправлены найденные в аудите ошибки, выполнен канонический deploy 5 Python-файлов + admin-ui. Исходники исправления: d0f97f4; документация фиксируется отдельным коммитом, чужие routing-policy и исторические .cursor WIP сохранены. Финальный статус push/remote SHA — в `.playwright-mcp/backend-fix-completion-20261109.json`.
+
+Онлайн: `hive_online_snapshot` хранит общий снимок с per-node last-good/observed_at, stale сразу при потере измерения, сроком 90 с без продления неуспешными опросами, затем unknown/null. Свежие уменьшения и ноль проходят сразу; WATCH/MULTI + collection-start timestamp защищают от запоздавшего старого ответа. Старая запись scalar совместима, неполная DB-only сумма больше не публикуется как полный онлайн; обходные старые setters удалены. В отказе чтения WG Улья добавлен только диагностический `wg_stats_ok=false`, управление peers не менялось. В admin stats/summary/cells добавлены optional quality/timestamps; UI явно показывает stale/unknown. Проверка доступности уточняет IP/API и реальное число RU-точек, не заявляет полноценную VPN-сессию; классификатор и IP/port automation не менялись.
+
+SMTP: совместимый blocking lookup создаёт собственный NullPool engine в своём loop, с dispose и deadline 6 с; общий asyncpg pool API не используется и не закрывается. Основные async auth paths с готовыми relay lists сохранены. Новые RED→GREEN: online 9 сценариев, SMTP 2; старые consistency5/SMTP8, все31 canonical preflight PASS. Source guard расширен до35 файлов. UI build, detector[],16 real browser cases1280/390 +3 прежних availability UI suites PASS.
+
+Production GREEN: реальный Redis в уникальном временном namespace дал 134→134(stale) при потере одного измерения, expiry→null, fresh decrease104, late-old-writer остаётся104; ключи удалены. Реальный SMTP lookup после прогрева общего DB pool из background thread и running loop дал по3 релея/0 loop errors/0 писем. 12 циклов/36 actual HTTP fast/light/full согласованы по snapshot generation, онлайн113–115/fresh. Canonical health57ms/kick0, HTTPS443/2083/admin cache/4cell allowlist PASS. Все5 WDTT PID/NRestarts/ifindex/DNAT прежние, 111 baseline live peers/AllowedIPs сохранены. Операторские deploy/test scripts атомарно доставлены с backup/SHA. Клиенты/версии/релизы не менялись.
+
+Доказательства: backend-fix-{deploy,verify,safety-before,safety-after}-20261109.log; backend-fix-verified-20261109.json, backend-fix-safety-comparison-20261109.json, backend-fix-final-health-20261109.json в .playwright-mcp. Постоянное описание: `backend/research/2026-11-09-online-snapshot-hotfix.md`. Работа исправления выполнена; прежние записи аудита/«в работе» ниже — история.
+
 # MEMORY BANK — Silent VPN Project
 
 ## Пуш аналитики промокодов по команде владельца (2026-11-03)

@@ -140,7 +140,7 @@ type AgentSettings = {
 }
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
-  ok: { label: 'Доступно из РФ', cls: 'text-emerald-400 border-emerald-800 bg-emerald-950/40' },
+  ok: { label: 'Проверенные IP и API доступны', cls: 'text-emerald-400 border-emerald-800 bg-emerald-950/40' },
   degraded: { label: 'Деградация', cls: 'text-amber-300 border-amber-800 bg-amber-950/40' },
   blocked: { label: 'Есть блокировка', cls: 'text-red-400 border-red-800 bg-red-950/40' },
   down: { label: 'Сервис не отвечает', cls: 'text-red-400 border-red-800 bg-red-950/40' },
@@ -579,7 +579,7 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-xs px-2.5 py-1 rounded-lg border ${meta.cls}`}>
-            {status === 'ok' ? (
+            {status === 'ok' && !partialCoverage ? (
               <ShieldCheck className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
             ) : (
               <ShieldAlert className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
@@ -600,6 +600,8 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
           </button>
         </div>
       </div>
+
+      <p className="text-xs text-[#aaa] mt-3">Проверяются IP и API из доступных сетей. Полная VPN-сессия с передачей данных этой проверкой не подтверждается.</p>
 
       {settings && (
         <details className="mt-3 text-xs text-[#888]">
@@ -666,7 +668,7 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
             <p className="text-sm text-[#ddd]">{servicePortOnly ? 'Есть таймауты служебного API из проверяющих сетей. Доступность VPN-транспорта оценивается отдельно.' : report.summary}</p>
             <p className="text-[11px] text-[#888] mt-1">
               {new Date(report.ts).toLocaleString('ru-RU')} · проверка {report.duration_sec} с ·
-              российские ноды: {ruNodes.length > 0 ? ruNodes.join(', ') : 'нет'} ·
+              точки РФ: {ruNodes.length} из {settings?.ru_nodes ?? ruNodes.length} запрошенных ·
               внешних проверок {report.vantage?.checks ?? 0}
             </p>
             {report.warnings.map((w, i) => (

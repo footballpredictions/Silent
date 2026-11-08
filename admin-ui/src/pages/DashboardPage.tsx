@@ -79,6 +79,9 @@ interface Stats {
     subscriptions_trial?: number
     vpn_access_users?: number
     connected_devices: number | null
+    online_status?: 'fresh' | 'stale' | 'unknown'
+    online_stale_nodes?: string[]
+    online_unknown_nodes?: string[]
     peak_online_devices?: number
     peak_online_at?: string | null
   }
@@ -668,10 +671,12 @@ export default function DashboardPage({ token, onUnauthorized }: { token: string
         <div className="bg-[#111] border border-[#222] rounded-xl p-5 flex flex-col h-full">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#666] text-xs uppercase tracking-wider">Онлайн</span>
-            <div className={`w-2.5 h-2.5 rounded-full ${(stats.users.connected_devices ?? 0) > 0 ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-[#444]'}`} />
+            <div className={`w-2.5 h-2.5 rounded-full ${stats.users.online_status && stats.users.online_status !== 'fresh' ? 'bg-amber-300' : (stats.users.connected_devices ?? 0) > 0 ? 'bg-green-400' : 'bg-[#444]'}`} />
           </div>
           <div className="flex-1">
-            <div className="text-2xl font-bold tabular-nums">{stats.users.connected_devices ?? '…'}</div>
+            <div className="text-2xl font-bold tabular-nums">{stats.users.online_status === 'unknown' ? '—' : stats.users.connected_devices ?? '…'}</div>
+            {stats.users.online_status === 'stale' && <p role="status" className="text-xs text-amber-300 mt-2">Последнее измерение: {stats.users.online_stale_nodes?.join(', ')}. Ожидаем свежие данные.</p>}
+            {stats.users.online_status === 'unknown' && <p role="status" className="text-xs text-amber-300 mt-2">Онлайн не подтверждён: {stats.users.online_unknown_nodes?.join(', ')}.</p>}
           </div>
           <div
             className="text-[#555] text-xs mt-3 pt-2 border-t border-[#1e1e1e]"

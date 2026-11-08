@@ -133,6 +133,7 @@ def queen_wg_peer_counts(
         peers = _queen_wg_dump()
     except Exception:
         return {
+            'wg_stats_ok': False,
             "wg_peers_total": 0,
             "wg_peers_never_hs": 0,
             "wg_peers_live_3m": 0,
@@ -153,6 +154,7 @@ def queen_wg_peer_counts(
             if p.pub in known:
                 live_known += 1
     out = {
+        'wg_stats_ok': True,
         "wg_peers_total": len(peers),
         "wg_peers_never_hs": never,
         "wg_peers_live_3m": live,

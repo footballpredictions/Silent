@@ -57,17 +57,29 @@ async def smtp_relays_from_db(db) -> list[dict[str, str]]:
 
 
 async def _smtp_relays_async() -> list[dict[str, str]]:
-    from app.database import AsyncSessionLocal
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+    from app.config import settings
 
-    async with AsyncSessionLocal() as db:
-        return await smtp_relays_from_db(db)
+    # Legacy sync senders run this in a private event loop. The application's
+    # asyncpg pool belongs to the API loop and must never enter this thread.
+    # Normal async auth paths already pass their prepared relay list to _send.
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool,
+                                 connect_args={'timeout': 5})
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+            return await smtp_relays_from_db(db)
+    finally:
+        await engine.dispose()
 
 
 def load_smtp_relays_blocking() -> list[dict[str, str]]:
     """Для sync `_send` (BackgroundTasks / MFA). Секреты в лог не пишем."""
 
     def _run() -> list[dict[str, str]]:
-        return asyncio.run(_smtp_relays_async())
+        async def bounded():
+            return await asyncio.wait_for(_smtp_relays_async(), timeout=6)
+        return asyncio.run(bounded())
 
     try:
         asyncio.get_running_loop()

@@ -32,6 +32,7 @@ interface HiveCell {
   max_online: number
   max_clients?: number
   online_count: number
+  online_status?: 'fresh' | 'stale' | 'unknown'
   total_online_count?: number
   assigned_devices: number
   status: string
@@ -548,6 +549,8 @@ export default function HivePage({ token }: { token: string }) {
   }
 
   const hiveOnline = cells.reduce((n, c) => n + (c.online_count || 0), 0)
+  const unknownOnline = cells.filter(c => c.online_status === 'unknown')
+  const staleOnline = cells.filter(c => c.online_status === 'stale')
   const activeCells = cells.filter(c => c.status === 'active').length
   const actionClass = 'text-xs px-3 py-2 rounded-lg border border-[#333] bg-[#1a1a1a] hover:bg-[#222] disabled:opacity-50'
 
@@ -601,10 +604,11 @@ export default function HivePage({ token }: { token: string }) {
       )}
 
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 bg-[#111] border border-[#222] rounded-xl px-4 py-3 text-sm">
-        <p><span className="text-[#888]">Онлайн</span> <strong className="ml-2 tabular-nums">{loading ? '…' : hiveOnline}</strong></p>
+        <p><span className="text-[#888]">Онлайн</span> <strong className="ml-2 tabular-nums">{loading ? '…' : unknownOnline.length ? '—' : hiveOnline}</strong></p>
         <p><span className="text-[#888]">Серверы в работе</span> <strong className="ml-2 tabular-nums">{loading ? '…' : `${activeCells} / ${cells.length}`}</strong></p>
         {metricsAt && <span className="sm:ml-auto text-xs text-[#888]">Обновлено {metricsAt.toLocaleTimeString('ru')}</span>}
       </div>
+      {unknownOnline.length > 0 ? <p role="status" className="text-xs text-amber-300">Онлайн не подтверждён: {unknownOnline.map(c => c.name).join(', ')}.</p> : staleOnline.length > 0 && <p role="status" className="text-xs text-amber-300">Последнее измерение: {staleOnline.map(c => c.name).join(', ')}. Ожидаем свежие данные.</p>}
       {summary?.all_cells_full && <p role="status" className="text-sm text-amber-300">Соты заполнены — добавьте сервер.</p>}
       {summary?.queen_load?.build_running && <p className="text-sm text-blue-300">На Улье идёт сборка обновления.</p>}
 
@@ -630,8 +634,9 @@ export default function HivePage({ token }: { token: string }) {
                   <p className="text-xs text-[#888] font-mono mt-2 break-all">{cell.public_ip}:{cell.wdtt_port}</p>
                 </div>
                 <div className="text-right shrink-0">
-                  <p className={`text-xl font-semibold tabular-nums ${cell.online_count >= cell.max_online ? 'text-amber-300' : ''}`}>{cell.online_count}<span className="text-xs font-normal text-[#888]"> / {cell.max_online}</span></p>
+                  <p className={`text-xl font-semibold tabular-nums ${cell.online_status !== 'unknown' && cell.online_count >= cell.max_online ? 'text-amber-300' : ''}`}>{cell.online_status === 'unknown' ? '—' : cell.online_count}<span className="text-xs font-normal text-[#888]"> / {cell.max_online}</span></p>
                   <p className="text-xs text-[#888] mt-0.5">онлайн / лимит</p>
+                  {cell.online_status === 'stale' && <p className="text-xs text-amber-300 mt-1">Предыдущее измерение</p>}
                 </div>
               </div>
               <CellLoadGrid cell={cell} cpuThreshold={summary?.cpu_threshold ?? 80} memThreshold={summary?.mem_threshold ?? 85} bwThreshold={summary?.bandwidth_threshold ?? 90} />

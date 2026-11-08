@@ -44,12 +44,11 @@ from app.services.hive_slots import (
 
 logger = logging.getLogger(__name__)
 
-# Дашборд и шапка Улья: одно число = сумма карточек (max БД, WG live по нодам).
-# RAM на воркер + Redis — иначе uvicorn --workers 2 прыгает WG vs is_connected из БД.
+# Legacy scalar reads remain for rollout. New collections publish exclusively
+# through hive_online_snapshot, including measurement quality and ordering.
 _SHOWN_ONLINE_AT = 0.0
 _SHOWN_ONLINE_N = 0
 _SHOWN_ONLINE_TTL_SEC = 20.0
-_SHOWN_ONLINE_SOFT_SEC = 90.0
 _REDIS_SHOWN_KEY = "hive:vpn_online_shown"
 _shown_redis = None
 _SHOWN_LIVE_PUBS: set[str] = set()
@@ -464,6 +463,11 @@ def _get_shown_redis():
 
 async def _redis_get_shown() -> int | None:
     try:
+        from app.services import hive_online_snapshot
+
+        snapshot = await hive_online_snapshot.read(_get_shown_redis())
+        if snapshot is not None:
+            return snapshot['total']
         raw = await asyncio.wait_for(_get_shown_redis().get(_REDIS_SHOWN_KEY), timeout=0.35)
         if raw is None:
             return None
@@ -471,17 +475,6 @@ async def _redis_get_shown() -> int | None:
     except Exception:
         logger.debug("Hive: shown-online redis get skipped", exc_info=True)
         return None
-
-
-async def _redis_set_shown(n: int) -> None:
-    try:
-        await _get_shown_redis().set(
-            _REDIS_SHOWN_KEY,
-            str(max(0, int(n))),
-            ex=int(_SHOWN_ONLINE_SOFT_SEC),
-        )
-    except Exception:
-        logger.debug("Hive: shown-online redis set skipped", exc_info=True)
 
 
 def _sanitize_wg_live_pubs(raw) -> list[str]:
@@ -508,12 +501,12 @@ def remember_vpn_online_shown_ram(n: int) -> None:
     _SHOWN_ONLINE_AT = time.monotonic()
 
 
-async def remember_vpn_online_shown(n: int) -> None:
-    remember_vpn_online_shown_ram(n)
-    await _redis_set_shown(n)
-
-
 def cached_vpn_online_shown(*, max_age: float | None = None) -> int | None:
+    from app.services import hive_online_snapshot
+
+    snapshot = hive_online_snapshot.cached()
+    if snapshot is not None:
+        return snapshot['total']
     if _SHOWN_ONLINE_AT <= 0:
         return None
     ttl = _SHOWN_ONLINE_TTL_SEC if max_age is None else float(max_age)
@@ -531,11 +524,10 @@ async def cached_vpn_online_shown_shared() -> int | None:
     return cached_vpn_online_shown()
 
 
-async def refresh_online_shown_cache() -> int:
+async def refresh_online_shown_cache() -> int | None:
     """Собрать онлайн как шапка Улья (WG live) и запомнить для дашборда."""
     global _SHOWN_LIVE_PUBS
     rows = await list_cells_with_stats_pooled(http_timeout=2.0)
-    total = sum(int(c.get("online_count") or 0) for c in rows)
     pubs: set[str] = set()
     for row in rows:
         for p in row.get("wg_live_pubs") or []:
@@ -543,8 +535,8 @@ async def refresh_online_shown_cache() -> int:
             if s:
                 pubs.add(s)
     _SHOWN_LIVE_PUBS = pubs
-    await remember_vpn_online_shown(total)
-    return total
+    # Assembly publishes once, including completeness and collection order.
+    return cached_vpn_online_shown()
 
 
 async def vpn_online_shown_total(
@@ -552,14 +544,25 @@ async def vpn_online_shown_total(
     *,
     soft: bool = False,
     soft_max_age: float = 90.0,
-) -> int:
+) -> int | None:
     """Дашборд «Онлайн» = шапка Улья = сумма карточек (люди в БД и handshake на нодах).
 
     soft=True (light-полл): не бить HTTP по сотам, если есть RAM/Redis кэш.
     Пустой кэш — refresh карточек, не сырой leftover WG.
     """
-    ram = cached_vpn_online_shown()
     shared = await _redis_get_shown()
+    from app.services import hive_online_snapshot
+
+    snapshot = hive_online_snapshot.cached()
+    if snapshot is not None:
+        if time.time() - float(snapshot['started_at']) > _SHOWN_ONLINE_TTL_SEC:
+            try:
+                return await refresh_online_shown_cache()
+            except Exception:
+                return snapshot['total']
+        if snapshot['state'] == 'unknown':
+            return None
+    ram = cached_vpn_online_shown()
     stale = cached_vpn_online_shown(max_age=soft_max_age) if soft else None
     picked = pick_dashboard_shown_online(
         ram=ram, shared=shared, stale_ram=stale, soft=soft
@@ -572,10 +575,7 @@ async def vpn_online_shown_total(
         return await refresh_online_shown_cache()
     except Exception as e:
         logger.warning("Hive: online shown refresh failed: %s", e)
-        if db is not None:
-            _, total = await connected_devices_by_cell(db)
-            return int(total or 0)
-        return 0
+        return None
 
 
 async def olcrtc_exit_cell_ips(db: AsyncSession) -> set[str]:
@@ -901,6 +901,7 @@ async def fetch_worker_cell_load(
             "wg_peers_total": int(data.get("wg_peers_total") or 0),
             "wg_peers_never_hs": int(data.get("wg_peers_never_hs") or 0),
             "wg_peers_live_3m": int(data.get("wg_peers_live_3m") or 0),
+            "wg_stats_ok": 'wg_peers_live_3m' in data and data.get('wg_stats_ok', True) is not False,
             "wg_gc_last_removed": int(data.get("wg_gc_last_removed") or 0),
             "wg_live_pubs": _sanitize_wg_live_pubs(data.get("wg_live_pubs")),
             "wg_live_devices": [v for v in data.get("wg_live_devices", []) if isinstance(v, str) and 0 < len(v) <= 256] if isinstance(data.get("wg_live_devices"), list) else [],
@@ -998,16 +999,18 @@ async def list_cells_with_stats(
     *,
     http_timeout: float | None = 3.0,
 ) -> list[dict]:
+    started_at = time.time()
     cells = await _load_sorted_hive_cells(db)
     _, queen_load = queen_accepting_new_vpn()
     worker_load_map = await _worker_loads_for_cells(cells, timeout=http_timeout)
-    return await _assemble_cells_with_stats(db, cells, worker_load_map, queen_load)
+    return await _assemble_cells_with_stats(db, cells, worker_load_map, queen_load, started_at=started_at)
 
 
 async def list_cells_with_stats_pooled(*, http_timeout: float = 3.0) -> list[dict]:
     """HTTP к сотам без удержания соединения Postgres (админка поллит каждые 10с)."""
     from app.database import AsyncSessionLocal
 
+    started_at = time.time()
     async with AsyncSessionLocal() as db:
         cells = await _load_sorted_hive_cells(db)
         for c in cells:
@@ -1022,7 +1025,7 @@ async def list_cells_with_stats_pooled(*, http_timeout: float = 3.0) -> list[dic
     _, queen_load = queen_accepting_new_vpn()
     worker_load_map = await _worker_loads_for_cells(cells, timeout=http_timeout)
     async with AsyncSessionLocal() as db:
-        return await _assemble_cells_with_stats(db, cells, worker_load_map, queen_load)
+        return await _assemble_cells_with_stats(db, cells, worker_load_map, queen_load, started_at=started_at)
 
 
 async def _load_sorted_hive_cells(db: AsyncSession) -> list[HiveCell]:
@@ -1059,7 +1062,11 @@ async def _assemble_cells_with_stats(
     cells: list[HiveCell],
     worker_load_map: dict[uuid.UUID, dict | None],
     queen_load: dict | None,
+    *, started_at: float | None = None,
 ) -> list[dict]:
+    from app.services import hive_online_snapshot
+
+    started_at = time.time() if started_at is None else started_at
     out = []
     olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in cells])
     online_map, _online_total = await connected_devices_by_cell(db)
@@ -1088,7 +1095,10 @@ async def _assemble_cells_with_stats(
                 capacity=capacity,
             )
         )
-    await remember_vpn_online_shown(sum(int(c.get("online_count") or 0) for c in out))
+    snapshot = await hive_online_snapshot.publish(_get_shown_redis(), out, started_at)
+    hive_online_snapshot.apply(out, snapshot)
+    if snapshot['total'] is not None:
+        remember_vpn_online_shown_ram(snapshot['total'])
     return out
 
 
@@ -1132,19 +1142,9 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         if online >= cap:
             full_cells += 1
     wdtt_nodes = len(assignable)
-    ram = cached_vpn_online_shown()
-    shared = await _redis_get_shown()
-    shown = pick_dashboard_shown_online(
-        ram=ram,
-        shared=shared,
-        stale_ram=cached_vpn_online_shown(max_age=_SHOWN_ONLINE_SOFT_SEC),
-        soft=True,
-    )
-    if shown is None:
-        try:
-            shown = await refresh_online_shown_cache()
-        except Exception:
-            shown = int(total_online or 0)
+    from app.services import hive_online_snapshot
+
+    shown = await vpn_online_shown_total(db, soft=True)
     return {
         "queen_load": queen_load,
         "queen_accepting_vpn": accepting,
@@ -1153,6 +1153,7 @@ async def get_hive_summary_extra(db: AsyncSession) -> dict:
         "total_online_vpn": shown,
         "total_online_olcrtc": total_online_olcrtc,
         "total_online_all": shown,
+        **hive_online_snapshot.metadata(),
         "total_capacity_online": total_capacity,
         "full_cells": full_cells,
         "all_cells_full": wdtt_nodes > 0 and full_cells >= wdtt_nodes,

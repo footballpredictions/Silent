@@ -107,3 +107,38 @@ zero errors, tracebacks, shared snapshot failures, cross-loop failures or kicks.
 Private local verification receipts are named `backend-fix-*-20261109` under
 the workspace `.playwright-mcp` directory. These operator artifacts are not
 required by the deployed application or included in the source commit.
+
+## Follow-up: dry-run route selection is not UDP reachability evidence
+
+The user then supplied a contradictory report: its relay-plan card claimed
+"UDP reaches the server" while the channel details contained no Russian UDP
+measurements. `cell_relay_policy` used `path is not False` to choose the safe
+direct route, so `None` (unmeasured) and `True` shared a success explanation.
+The broader availability scope note did not correct this separate card.
+
+Direct routing remains the safe default. Optional `ru_udp_status` on the plan
+and hops now separates `unverified`, `reachable` and `unreachable`. Missing,
+pending or single-source failed UDP results remain unverified; failed ping is
+not evidence of UDP failure. A relay candidate requires two distinct failing
+UDP sources and a positively probed entry. The plan remains unexecuted, with no
+new tunnels or changes to client Endpoints, WG, WDTT or iptables.
+
+Read-side report reclassification rebuilds unexecuted relay plans from their
+stored measurements, preserving timestamps and archive bytes. No new probe
+cycle is required to correct an old success claim. The UI distinguishes a
+default direct route from measured reachability and also handles legacy
+payloads that do not contain the new evidence field.
+
+The relay-policy suite now contains 12 cases including saved-report replay.
+Ten browser cases cover unknown/legacy/confirmed/relay/hold states at 1280 and
+390 pixels. Both that suite and the existing 58-case classifier suite pass.
+The canonical preflight includes relay-policy regression tests; the source
+guard also includes `ai/cell_relay_policy.py`.
+
+The follow-up passed all 32 canonical preflight scripts and deployed two Python
+files plus admin UI. Four real API reads corrected the same saved report's
+legacy success title while preserving its timestamp and archive SHA. All five
+hops retained direct routing with `ru_udp_status=unverified`; no new probe was
+requested and the plan remained unexecuted. All five WDTT PIDs, interface
+indexes and API DNAT rules were preserved. Final health was HTTP 200 in 43 ms,
+with zero errors/tracebacks or kicks in the 557 API log lines since restart.

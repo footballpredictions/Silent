@@ -12,6 +12,7 @@ sys.modules.setdefault("app.database", SimpleNamespace(AsyncSessionLocal=None))
 from ai.availability_model import (  # noqa: E402
     CHANNEL_PING,
     CHANNEL_WDTT_UDP,
+    ERR_PENDING,
     ERR_TIMEOUT,
     NodeResult,
     TARGET_CELL,
@@ -19,7 +20,7 @@ from ai.availability_model import (  # noqa: E402
     TargetSnapshot,
     VantageAggregate,
 )
-from ai.cell_relay_policy import ACTION_DIRECT, ACTION_HOLD, ACTION_RELAY, build_relay_plan  # noqa: E402
+from ai.cell_relay_policy import ACTION_DIRECT, ACTION_HOLD, ACTION_RELAY, build_relay_plan, vpn_path_from_ru  # noqa: E402
 
 
 def _agg(channel: str, *, ok: int = 0, failed: int = 0) -> VantageAggregate:
@@ -79,6 +80,51 @@ def test_unknown_udp_does_not_invent_relay():
     )
     hop = next(h for h in plan["hops"] if h["ai_exit"])
     assert hop["action"] == ACTION_DIRECT
+
+
+def test_unknown_udp_never_claims_direct_reachability():
+    plan = build_relay_plan([_snap('сота3', TARGET_CELL, ai_exit=True, ping_ok=True)])
+    assert plan['action'] == ACTION_DIRECT
+    assert 'UDP доходит' not in plan['explain']
+    assert 'доступен напрямую' not in plan['title']
+    assert plan['hops'][0]['ru_udp_status'] == 'unverified'
+
+
+def test_failed_ping_does_not_prove_udp_blocked():
+    snap = _snap('сота3', TARGET_CELL, ai_exit=True, ping_ok=False)
+    assert vpn_path_from_ru(snap) is None
+    assert build_relay_plan([snap])['action'] == ACTION_DIRECT
+
+
+def test_pending_udp_is_not_a_failed_udp_measurement():
+    snap = _snap('сота3', TARGET_CELL, ai_exit=True)
+    snap.ru[CHANNEL_WDTT_UDP] = VantageAggregate(channel=CHANNEL_WDTT_UDP,
+        nodes=[NodeResult(node='ru1', ok=False, error_kind=ERR_PENDING)])
+    assert vpn_path_from_ru(snap) is None
+
+
+def test_single_udp_failure_does_not_trigger_a_relay_plan():
+    snap = _snap('сота3', TARGET_CELL, ai_exit=True)
+    snap.ru[CHANNEL_WDTT_UDP] = _agg(CHANNEL_WDTT_UDP, failed=1)
+    assert vpn_path_from_ru(snap) is None
+
+
+def test_direct_udp_success_is_labelled_as_a_probe_not_a_vpn_session():
+    snap = _snap('сота3', TARGET_CELL, ai_exit=True, udp_ok=True)
+    assert build_relay_plan([snap])['ru_udp_status'] == 'reachable'
+
+
+def test_saved_report_rebuilds_unexecuted_legacy_plan_without_new_probes():
+    from ai.availability_report import reclassify_report
+    snap = _snap('сота3', TARGET_CELL, ai_exit=True, ping_ok=True)
+    raw = dict(ts='2026-11-09T00:00:00Z', status='ok', targets=[snap.to_dict()],
+               relay_plan={'action':'direct', 'title':'Сервер 4 доступен напрямую',
+                           'explain':'С РФ UDP доходит', 'executed':False, 'hops':[]})
+    result = reclassify_report(raw)
+    assert result['relay_plan']['ru_udp_status'] == 'unverified'
+    assert 'UDP доходит' not in result['relay_plan']['explain']
+    assert result['ts'] == raw['ts']
+    assert raw['relay_plan']['title'] == 'Сервер 4 доступен напрямую'
 
 
 def test_all_blocked_holds():

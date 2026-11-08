@@ -13,13 +13,12 @@
 `silent-mesh0` (не `wdtt0`, peer GC Улья его не увидит) + fail-open watchdog
 как у AI-exit. `executed` всегда False.
 
-Fail-safe: нет пробы WDTT/WG → считаем цель живой (прямой ход). Релей только
+Fail-safe: нет пробы WDTT/WG → сохраняем прямой ход без утверждения доступности. Релей только
 когда UDP с РФ точно мёртв, а у входной соты — жив.
 """
 from __future__ import annotations
 
 from ai.availability_model import (
-    CHANNEL_PING,
     CHANNEL_WDTT_UDP,
     CHANNEL_WG_UDP,
     TARGET_CELL,
@@ -32,7 +31,7 @@ ACTION_RELAY = "relay"
 ACTION_HOLD = "hold"
 
 EXPLAIN = {
-    ACTION_DIRECT: "С РФ до выбранного сервера UDP доходит — клиент идёт напрямую, как сейчас.",
+    ACTION_DIRECT: "UDP-проба из РФ прошла. В плане остаётся прямое подключение; полноценная VPN-сессия отдельно не проверялась.",
     ACTION_RELAY: (
         "С РФ цель не отвечает по WDTT/WG, а другая сота жива. Клиенту нужен вход "
         "через неё и отдельный туннель на выход. Туннеля между сотами ещё нет — "
@@ -40,23 +39,24 @@ EXPLAIN = {
     ),
     ACTION_HOLD: "Живого входа с РФ нет — релей некуда ставить. Менять Endpoint нельзя.",
 }
+UNVERIFIED_DIRECT = (
+    "Доступность UDP из РФ не подтверждена: проб нет или данных недостаточно. "
+    "Прямой маршрут оставлен по умолчанию; это не результат успешной VPN-проверки."
+)
 
 
 def vpn_path_from_ru(snap: TargetSnapshot) -> bool | None:
-    """True = UDP с РФ жив, False = мёртв, None = не проверяли (не выдумываем релей)."""
+    """True = UDP-проба прошла; False = 2+ источника отказа; None = не подтверждено."""
     for channel in (CHANNEL_WDTT_UDP, CHANNEL_WG_UDP):
         agg = snap.ru_view(channel)
         if agg is None:
             continue
-        return agg.ok_count > 0
-    ping = snap.ru_view(CHANNEL_PING)
-    if ping is None:
-        return None
-    # Ping — слабый сигнал: 443 Улья режут при живом WG. Для соты без UDP-пробы
-    # «пинг мёртв» всё же значит, что IP не достучаться.
-    if ping.ok_count > 0:
-        return None
-    return False
+        if agg.ok_count:
+            return True
+        failed_sources = {n.node for n in agg.failing_nodes()}
+        return False if len(failed_sources) >= 2 else None
+    # ICMP, служебный TCP и молчание UDP не доказывают состояние VPN-канала.
+    return None
 
 
 def _entry_sort_key(snap: TargetSnapshot) -> tuple:
@@ -84,6 +84,7 @@ def pick_entry(target: TargetSnapshot, snaps: list[TargetSnapshot]) -> TargetSna
 
 
 def _hop(snap: TargetSnapshot, action: str, entry: TargetSnapshot | None = None) -> dict:
+    measured = vpn_path_from_ru(snap)
     return {
         "name": snap.name,
         "host": snap.host,
@@ -92,7 +93,8 @@ def _hop(snap: TargetSnapshot, action: str, entry: TargetSnapshot | None = None)
         "entry": entry.name if entry is not None else (snap.name if action == ACTION_DIRECT else None),
         "exit": snap.name,
         "reason": action,
-        "explain": EXPLAIN[action],
+        "explain": UNVERIFIED_DIRECT if action == ACTION_DIRECT and measured is None else EXPLAIN[action],
+        "ru_udp_status": 'unverified' if measured is None else 'reachable' if measured else 'unreachable',
     }
 
 
@@ -119,12 +121,15 @@ def build_relay_plan(targets: list[TargetSnapshot]) -> dict:
         action = ACTION_HOLD
     else:
         action = str(focus["action"])
+        label = 'Сервер 4' if focus['ai_exit'] else focus['name']
         if action == ACTION_RELAY:
-            title = f"Сервер 4: вход через {focus['entry']}"
-        elif action == ACTION_HOLD and focus["ai_exit"]:
-            title = "Сервер 4 недоступен, живого входа нет"
+            title = f"{label}: вход через {focus['entry']}"
+        elif action == ACTION_HOLD:
+            title = f"{label}: UDP-пробы не прошли, подтверждённого входа нет"
+        elif focus['ru_udp_status'] == 'unverified':
+            title = f"{label}: прямой маршрут, UDP не подтверждён"
         else:
-            title = "Сервер 4 доступен напрямую"
+            title = f"{label}: UDP-проба прошла, прямой маршрут"
         explain = str(focus["explain"])
 
     return {
@@ -132,6 +137,7 @@ def build_relay_plan(targets: list[TargetSnapshot]) -> dict:
         "title": title,
         "explain": explain,
         "executed": False,
+        "ru_udp_status": focus['ru_udp_status'] if focus else 'unverified',
         "hops": hops,
         "blocked": interesting,
     }

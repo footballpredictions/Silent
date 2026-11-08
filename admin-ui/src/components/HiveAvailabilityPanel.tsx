@@ -105,6 +105,7 @@ type RelayHop = {
   exit: string
   reason: string
   explain: string
+  ru_udp_status?: 'reachable' | 'unreachable' | 'unverified'
 }
 
 type RelayPlan = {
@@ -113,6 +114,7 @@ type RelayPlan = {
   explain: string
   executed: boolean
   hops: RelayHop[]
+  ru_udp_status?: 'reachable' | 'unreachable' | 'unverified'
 }
 
 type Report = {
@@ -326,13 +328,18 @@ function PortPlanCard({ plan }: { plan: PortPlan }) {
 }
 
 const RELAY_ACTION_RU: Record<string, string> = {
-  direct: 'напрямую',
+  direct: 'прямой маршрут',
   relay: 'вход через другую соту',
   hold: 'нет живого входа',
 }
 
 function RelayPlanCard({ plan }: { plan: RelayPlan }) {
   const [open, setOpen] = useState(false)
+  const unverifiedDirect = plan.action === 'direct' && plan.ru_udp_status !== 'reachable'
+  const title = unverifiedDirect ? 'Прямой маршрут по умолчанию: UDP из РФ не подтверждён' : plan.title
+  const explain = unverifiedDirect
+    ? 'Прямой маршрут оставлен без изменения. Отсутствие UDP-проб не подтверждает ни доступность VPN, ни блокировку.'
+    : plan.explain
   return (
     <div className="mt-3 bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2.5">
       <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-start gap-2 text-left">
@@ -342,7 +349,7 @@ function RelayPlanCard({ plan }: { plan: RelayPlan }) {
           <ChevronRight className="w-4 h-4 mt-0.5 text-[#888] shrink-0" />
         )}
         <span className="flex-1">
-          <span className="text-sm text-[#ddd]">Кольцо серверов: {plan.title}</span>
+          <span className="text-sm text-[#ddd]">План маршрута: {title}</span>
           <span className="block text-[11px] text-[#888] mt-0.5">
             туннеля между сотами нет · маршрут не применялся
           </span>
@@ -350,10 +357,11 @@ function RelayPlanCard({ plan }: { plan: RelayPlan }) {
       </button>
       {open && (
         <div className="mt-2 pl-6 space-y-1.5">
-          <p className="text-xs text-[#aaa]">{plan.explain}</p>
+          <p className="text-xs text-[#aaa]">{explain}</p>
           {plan.hops.map(h => (
             <p key={`${h.name}-${h.action}`} className="text-[11px] text-[#888]">
               {h.ai_exit ? 'Сервер 4 · ' : ''}{h.name}: {RELAY_ACTION_RU[h.action] || h.action}
+              {h.action === 'direct' && h.ru_udp_status !== 'reachable' ? ' · UDP из РФ не подтверждён' : ''}
               {h.action === 'relay' && h.entry ? ` ← ${h.entry}` : ''}
             </p>
           ))}

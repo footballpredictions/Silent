@@ -70,6 +70,10 @@ def reclassify_report(report: dict[str, Any]) -> dict[str, Any]:
         snapshots = [_snapshot(raw) for raw in targets]
         verdicts = classify_targets(snapshots)
         status = report_status(verdicts)
+        if not (result.get('relay_plan') or {}).get('executed'):
+            from ai.cell_relay_policy import build_relay_plan
+
+            result['relay_plan'] = build_relay_plan(snapshots)
         # IP-план зависит от выводов; старый совет по ложной блокировке устарел.
         ip_plan = result.get('ip_plan')
         if isinstance(ip_plan, dict) and ip_plan and not ip_plan.get('executed'):

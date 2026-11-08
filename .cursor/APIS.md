@@ -1,5 +1,9 @@
 # APIS — Silent VPN
 
+## План маршрута: прямое подключение не равно подтверждённому UDP (2026-11-09)
+
+В `GET /api/admin/hive/availability` report.relay_plan и hops добавлено optional `ru_udp_status`: `unverified|reachable|unreachable`. Прежний action=direct сохраняется при отсутствии достоверных измерений как default, а не утверждение доступности. При unverified UI явно подписывает это и не показывает «UDP доходит». Ping, pending и одиночный отказ не подтверждают блокировку UDP. Незавершённые dry-run relay plans пересчитываются из сохранённых измерений при чтении, без изменения timestamp/архива или запуска новых проб. `executed` остаётся false; Endpoint/туннели не применяются. TCP9100 замечания оцениваются отдельно от VPN.
+
 ## Качество общего онлайна и границы проверки доступности (2026-11-09)
 
 `GET /api/admin/stats` users и `GET /api/admin/hive/summary` дополнены optional `online_status` (`fresh|stale|unknown`), `online_snapshot_at`, `online_observed_at` (Unix seconds), `online_stale_nodes`, `online_unknown_nodes`. `connected_devices` / `total_online_vpn` / `total_online_all` равны null при неизвестном общем итоге; это не ноль. `/api/admin/hive/cells` сохраняет integer online_count/total_online_count для совместимости и добавляет optional online_status/online_observed_at; новый UI скрывает число при unknown.

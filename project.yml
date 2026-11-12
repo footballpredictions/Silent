@@ -1,6 +1,6 @@
 name: Silent
 options:
-  bundleIdPrefix: com.silent
+  bundleIdPrefix: io.github.silentvpn3
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -30,7 +30,7 @@ targets:
       path: Silent/Silent.entitlements
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.silent.vpn
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.silentvpn3.silentvpn
         PROVISIONING_PROFILE_SPECIFIER: "$(SILENT_APP_PROFILE)"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Silent VPN
@@ -71,7 +71,7 @@ targets:
       path: SilentTunnel/SilentTunnel.entitlements
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.silent.vpn.tunnel
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.silentvpn3.silentvpn.tunnel
         PROVISIONING_PROFILE_SPECIFIER: "$(SILENT_TUNNEL_PROFILE)"
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: SilentTunnel/SilentTunnel-Bridging-Header.h

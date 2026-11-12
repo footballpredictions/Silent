@@ -8,11 +8,11 @@
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.silent.vpn</string>
+		<string>group.io.github.silentvpn3.silentvpn</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.silent.vpn</string>
+		<string>$(AppIdentifierPrefix)io.github.silentvpn3.silentvpn</string>
 	</array>
 </dict>
 </plist>

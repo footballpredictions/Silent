@@ -1,8 +1,8 @@
 import Foundation
 
 enum AppIdentity {
-    static let appGroup = "group.com.silent.vpn"
-    static let tunnelBundleId = "com.silent.vpn.tunnel"
+    static let appGroup = "group.io.github.silentvpn3.silentvpn"
+    static let tunnelBundleId = "io.github.silentvpn3.silentvpn.tunnel"
     static let configName = "tunnel-config.json"
     static let errorName = "tunnel-error.txt"
 

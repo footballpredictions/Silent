@@ -59,7 +59,7 @@ jobs:
           brew list --versions xcodegen || brew install xcodegen
           bash scripts/build-libwdtt.sh
           test -s SilentTunnel/Native/libwdtt.a
-          xcrun lipo -verify_arch arm64 SilentTunnel/Native/libwdtt.a
+          test "$(xcrun lipo -archs SilentTunnel/Native/libwdtt.a)" = arm64
           xcodegen generate
 
       - name: Compile for iPhone without signing

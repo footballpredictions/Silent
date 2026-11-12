@@ -57,7 +57,7 @@ from pathlib import Path
 work = Path(sys.argv[1])
 profiles = {}
 teams = set()
-for name, bundle in {"app": "com.silent.vpn", "tunnel": "com.silent.vpn.tunnel"}.items():
+for name, bundle in {"app": "io.github.silentvpn3.silentvpn", "tunnel": "io.github.silentvpn3.silentvpn.tunnel"}.items():
     profile = plistlib.loads((work / f"{name}.plist").read_bytes())
     entitlements = profile["Entitlements"]
     if entitlements["application-identifier"].partition(".")[2] != bundle:
@@ -66,8 +66,8 @@ for name, bundle in {"app": "com.silent.vpn", "tunnel": "com.silent.vpn.tunnel"}
         sys.exit(f"The {name} profile must be an App Store Connect distribution profile.")
     if "packet-tunnel-provider" not in entitlements.get("com.apple.developer.networking.networkextension", []):
         sys.exit(f"Enable Packet Tunnel on the {name} App ID and regenerate its profile.")
-    if "group.com.silent.vpn" not in entitlements.get("com.apple.security.application-groups", []):
-        sys.exit(f"Add group.com.silent.vpn to the {name} App ID and regenerate its profile.")
+    if "group.io.github.silentvpn3.silentvpn" not in entitlements.get("com.apple.security.application-groups", []):
+        sys.exit(f"Add group.io.github.silentvpn3.silentvpn to the {name} App ID and regenerate its profile.")
     profiles[bundle] = profile["Name"]
     teams.add(profile["TeamIdentifier"][0])
 

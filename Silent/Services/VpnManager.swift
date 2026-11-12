@@ -33,7 +33,7 @@ final class VpnManager: ObservableObject {
 
     func connect(_ config: TunnelConfig) async throws {
         guard let url = AppIdentity.configURL else {
-            throw APIError.server("Нет App Group. Включите group.com.silent.vpn в подписи приложения и расширения.")
+            throw APIError.server("Нет App Group. Включите group.io.github.silentvpn3.silentvpn в подписи приложения и расширения.")
         }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent().appendingPathComponent("engine"),

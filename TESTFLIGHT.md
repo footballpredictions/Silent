@@ -2,7 +2,7 @@
 
 С Windows можно запустить сборку и загрузку через GitHub Actions. Сборка выполняется на GitHub-раннере macOS с Xcode. Локальная сборка на Mac тоже поддерживается.
 
-Версия в проекте указана в `MARKETING_VERSION` в `project.yml`. Идентификаторы приложения и расширения — `com.silent.vpn` и `com.silent.vpn.tunnel`. Группа — `group.com.silent.vpn`.
+Версия в проекте указана в `MARKETING_VERSION` в `project.yml`. Идентификаторы приложения и расширения — `io.github.silentvpn3.silentvpn` и `io.github.silentvpn3.silentvpn.tunnel`. Группа — `group.io.github.silentvpn3.silentvpn`.
 
 Для сборки TestFlight нужна native-библиотека. Подключение VPN можно проверить на iPhone через внутреннюю группу TestFlight.
 
@@ -22,16 +22,16 @@
 
 Workflow `Silent VPN iOS` компилирует приложение и туннель при push в ветку `ios`. Push тега вида `ios-testflight-4` запускает подписанную сборку и загрузку. Тег должен указывать на коммит ветки `ios`, а число в теге — на свободный номер сборки для текущей версии приложения. Исходники Go-движка закреплены в workflow по SHA Android-коммита.
 
-1. В [Apple Developer](https://developer.apple.com/account/resources/identifiers/list) проверьте два App ID и включите Packet Tunnel в Network Extensions. Назначьте обоим App ID группу `group.com.silent.vpn`. Создайте два профиля распространения App Store Connect для одного сертификата Apple Distribution, по одному на каждый App ID.
-2. В [App Store Connect](https://appstoreconnect.apple.com/) проверьте карточку приложения с Bundle ID `com.silent.vpn`. В **Users and Access → Integrations → App Store Connect API** нужен командный API-ключ с правом загрузки сборок, например с ролью Developer. Сохраните Key ID, Issuer ID и скачанный `.p8`.
+1. В [Apple Developer](https://developer.apple.com/account/resources/identifiers/list) проверьте два App ID и включите Packet Tunnel в Network Extensions. Назначьте обоим App ID группу `group.io.github.silentvpn3.silentvpn`. Создайте два профиля распространения App Store Connect для одного сертификата Apple Distribution, по одному на каждый App ID.
+2. В [App Store Connect](https://appstoreconnect.apple.com/) проверьте карточку приложения с Bundle ID `io.github.silentvpn3.silentvpn`. В **Users and Access → Integrations → App Store Connect API** нужен командный API-ключ с правом загрузки сборок, например с ролью Developer. Сохраните Key ID, Issuer ID и скачанный `.p8`.
 3. В **GitHub → Settings → Secrets and variables → Actions** добавьте секреты репозитория.
 
    | Секрет | Значение |
    | --- | --- |
    | `IOS_DISTRIBUTION_P12` | Сертификат Apple Distribution вместе с закрытым ключом в `.p12`, в Base64 |
    | `IOS_DISTRIBUTION_PASSWORD` | Пароль `.p12` |
-   | `IOS_APP_PROFILE` | `.mobileprovision` для `com.silent.vpn`, в Base64 |
-   | `IOS_TUNNEL_PROFILE` | `.mobileprovision` для `com.silent.vpn.tunnel`, в Base64 |
+   | `IOS_APP_PROFILE` | `.mobileprovision` для `io.github.silentvpn3.silentvpn`, в Base64 |
+   | `IOS_TUNNEL_PROFILE` | `.mobileprovision` для `io.github.silentvpn3.silentvpn.tunnel`, в Base64 |
    | `ASC_KEY_ID` | Key ID |
    | `ASC_ISSUER_ID` | Issuer ID |
    | `ASC_PRIVATE_KEY` | Файл `.p8` командного API-ключа, в Base64 |
@@ -72,10 +72,10 @@ Workflow `Silent VPN iOS` компилирует приложение и тун�
    ```
    Скрипт кладёт `SilentTunnel/Native/libwdtt.a`. Без этого файла в TestFlight уйдёт приложение, которое не поднимет VPN.
 7. В [developer.apple.com/account](https://developer.apple.com/account) → Identifiers создайте два App ID:
-   - `com.silent.vpn`
-   - `com.silent.vpn.tunnel`
-   У обоих включите **Network Extensions** (Packet Tunnel) и **App Groups**. Группа одна: `group.com.silent.vpn`. Её же отметьте у обоих идентификаторов.
-8. В App Store Connect создайте приложение: имя Silent VPN, bundle id `com.silent.vpn`, SKU любой, например `silent-vpn-ios`.
+   - `io.github.silentvpn3.silentvpn`
+   - `io.github.silentvpn3.silentvpn.tunnel`
+   У обоих включите **Network Extensions** (Packet Tunnel) и **App Groups**. Группа одна: `group.io.github.silentvpn3.silentvpn`. Её же отметьте у обоих идентификаторов.
+8. В App Store Connect создайте приложение: имя Silent VPN, bundle id `io.github.silentvpn3.silentvpn`, SKU любой, например `silent-vpn-ios`.
 9. В Xcode выберите цель **Silent** → Signing & Capabilities → Team (ваша команда). То же у цели **SilentTunnel**. Если Xcode ругается на capabilities, нажмите, чтобы он сам поправил профиль. Bundle id не меняйте.
 10. Подключите свой iPhone кабелем, выберите его и нажмите Run. Разрешите VPN, когда iOS спросит. Проверьте вход, тариф и тумблер. В контейнере группы появится `engine/wdtt.log`, если канал не встанет.
 11. **Product → Archive**. Когда архив готов: **Distribute App → App Store Connect → Upload**.

@@ -1,0 +1,83 @@
+name: Silent VPN iOS
+
+on:
+  push:
+    branches: [ios]
+    tags: ['ios-testflight-*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      IOS_ANDROID_SHA: 4a9bea240113230f820fe7cf33bc96c0274f49a6
+    steps:
+      - name: Check out iOS
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: ios
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate TestFlight tag
+        if: github.ref_type == 'tag'
+        working-directory: ios
+        run: |
+          build_number="${GITHUB_REF_NAME#ios-testflight-}"
+          if [[ ! "$build_number" =~ ^[1-9][0-9]{0,3}$ ]]; then
+            echo 'Use an ios-testflight-N tag with an unused build number from 1 to 9999.' >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD refs/remotes/origin/ios
+          printf 'IOS_BUILD_NUMBER=%s\n' "$build_number" >> "$GITHUB_ENV"
+
+      - name: Check out Go engine sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.IOS_ANDROID_SHA }}
+          path: android
+          sparse-checkout: |
+            app/wdtt-go
+            app/site-router
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+
+      - name: Generate Xcode project with the VPN engine
+        working-directory: ios
+        run: |
+          xcodebuild -version
+          sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          [[ "${sdk_version%%.*}" -ge 26 ]]
+          brew list --versions xcodegen || brew install xcodegen
+          bash scripts/build-libwdtt.sh
+          test -s SilentTunnel/Native/libwdtt.a
+          xcrun lipo -verify_arch arm64 SilentTunnel/Native/libwdtt.a
+          xcodegen generate
+
+      - name: Compile for iPhone without signing
+        if: github.ref_type == 'branch'
+        working-directory: ios
+        run: |
+          xcodebuild -project Silent.xcodeproj -scheme Silent -configuration Release \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+
+      - name: Sign, export and upload to App Store Connect
+        if: github.ref_type == 'tag'
+        working-directory: ios
+        env:
+          IOS_DISTRIBUTION_P12: ${{ secrets.IOS_DISTRIBUTION_P12 }}
+          IOS_DISTRIBUTION_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_PASSWORD }}
+          IOS_APP_PROFILE: ${{ secrets.IOS_APP_PROFILE }}
+          IOS_TUNNEL_PROFILE: ${{ secrets.IOS_TUNNEL_PROFILE }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: bash scripts/upload-testflight.sh

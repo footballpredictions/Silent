@@ -31,6 +31,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.silent.vpn
+        PROVISIONING_PROFILE_SPECIFIER: "$(SILENT_APP_PROFILE)"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Silent VPN
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -71,9 +72,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.silent.vpn.tunnel
+        PROVISIONING_PROFILE_SPECIFIER: "$(SILENT_TUNNEL_PROFILE)"
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: SilentTunnel/SilentTunnel-Bridging-Header.h
-        OTHER_LDFLAGS: "@$(SRCROOT)/SilentTunnel/Generated/link.resp"
+        OTHER_LDFLAGS: '"@$(SRCROOT)/SilentTunnel/Generated/link.resp"'
     info:
       path: SilentTunnel/Info.plist
       properties:
@@ -94,7 +96,7 @@ targets:
           mkdir -p "$GEN" "$SRCROOT/SilentTunnel/Native"
           if [ -f "$SRCROOT/SilentTunnel/Native/libwdtt.a" ]; then
             printf '%s\n' '/* symbols come from libwdtt.a */' > "$GEN/EngineBridge.c"
-            printf '%s\n' '-force_load $(SRCROOT)/SilentTunnel/Native/libwdtt.a' > "$GEN/link.resp"
+            printf '%s\n' "-force_load \"$SRCROOT/SilentTunnel/Native/libwdtt.a\"" > "$GEN/link.resp"
             printf '%s\n' '-framework CoreFoundation' >> "$GEN/link.resp"
             printf '%s\n' '-framework Security' >> "$GEN/link.resp"
             printf '%s\n' '-framework Foundation' >> "$GEN/link.resp"

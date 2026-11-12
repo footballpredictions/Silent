@@ -46,7 +46,8 @@ export CGO_LDFLAGS="-isysroot ${SDK} -arch arm64 -miphoneos-version-min=16.0"
 
 mkdir -p "$OUT"
 echo "Собираю libwdtt.a …"
-go build -tags ios -ldflags '-s -w -checklinkname=0' -buildmode=c-archive -o "$OUT/libwdtt.a" .
+# The temporary module also contains the iOS bridge and shared routing sources.
+go build -mod=mod -tags ios -ldflags '-s -w -checklinkname=0' -buildmode=c-archive -o "$OUT/libwdtt.a" .
 
 echo "Готово: $OUT/libwdtt.a"
 echo "Дальше в папке ios: xcodegen generate && open Silent.xcodeproj"

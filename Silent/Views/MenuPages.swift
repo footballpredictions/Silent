@@ -329,10 +329,12 @@ private struct DnsPage: View {
 
 private struct ServerPage: View {
     @EnvironmentObject var vm: MainViewModel
+    @State private var pending: VpnServer?
+    @State private var loading = false
 
     var body: some View {
         let p = vm.palette
-        let locked = vm.vpnState == .connected || vm.vpnState == .connecting
+        let locked = vm.vpnState != .disconnected
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Выбор сервера").font(.headline.weight(.semibold)).foregroundColor(p.fg)
@@ -342,27 +344,50 @@ private struct ServerPage: View {
                 if !vm.serverHint.isEmpty {
                     Text(vm.serverHint).font(.footnote).foregroundColor(p.fg.opacity(0.7))
                 }
+                if loading || vm.selectingServer {
+                    ProgressView(vm.selectingServer ? "Применяем выбор…" : "Загружаем серверы…")
+                        .tint(p.fg)
+                } else if vm.servers.isEmpty {
+                    Button("Повторить") { Task { await loadServers() } }
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(p.link)
+                        .frame(minHeight: 44)
+                }
                 ForEach(vm.servers) { server in
-                    Button { Task { await vm.selectServer(server.key) } } label: {
+                    let selected = vm.selectedServer == server.key
+                    Button { pending = server } label: {
                         HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(server.title).font(.headline.weight(.semibold)).foregroundColor(p.fg)
-                                if let ip = server.public_ip, !ip.isEmpty {
-                                    Text(ip).font(.footnote).foregroundColor(p.fg.opacity(0.65))
-                                }
-                            }
+                            Text(server.title).font(.body.weight(.medium)).foregroundColor(p.fg)
                             Spacer()
-                            Image(systemName: vm.selectedServer == server.key ? "largecircle.fill.circle" : "circle")
+                            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
                                 .foregroundColor(p.fg.opacity(locked ? 0.35 : 1))
                         }
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 48)
+                        .background(p.fg.opacity(selected ? 0.07 : 0.035), in: RoundedRectangle(cornerRadius: 12))
+                        .contentShape(Rectangle())
                     }
-                    .disabled(locked)
+                    .buttonStyle(.plain)
+                    .disabled(locked || vm.selectingServer || selected)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
             .padding(16)
         }
-        .task { await vm.refreshServers() }
+        .task { await loadServers() }
+        .alert("Применить выбор?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), presenting: pending) { server in
+            Button("Применить") { Task { await vm.selectServer(server.key) } }
+            Button("Отмена", role: .cancel) {}
+        } message: { server in
+            Text("При следующем подключении будет использован «\(server.title)».")
+        }
+    }
+
+    private func loadServers() async {
+        guard !loading else { return }
+        loading = true
+        defer { loading = false }
+        await vm.refreshServers()
     }
 }
 

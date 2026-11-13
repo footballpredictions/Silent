@@ -69,13 +69,7 @@ struct MainView: View {
                     }
                     .accessibilityLabel("Меню")
                     Spacer()
-                    Button(action: vm.toggleAppearance) {
-                        Image(systemName: vm.darkMode ? "sun.max" : "moon")
-                            .font(AppFont.text(16, weight: .medium))
-                            .foregroundColor(p.fg)
-                            .frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("Сменить тему")
+                    ThemeModeButton(dark: vm.darkMode, ink: p.fg, action: vm.toggleAppearance)
                     ConnectionLogButton(palette: p)
                 }
                 .padding(.horizontal, 8)
@@ -297,7 +291,7 @@ struct BigToggle: View {
             TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || scenePhase != .active || (!isOn && !isLoading))) { context in
                 track(at: context.date.timeIntervalSinceReferenceDate)
             }
-            .frame(width: 144, height: 86)
+            .frame(width: 154, height: 92)
             .contentShape(Rectangle())
         }
         .buttonStyle(VpnToggleButtonStyle(reduceMotion: reduceMotion))
@@ -315,10 +309,10 @@ struct BigToggle: View {
             if isOn {
                 Capsule()
                     .fill(onColor.opacity(0.20))
-                    .frame(width: 120, height: 60)
+                    .frame(width: 132, height: 66)
                     .scaleEffect(pulse)
             }
-            Capsule().fill(color).frame(width: 120, height: 60)
+            Capsule().fill(color).frame(width: 132, height: 66)
             Circle()
                 .fill(bg)
                 .overlay {
@@ -332,9 +326,9 @@ struct BigToggle: View {
                         Circle().strokeBorder(color, lineWidth: 2)
                     }
                 }
-                .frame(width: 48, height: 48)
+                .frame(width: 52, height: 52)
                 .scaleEffect(isLoading ? thumb : 1)
-                .offset(x: isOn ? 32 : -32)
+                .offset(x: isOn ? 35 : -35)
                 .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.7), value: isOn)
         }
     }

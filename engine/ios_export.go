@@ -16,6 +16,7 @@ import "C"
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -37,8 +38,10 @@ import (
 // пакеты utun ходят через wdtt_input / callback. Файл собирается только с -tags ios.
 
 var (
+	engineLifeMu  sync.Mutex
 	engineMu      sync.Mutex
 	engineCancel  context.CancelFunc
+	engineDone    <-chan struct{}
 	engineDev     *device.Device
 	engineAddress string
 	engineTUN     *flowTUN
@@ -126,12 +129,20 @@ func wdtt_set_russian_policy(raw *C.char) C.int {
 
 //export wdtt_stop
 func wdtt_stop() {
+	engineLifeMu.Lock()
+	defer engineLifeMu.Unlock()
+	stopIOSEngine()
+}
+
+func stopIOSEngine() {
 	engineMu.Lock()
 	cancel := engineCancel
+	done := engineDone
 	dev := engineDev
 	t := engineTUN
 	logFile := engineLog
 	engineCancel = nil
+	engineDone = nil
 	engineDev = nil
 	engineAddress = ""
 	engineTUN = nil
@@ -139,6 +150,9 @@ func wdtt_stop() {
 	engineMu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if done != nil {
+		<-done
 	}
 	if dev != nil {
 		dev.Close()
@@ -163,7 +177,9 @@ func wdtt_start(
 	mtu C.int,
 	workDir *C.char,
 ) C.int {
-	wdtt_stop()
+	engineLifeMu.Lock()
+	defer engineLifeMu.Unlock()
+	stopIOSEngine()
 	setEngineErr("")
 	runtime.GOMAXPROCS(2)
 	debug.SetGCPercent(50)
@@ -203,57 +219,26 @@ func wdtt_start(
 		return 3
 	}
 
-	nWorkers := workersPerGroup
-
-	peerAddr := fmt.Sprintf("%s:%d", ip, port)
+	peerAddr := net.JoinHostPort(ip, fmt.Sprint(port))
 	peer, err := net.ResolveUDPAddr("udp", peerAddr)
 	if err != nil {
 		setEngineErr(err.Error())
 		return 4
 	}
 
-	localConn, err := net.ListenPacket("udp", "127.0.0.1:9000")
-	if err != nil {
-		localConn, err = net.ListenPacket("udp", "127.0.0.1:0")
-	}
-	if err != nil {
-		setEngineErr(err.Error())
-		return 5
-	}
-	if uc, ok := localConn.(*net.UDPConn); ok {
-		_ = uc.SetReadBuffer(socketBufSize)
-		_ = uc.SetWriteBuffer(socketBufSize)
-	}
-	_, localPort, _ := net.SplitHostPort(localConn.LocalAddr().String())
-	if localPort == "" {
-		localPort = "9000"
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	stopLocal := context.AfterFunc(ctx, func() { _ = localConn.Close() })
-	configCh := make(chan string, 1)
-	workersDone := make(chan struct{})
-	go func() {
-		defer close(workersDone)
-		runIOSWorkers(ctx, localConn, peer, hashes, wrapKey, devID, pass, nWorkers, localPort, configCh)
-	}()
-
-	var relayConfig relayWireGuardConfig
-	var configErr error
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	select {
-	case raw := <-configCh:
-		relayConfig, configErr = parseRelayWireGuardConfig(raw, localPort)
-	case <-workersDone:
-		configErr = fmt.Errorf("Ретрансляторы не установили связь с сервером")
-	case <-timer.C:
-		configErr = fmt.Errorf("Сервер не выдал конфигурацию VPN за 30 секунд")
-	}
+	var attempt int
+	relay, configErr := tryIOSRelayHashes(ctx, hashes, func(ctx context.Context, hash string, budget time.Duration) (iosRelay, error) {
+		attempt++
+		log.Printf("[iOS] попытка подключения к ретранслятору №%d", attempt)
+		return startIOSRelay(ctx, peer, hash, wrapKey, devID, pass, budget, attempt)
+	})
 	if configErr != nil {
 		cancel()
-		_ = localConn.Close()
 		setEngineErr(configErr.Error())
+		if errors.Is(configErr, errIOSRelaySocket) {
+			return 5
+		}
 		return 6
 	}
 
@@ -264,44 +249,115 @@ func wdtt_start(
 	flow := newFlowTUN(mtuN)
 	logger := device.NewLogger(device.LogLevelError, "[wg] ")
 	wgDev := device.NewDevice(flow, conn.NewStdNetBind(), logger)
-	if err := wgDev.IpcSet(relayConfig.uapi); err != nil {
+	if err := wgDev.IpcSet(relay.config.uapi); err != nil {
 		wgDev.Close()
 		cancel()
-		stopLocal()
-		_ = localConn.Close()
+		<-relay.done
 		setEngineErr(err.Error())
 		return 7
 	}
 	if err := wgDev.Up(); err != nil {
 		wgDev.Close()
 		cancel()
-		stopLocal()
-		_ = localConn.Close()
+		<-relay.done
 		setEngineErr(err.Error())
 		return 8
 	}
 
 	engineMu.Lock()
 	engineCancel = cancel
+	engineDone = relay.done
 	engineDev = wgDev
-	engineAddress = relayConfig.address
+	engineAddress = relay.config.address
 	engineTUN = flow
 	engineMu.Unlock()
 
-	log.Printf("[iOS] слушаю 127.0.0.1:%s peer %s workers %d", localPort, peerAddr, nWorkers)
+	log.Printf("[iOS] WireGuard готов; каналов: %d", workersPerGroup)
 	return 0
+}
+
+var errIOSRelaySocket = errors.New("Не удалось открыть локальный сокет VPN")
+
+type iosRelay struct {
+	config relayWireGuardConfig
+	done   <-chan struct{}
+}
+
+func startIOSRelay(parent context.Context, peer *net.UDPAddr, hash string, wrapKey []byte, deviceID, password string, budget time.Duration, groupID int) (iosRelay, error) {
+	localConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		return iosRelay{}, errIOSRelaySocket
+	}
+	_ = localConn.SetReadBuffer(socketBufSize)
+	_ = localConn.SetWriteBuffer(socketBufSize)
+	localPort := fmt.Sprint(localConn.LocalAddr().(*net.UDPAddr).Port)
+	ctx, cancel := context.WithCancel(parent)
+	stopLocal := context.AfterFunc(ctx, func() { _ = localConn.Close() })
+	configCh := make(chan string, 1)
+	credentialFailure := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer stopLocal()
+		defer cancel()
+		defer localConn.Close()
+		// The worker group reads these same credentials from cache. Fetch them
+		// here so an early failure is distinguishable from GETCONF timing out.
+		if _, _, _, err := GetCreds(ctx, hash, groupID*100); err != nil {
+			select {
+			case credentialFailure <- iosCredentialError(err):
+			case <-ctx.Done():
+			}
+			return
+		}
+		runIOSWorkers(ctx, localConn, peer, hash, wrapKey, deviceID, password, localPort, configCh, groupID)
+	}()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case err = <-credentialFailure:
+	case raw := <-configCh:
+		config, parseErr := parseRelayWireGuardConfig(raw, localPort)
+		if parseErr == nil && ctx.Err() == nil {
+			return iosRelay{config: config, done: done}, nil
+		}
+		err = errors.New("Ретранслятор выдал некорректную конфигурацию VPN")
+	case <-done:
+		select {
+		case err = <-credentialFailure:
+		default:
+			err = errors.New("Ретрансляторы завершились до получения конфигурации VPN")
+		}
+	case <-timer.C:
+		err = errors.New("Ретрансляторы не получили конфигурацию VPN вовремя")
+	case <-parent.Done():
+		err = parent.Err()
+	}
+	cancel()
+	<-done
+	return iosRelay{}, err
+}
+
+func iosCredentialError(err error) error {
+	if _, unavailable := asCallUnavailableError(err); unavailable {
+		return errors.New("VK не подтвердил доступность звонка для ретранслятора")
+	}
+	if vkCallsIsFlood(err) {
+		return errors.New("VK ограничил частоту запросов к ретрансляторам")
+	}
+	return errors.New("Не удалось получить параметры ретранслятора VK")
 }
 
 func runIOSWorkers(
 	ctx context.Context,
 	localConn net.PacketConn,
 	peer *net.UDPAddr,
-	hashes []string,
+	hash string,
 	wrapKey []byte,
 	deviceID, password string,
-	numW int,
 	localPort string,
 	configCh chan<- string,
+	groupID int,
 ) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -320,42 +376,13 @@ func runIOSWorkers(
 	disp := NewDispatcher(ctx, localConn, stats)
 	defer disp.Shutdown()
 
-	tp := &TurnParams{Hashes: hashes, WrapKey: wrapKey}
-	numGroups := numW / workersPerGroup
-	hashCount := len(hashes)
-	if hashCount < 1 {
-		hashCount = 1
+	tp := &TurnParams{Hashes: []string{hash}, WrapKey: wrapKey}
+	ids := make([]int, workersPerGroup)
+	for i := range ids {
+		ids[i] = (groupID-1)*workersPerGroup + i + 1
 	}
-	var wg sync.WaitGroup
-	workerID := 1
-	var groupGate chan struct{}
-	first := make(chan struct{})
-	close(first)
-	groupGate = first
-
-	for g := 0; g < numGroups; g++ {
-		ids := make([]int, workersPerGroup)
-		for i := range ids {
-			ids[i] = workerID
-			workerID++
-		}
-		gID := g + 1
-		waitReady := groupGate
-		var signalNext chan struct{}
-		if g < numGroups-1 {
-			signalNext = make(chan struct{})
-			groupGate = signalNext
-		}
-		hashIdx := g % hashCount
-		wg.Add(1)
-		safeGo("worker-group", func() {
-			defer wg.Done()
-			WorkerGroup(ctx, gID, hashIdx, tp, peer, disp, localPort,
-				true, configCh, ids, &iosPause, deviceID, password, stats, waitReady, signalNext)
-		})
-	}
-	wg.Wait()
-	log.Println("[iOS] воркеры остановлены")
+	WorkerGroup(ctx, groupID, 0, tp, peer, disp, localPort,
+		true, configCh, ids, &iosPause, deviceID, password, stats, nil, nil)
 }
 
 //export wdtt_assigned_address

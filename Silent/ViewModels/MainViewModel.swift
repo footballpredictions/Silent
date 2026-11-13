@@ -25,6 +25,7 @@ final class MainViewModel: ObservableObject {
     @Published var authError: String?
     @Published var bootstrapDeadline: Date?
     @Published var bootstrapStarting = false
+    @Published private(set) var bootstrapFailed = false
     @Published private(set) var connectionLog: [VPNLogEntry] = []
     @Published var regNeedMail = false
     @Published var forgotSent = false
@@ -54,6 +55,7 @@ final class MainViewModel: ObservableObject {
     @Published var servers: [VpnServer] = []
     @Published var selectedServer = LocalStore.preferredServer
     @Published var serverHint = ""
+    @Published private(set) var selectingServer = false
 
     @Published var siteRules: [String] = LocalStore.siteRules
     @Published var sitesWhitelist = LocalStore.sitesWhitelist
@@ -73,6 +75,7 @@ final class MainViewModel: ObservableObject {
     private var canRecoverTunnel = false
     private var tunnelRecovery: Task<Void, Never>?
     private var profileLoading = false
+    private var serverSelectionVersion = 0
 
     private let bootstrapHash = (Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -194,6 +197,7 @@ final class MainViewModel: ObservableObject {
         bootstrapAttempted = true
         bootstrapActive = true
         bootstrapStarting = true
+        bootstrapFailed = false
         if launchStage != nil { launchStage = .configuration }
         defer { bootstrapStarting = false }
         var stage = "Не удалось получить настройки временного VPN"
@@ -233,6 +237,7 @@ final class MainViewModel: ObservableObject {
         } catch {
             await vpn.disconnect()
             bootstrapActive = false
+            bootstrapFailed = true
             let message = "\(stage). \(error.localizedDescription)"
             authError = message
             logConnection(message, level: .error)
@@ -246,6 +251,13 @@ final class MainViewModel: ObservableObject {
         bootstrapDeadline = nil
         bootstrapActive = false
         bootstrapStarting = false
+    }
+
+    func retryBootstrap() async {
+        guard !authLoading, !bootstrapStarting, !bootstrapActive, !loggedIn else { return }
+        bootstrapAttempted = false
+        authError = nil
+        await startBootstrap()
     }
 
     func toggleAppearance() {
@@ -284,6 +296,7 @@ final class MainViewModel: ObservableObject {
         await stopBootstrap()
         profile = loaded
         loggedIn = true
+        bootstrapFailed = false
     }
 
     private func rememberLoginSession() {
@@ -368,6 +381,7 @@ final class MainViewModel: ObservableObject {
         tunnelRecovery?.cancel()
         canRecoverTunnel = false
         sessionsVersion += 1
+        serverSelectionVersion += 1
         Task {
             if vpnState == .connected || vpnState == .connecting {
                 await vpn.disconnect()
@@ -376,6 +390,8 @@ final class MainViewModel: ObservableObject {
             bootstrapAttempted = false
             profile = nil
             loggedIn = false
+            servers = []
+            serverHint = ""
             vpnState = .disconnected
             connectedAt = nil
             menuOpen = false
@@ -386,7 +402,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func toggleVPN() async {
-        guard !vpnActionInProgress else { return }
+        guard !vpnActionInProgress, !selectingServer else { return }
         tunnelRecovery?.cancel()
         vpnActionInProgress = true
         defer { vpnActionInProgress = false }
@@ -410,14 +426,28 @@ final class MainViewModel: ObservableObject {
         vpnState = .connecting
         logConnection("Запрос настроек VPN")
         var sessionStarted = false
-        var stage = "Не удалось получить настройки VPN"
+        var stage = "Сервер не подтвердил подключение VPN"
         do {
-            let cfg = try await api.registerDevice(name: UIDevice.current.name, preferredServer: selectedServer)
+            let preferred = selectedServer
+            do {
+                try await api.connect(preferredServer: preferred)
+            } catch APIError.http(404, _) {
+                _ = try await api.registerDevice(name: UIDevice.current.name, preferredServer: preferred)
+                try await api.connect(preferredServer: preferred)
+            }
+            sessionStarted = true
+            stage = "Не удалось получить настройки VPN"
+            // connect provisions missing per-account relay hashes; reading the
+            // config first could leave this attempt using stale bootstrap hashes.
+            let cfg = try await api.vpnConfig(preferredServer: preferred)
             if let profile { UserDefaults.standard.set(cfg.device_id, forKey: "vpn-session-\(profile.id)") }
             logConnection("Конфигурация получена. Подготовка сессии")
-            stage = "Сервер не подтвердил подключение VPN"
-            try await api.connect(preferredServer: cfg.selected_server ?? selectedServer)
-            sessionStarted = true
+            if let confirmed = cfg.selected_server?.lowercased(), confirmed != selectedServer,
+               ServerCatalog.slots.contains(where: { $0.key == confirmed }) {
+                serverSelectionVersion += 1
+                selectedServer = confirmed
+                LocalStore.preferredServer = confirmed
+            }
             stage = "Не удалось запустить туннель"
             logConnection("Ожидание ответа сервера VPN")
             let tunnel = makeTunnel(cfg)
@@ -606,45 +636,53 @@ final class MainViewModel: ObservableObject {
     }
 
     func refreshServers() async {
-        let fallback = ServerCatalog.slots.map {
-            VpnServer(key: $0.key, title: $0.title, public_ip: ServerCatalog.bakedIP($0.key), wdtt_port: nil, online_count: nil)
-        }
-        if let body = try? await api.fetchServers() {
-            var byKey: [String: VpnServer] = [:]
-            for item in body.servers {
-                byKey[item.key.lowercased()] = item
-            }
-            servers = ServerCatalog.slots.map { slot in
-                if let known = byKey.removeValue(forKey: slot.key) {
-                    let title = (slot.key == "server4" && (known.title.isEmpty || known.title == "Сервер 4")) ? slot.title : (known.title.isEmpty ? slot.title : known.title)
-                    return VpnServer(key: slot.key, title: title, public_ip: known.public_ip, wdtt_port: known.wdtt_port, online_count: known.online_count)
-                }
-                return fallback.first { $0.key == slot.key }!
-            }
-            if let selected = body.selected_server?.lowercased(), selected.hasPrefix("server") {
-                selectedServer = selected
-                LocalStore.preferredServer = selected
-            }
-        } else if servers.isEmpty {
-            servers = fallback
+        guard loggedIn, !selectingServer else { return }
+        let version = serverSelectionVersion
+        let account = profile?.id
+        do {
+            let body = try await api.fetchServers()
+            guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion else { return }
+            applyServers(body)
+            serverHint = ""
+        } catch {
+            guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion, servers.isEmpty else { return }
+            serverHint = "Не удалось загрузить список серверов. Попробуйте ещё раз."
         }
     }
 
     func selectServer(_ key: String) async {
-        if vpnState == .connected || vpnState == .connecting {
+        guard loggedIn, !selectingServer, key != selectedServer, servers.contains(where: { $0.key == key }) else { return }
+        guard vpnState == .disconnected, !vpnActionInProgress else {
             serverHint = "Отключите VPN перед сменой сервера."
             return
         }
+        serverSelectionVersion += 1
+        selectingServer = true
+        serverHint = ""
+        let account = profile?.id
+        defer { selectingServer = false }
         do {
-            _ = try await api.selectServer(key)
-            selectedServer = key
-            LocalStore.preferredServer = key
-            serverHint = ""
-            await refreshServers()
+            let body = try await api.selectServer(key)
+            guard loggedIn, profile?.id == account else { return }
+            applyServers(body)
+            serverHint = selectedServer == key ? "Сервер выбран" : "Сервер предложил другой доступный вариант"
         } catch {
-            selectedServer = key
-            LocalStore.preferredServer = key
+            guard loggedIn, profile?.id == account else { return }
             serverHint = error.localizedDescription
+        }
+    }
+
+    private func applyServers(_ body: VpnServersBody) {
+        var seen = Set<String>()
+        servers = body.servers.compactMap { item in
+            let key = item.key.lowercased()
+            guard let slot = ServerCatalog.slots.first(where: { $0.key == key }), seen.insert(key).inserted else { return nil }
+            let title = (item.title.isEmpty || (key == "server4" && item.title == "Сервер 4")) ? slot.title : item.title
+            return VpnServer(key: key, title: title)
+        }
+        if let selected = body.selected_server?.lowercased(), servers.contains(where: { $0.key == selected }) {
+            selectedServer = selected
+            LocalStore.preferredServer = selected
         }
     }
 

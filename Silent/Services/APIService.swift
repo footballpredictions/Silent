@@ -125,7 +125,7 @@ class APIService: ObservableObject {
         }
         guard (200..<300).contains(httpResp.statusCode) else {
             let detail = serverDetail(data) ?? "Ошибка \(httpResp.statusCode)"
-            throw APIError.server(detail)
+            throw APIError.http(httpResp.statusCode, detail)
         }
         return data
     }
@@ -224,27 +224,44 @@ class APIService: ObservableObject {
             let device_type = "ios"
         }
         let req = Req(bootstrap_hash: hash, device_fingerprint: deviceFingerprint)
-        var lastCode: Int?
-        for base in PublicApiFailover.bootstrapHTTPS {
-            try Task.checkCancellation()
-            let port = URL(string: base)?.port ?? 443
-            onAttempt("HTTPS :\(port): запрос конфигурации")
-            do {
-                let data = try await requestOnce("api/vpn/bootstrap-config", method: "POST", body: req,
-                                                 auth: false, base: base, allowRefresh: false, verifyTLS: true, timeout: 9)
-                let config = try JSONDecoder().decode(VpnConfig.self, from: data)
-                onAttempt("HTTPS :\(port): конфигурация получена")
-                return config
-            } catch let error as URLError {
-                lastCode = error.code.rawValue
-                onAttempt("HTTPS :\(port): ошибка сети \(error.code.rawValue)")
-            } catch APIError.network {
-                lastCode = nil
-                onAttempt("HTTPS :\(port): сервер не ответил")
+        let body = try JSONEncoder().encode(req)
+        let path = "api/vpn/bootstrap-config"
+        for port in PublicApiFailover.bootstrapPorts {
+            for direct in [false, true] {
+                try Task.checkCancellation()
+                let label = "HTTPS :\(port)" + (direct ? " без DNS" : "")
+                onAttempt("\(label): запрос конфигурации")
+                do {
+                    let data: Data
+                    if direct {
+                        let response = try await BootstrapHTTPS.post(body, port: port)
+                        if PublicApiFailover.shouldTryNextBase(httpCode: response.status) { throw APIError.network }
+                        guard (200..<300).contains(response.status) else {
+                            throw APIError.http(response.status, serverDetail(response.body) ?? "Ошибка \(response.status)")
+                        }
+                        data = response.body
+                    } else {
+                        let base = port == 443 ? PublicApiFailover.hiveHttps : PublicApiFailover.hiveAlternateHTTPS
+                        data = try await requestOnce(path, method: "POST", body: req,
+                                                     auth: false, base: base, allowRefresh: false, verifyTLS: true, timeout: 5)
+                    }
+                    let config = try JSONDecoder().decode(VpnConfig.self, from: data)
+                    onAttempt("\(label): конфигурация получена")
+                    return config
+                } catch let error as APIError {
+                    if case .http = error { throw error }
+                    onAttempt("\(label): сервер не ответил")
+                } catch {
+                    try Task.checkCancellation()
+                    if let network = error as? URLError {
+                        onAttempt("\(label): ошибка сети \(network.code.rawValue)")
+                    } else {
+                        onAttempt("\(label): не получен корректный ответ")
+                    }
+                }
             }
         }
-        let detail = lastCode.map { " (код сети \($0))" } ?? ""
-        throw APIError.bootstrapUnavailable("Сервер временного VPN недоступен\(detail)")
+        throw APIError.bootstrapUnavailable("Сервер временного VPN не ответил. Попробуйте другую сеть или повторите подключение.")
     }
 
     func checkTunnelGateway() async throws {
@@ -328,19 +345,22 @@ class APIService: ObservableObject {
     }
 
     func fetchServers() async throws -> VpnServersBody {
-        try await request("api/vpn/servers")
+        try await request(PublicApiFailover.serverQuery("api/vpn/servers", fingerprint: deviceFingerprint))
+    }
+
+    func vpnConfig(preferredServer: String) async throws -> VpnConfig {
+        try await request(PublicApiFailover.serverQuery("api/vpn/config", fingerprint: deviceFingerprint, preferred: preferredServer))
     }
 
     func selectServer(_ slot: String) async throws -> VpnServersBody {
         struct Req: Encodable {
             let device_fingerprint: String
             let preferred_server: String
-            let app_version: String
         }
         return try await request(
             "api/vpn/servers/select",
             method: "POST",
-            body: Req(device_fingerprint: deviceFingerprint, preferred_server: slot, app_version: "1.0.0")
+            body: Req(device_fingerprint: deviceFingerprint, preferred_server: slot)
         )
     }
 
@@ -361,6 +381,7 @@ class APIService: ObservableObject {
 enum APIError: LocalizedError {
     case noServer, invalidURL, network, unauthorized
     case server(String)
+    case http(Int, String)
     case bootstrapUnavailable(String)
     var errorDescription: String? {
         switch self {
@@ -368,7 +389,7 @@ enum APIError: LocalizedError {
         case .invalidURL: return "Неверный URL"
         case .network: return "Ошибка сети"
         case .unauthorized: return "Необходима авторизация"
-        case .server(let msg), .bootstrapUnavailable(let msg): return msg
+        case .server(let msg), .http(_, let msg), .bootstrapUnavailable(let msg): return msg
         }
     }
 }

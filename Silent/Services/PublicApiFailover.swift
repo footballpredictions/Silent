@@ -2,10 +2,20 @@ import Foundation
 
 /// При активном VPN сначала шлюз туннеля; публичные адреса остаются резервом.
 enum PublicApiFailover {
-    static let hiveHttps = "https://89-125-188-100.nip.io"
+    static let hiveHost = "89-125-188-100.nip.io"
+    static let hiveIP = "89.125.188.100"
+    static let hiveHttps = "https://\(hiveHost)"
     static let hiveAlternateHTTPS = "\(hiveHttps):2083"
-    static let bootstrapHTTPS = [hiveHttps, hiveAlternateHTTPS]
-    static let hiveIpHttps = "https://89.125.188.100"
+    static let bootstrapPorts: [UInt16] = [443, 2083]
+    static let hiveIpHttps = "https://\(hiveIP)"
+
+    static func serverQuery(_ path: String, fingerprint: String, preferred: String? = nil) -> String {
+        var components = URLComponents()
+        components.path = path
+        components.queryItems = [URLQueryItem(name: "fingerprint", value: fingerprint)]
+        if let preferred { components.queryItems?.append(URLQueryItem(name: "preferred_server", value: preferred)) }
+        return components.string ?? path
+    }
     static let cells = [
         "http://87.58.213.193:9100",
         "http://78.17.74.27:9100",

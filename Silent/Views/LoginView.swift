@@ -16,13 +16,7 @@ struct LoginView: View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
-                Button(action: vm.toggleAppearance) {
-                    Image(systemName: vm.darkMode ? "sun.max" : "moon")
-                        .font(AppFont.text(16, weight: .medium))
-                        .foregroundColor(p.fg)
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Сменить тему")
+                ThemeModeButton(dark: vm.darkMode, ink: p.fg, action: vm.toggleAppearance)
                 ConnectionLogButton(palette: p)
             }
             .padding(.horizontal, 16)
@@ -105,6 +99,13 @@ struct LoginView: View {
                         }
                         if let authError = vm.authError {
                             Text(authError).font(.footnote).foregroundColor(.red)
+                        }
+                        if vm.bootstrapFailed && !vm.bootstrapStarting {
+                            Button("Повторить временный VPN") { Task { await vm.retryBootstrap() } }
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(p.link)
+                                .frame(minHeight: 44, alignment: .leading)
+                                .disabled(vm.authLoading)
                         }
                     }
                     .frame(maxWidth: 440)

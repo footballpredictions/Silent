@@ -174,9 +174,6 @@ struct VpnServer: Decodable, Identifiable {
     var id: String { key }
     let key: String
     let title: String
-    let public_ip: String?
-    let wdtt_port: Int?
-    let online_count: Int?
 }
 
 struct VpnServersBody: Decodable {
@@ -327,17 +324,6 @@ enum ServerCatalog {
         ("server4", "Сервер 4 для ИИ"),
         ("server5", "Сервер 5"),
     ]
-
-    static func bakedIP(_ key: String) -> String? {
-        switch key {
-        case "server1": return "89.125.188.100"
-        case "server2": return "87.58.213.193"
-        case "server3": return "78.17.74.27"
-        case "server4": return "192.177.26.38"
-        case "server5": return "89.37.192.241"
-        default: return nil
-        }
-    }
 
     static func mtu(slot: String, ip: String, recommended: Int? = nil) -> Int {
         if let mtu = recommended, (1200...1420).contains(mtu) { return mtu }

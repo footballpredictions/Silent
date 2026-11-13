@@ -24,15 +24,17 @@ if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
 fi
 
 go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"
+go test "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_start_test.go"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
+  "$ROOT/Silent/Services/BootstrapHTTPResponse.swift" \
   "$ROOT/scripts/test-session-api-policy.swift" -o "$TMP/silent-session-policy"
 "$TMP/silent-session-policy"
 rm "$TMP/silent-session-policy"
 cp -R "$SRC/." "$TMP/"
-cp "$EXPORT" "$ROOT/engine/wg_config.go" "$TMP/"
+cp "$EXPORT" "$ROOT/engine/wg_config.go" "$ROOT/engine/relay_start.go" "$TMP/"
 cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"
 sed '1s/!android || !arm/(!android || !arm) \&\& !ios/' "$SRC/platform_limits_default.go" > "$TMP/platform_limits_default.go"
 # The shared client targets large Android traffic bursts. Keep the per-worker

@@ -78,7 +78,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             } else {
                 raw = "Не удалось запустить сетевой модуль"
             }
-            VPNLog.write("Сетевой модуль вернул ошибку \(code)", level: .error)
+            let reason = code == 6 ? ": \(raw)" : ""
+            VPNLog.write("Сетевой модуль вернул ошибку \(code)\(reason)", level: .error)
             wdtt_stop()
             writeError(raw)
             completionHandler(tunnelError(raw))

@@ -19,6 +19,16 @@ struct SessionsApiPolicyTest {
             precondition(!PublicApiFailover.shouldTryNextBase(httpCode: code))
         }
         precondition(PublicApiFailover.shouldTryNextBase(httpCode: 503))
+        let hash = "Example_VK-hash-123456789"
+        precondition(BootstrapLaunch.callHash("https://vk.ru/call/join/\(hash)?from=invite") == hash)
+        precondition(BootstrapLaunch.callHash("https://vk.ru.example/call/join/\(hash)") == nil)
+        precondition(BootstrapLaunch.callHash("https://vk.ru/call/join/\(hash)/extra") == nil)
+        let local = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport", cell: 0)
+        let retry = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport", cell: 1)
+        precondition(local?.deviceId == "boot:test-device" && local?.hashes == [hash])
+        precondition(local?.bootstrapDuration == 120 && local?.address == "" && local?.serverPort == 56000)
+        precondition(local?.serverIP != retry?.serverIP && retry != nil)
+        precondition(BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "", cell: 0) == nil)
         let partial = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{".utf8)
         let incomplete = try BootstrapHTTPResponse.parse(partial, complete: false)
         precondition(incomplete == nil)

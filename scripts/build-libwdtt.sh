@@ -30,6 +30,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
   "$ROOT/Silent/Services/BootstrapHTTPResponse.swift" \
+  "$ROOT/Silent/Services/BootstrapLaunch.swift" \
+  "$ROOT/Shared/AppIdentity.swift" "$ROOT/Shared/RussianServices.swift" \
   "$ROOT/scripts/test-session-api-policy.swift" -o "$TMP/silent-session-policy"
 "$TMP/silent-session-policy"
 rm "$TMP/silent-session-policy"

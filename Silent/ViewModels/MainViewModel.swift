@@ -70,6 +70,7 @@ final class MainViewModel: ObservableObject {
     private var vpnObserver: AnyCancellable?
     private var bootstrapActive = false
     private var bootstrapAttempted = false
+    private var bootstrapCell = 0
     private var vpnActionInProgress = false
     private var connectedAt: Date?
     private var canRecoverTunnel = false
@@ -77,8 +78,12 @@ final class MainViewModel: ObservableObject {
     private var profileLoading = false
     private var serverSelectionVersion = 0
 
-    private let bootstrapHash = (Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+    private let bootstrapHash = BootstrapLaunch.callHash(Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "") ?? ""
+    private let bootstrapPassword: String = {
+        guard let encoded = Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapTransport") as? String,
+              let bytes = Data(base64Encoded: encoded), let password = String(data: bytes, encoding: .utf8) else { return "" }
+        return password
+    }()
     private let bootstrapCacheKey = "ios-vpn-bootstrap-config"
 
     var palette: Palette { Palette.resolve(theme: theme, dark: darkMode) }
@@ -202,12 +207,28 @@ final class MainViewModel: ObservableObject {
         defer { bootstrapStarting = false }
         var stage = "Не удалось получить настройки временного VPN"
         do {
+            if let local = BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
+                                                         password: bootstrapPassword, cell: bootstrapCell) {
+                logConnection("Временный VPN: запуск через Соту \(bootstrapCell + 1) без запроса HTTPS")
+                stage = "Не удалось запустить временный VPN"
+                do {
+                    try await connectBootstrap(local)
+                    return
+                } catch {
+                    await vpn.disconnect()
+                    try Task.checkCancellation()
+                    guard vpn.state == .disconnected else { throw error }
+                    logConnection("Временный VPN: сота не подтвердила подключение. Пробуем получить настройки через HTTPS", level: .error)
+                }
+            }
+
+            stage = "Не удалось получить настройки временного VPN"
             let config: TunnelConfig
             do {
                 let fresh = try await api.bootstrapConfig(hash: bootstrapHash) { [weak self] message in
                     self?.logConnection("Временный VPN: \(message)")
                 }
-                config = makeTunnel(fresh, bootstrapDuration: 120)
+                config = makeTunnel(fresh, bootstrapDuration: BootstrapLaunch.duration)
             } catch APIError.bootstrapUnavailable(let message) {
                 guard let value = KeychainHelper.get(bootstrapCacheKey), let data = Data(base64Encoded: value),
                       let saved = try? JSONDecoder().decode(BootstrapCache.self, from: data),
@@ -219,21 +240,8 @@ final class MainViewModel: ObservableObject {
                 logConnection("Сервер конфигурации недоступен. Используем сохранённые настройки временного VPN")
                 config = saved.config
             }
-            let duration = 120
             stage = "Не удалось запустить временный VPN"
-            if launchStage != nil { launchStage = .tunnel }
-            logConnection("Запуск временного VPN")
-            try await vpn.connect(config)
-            let deadline = Date().addingTimeInterval(TimeInterval(duration))
-            stage = "Временный VPN не передаёт данные"
-            if launchStage != nil { launchStage = .data }
-            try await api.checkTunnelGateway()
-            guard vpn.state == .connected else { throw APIError.network }
-            bootstrapDeadline = deadline
-            if let data = try? JSONEncoder().encode(BootstrapCache(savedAt: Date(), config: config)) {
-                KeychainHelper.set(data.base64EncodedString(), key: bootstrapCacheKey)
-            }
-            logConnection("Временный VPN готов: шлюз ответил", level: .success)
+            try await connectBootstrap(config)
         } catch {
             await vpn.disconnect()
             bootstrapActive = false
@@ -242,6 +250,20 @@ final class MainViewModel: ObservableObject {
             authError = message
             logConnection(message, level: .error)
         }
+    }
+
+    private func connectBootstrap(_ config: TunnelConfig) async throws {
+        if launchStage != nil { launchStage = .tunnel }
+        try await vpn.connect(config)
+        let deadline = Date().addingTimeInterval(TimeInterval(BootstrapLaunch.duration))
+        if launchStage != nil { launchStage = .data }
+        try await api.checkTunnelGateway()
+        guard vpn.state == .connected else { throw APIError.network }
+        bootstrapDeadline = deadline
+        if let data = try? JSONEncoder().encode(BootstrapCache(savedAt: Date(), config: config)) {
+            KeychainHelper.set(data.base64EncodedString(), key: bootstrapCacheKey)
+        }
+        logConnection("Временный VPN готов: шлюз ответил", level: .success)
     }
 
     private func stopBootstrap() async {
@@ -256,6 +278,7 @@ final class MainViewModel: ObservableObject {
     func retryBootstrap() async {
         guard !authLoading, !bootstrapStarting, !bootstrapActive, !loggedIn else { return }
         bootstrapAttempted = false
+        bootstrapCell = (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count
         authError = nil
         await startBootstrap()
     }

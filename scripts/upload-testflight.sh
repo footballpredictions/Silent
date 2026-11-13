@@ -2,7 +2,7 @@
 set -euo pipefail
 
 for name in IOS_DISTRIBUTION_P12 IOS_DISTRIBUTION_PASSWORD IOS_APP_PROFILE \
-    IOS_TUNNEL_PROFILE ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY IOS_BUILD_NUMBER IOS_BOOTSTRAP_VK_HASH; do
+    IOS_TUNNEL_PROFILE ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY IOS_BUILD_NUMBER IOS_BOOTSTRAP_VK_HASH IOS_BOOTSTRAP_TRANSPORT; do
   if [[ -z "${!name:-}" ]]; then
     echo "Missing $name" >&2
     exit 1
@@ -92,12 +92,17 @@ mkdir "$work/private_keys"
 printf '%s' "$ASC_PRIVATE_KEY" | base64 -D > "$work/private_keys/AuthKey_${ASC_KEY_ID}.p8"
 unset IOS_DISTRIBUTION_P12 IOS_DISTRIBUTION_PASSWORD IOS_APP_PROFILE IOS_TUNNEL_PROFILE ASC_PRIVATE_KEY
 
-if [[ ! "$IOS_BOOTSTRAP_VK_HASH" =~ ^[A-Za-z0-9_-]+$ ]]; then
+if [[ ! "$IOS_BOOTSTRAP_VK_HASH" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
   echo 'Invalid iOS bootstrap hash format.' >&2
   exit 1
 fi
-printf 'SILENT_BOOTSTRAP_VK_HASH = %s\n' "$IOS_BOOTSTRAP_VK_HASH" > "$work/bootstrap.xcconfig"
-unset IOS_BOOTSTRAP_VK_HASH
+if [[ ! "$IOS_BOOTSTRAP_TRANSPORT" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+  echo 'Invalid iOS bootstrap transport format.' >&2
+  exit 1
+fi
+printf 'SILENT_BOOTSTRAP_VK_HASH = %s\nSILENT_BOOTSTRAP_TRANSPORT = %s\n' \
+  "$IOS_BOOTSTRAP_VK_HASH" "$IOS_BOOTSTRAP_TRANSPORT" > "$work/bootstrap.xcconfig"
+unset IOS_BOOTSTRAP_VK_HASH IOS_BOOTSTRAP_TRANSPORT
 
 xcodebuild -project Silent.xcodeproj -scheme Silent -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$work/Silent.xcarchive" \
@@ -126,6 +131,7 @@ codesign --verify --deep --strict "$exported_app"
 codesign -d --entitlements - --xml "$exported_app" > "$work/exported-app-entitlements.plist"
 codesign -d --entitlements - --xml "$exported_tunnel" > "$work/exported-tunnel-entitlements.plist"
 python3 - "$work" "$exported_app" "$exported_tunnel" <<'PY'
+import base64
 import plistlib
 import sys
 from pathlib import Path
@@ -142,6 +148,13 @@ app_info = plistlib.loads((app / "Info.plist").read_bytes())
 tunnel_info = plistlib.loads((tunnel / "Info.plist").read_bytes())
 if not app_info.get("SilentBootstrapVKHash") or "$" in app_info["SilentBootstrapVKHash"]:
     sys.exit("Exported app is missing its temporary VPN configuration.")
+transport = app_info.get("SilentBootstrapTransport", "")
+try:
+    decoded = base64.b64decode(transport, validate=True).decode("utf-8")
+    if not decoded.strip():
+        raise ValueError()
+except ValueError:
+    sys.exit("Exported app is missing its bootstrap transport configuration.")
 if app_info.get("CFBundleIcons", {}).get("CFBundlePrimaryIcon", {}).get("CFBundleIconName") != "AppIcon":
     sys.exit("Exported app is missing the branded AppIcon.")
 ipad_orientations = {f"UIInterfaceOrientation{value}" for value in (

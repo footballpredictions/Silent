@@ -14,6 +14,7 @@ settings:
   MARKETING_VERSION: "1.0.171"
   CURRENT_PROJECT_VERSION: "3"
   SILENT_BOOTSTRAP_VK_HASH: ""
+  SILENT_BOOTSTRAP_TRANSPORT: ""
   ENABLE_USER_SCRIPT_SANDBOXING: NO
 targets:
   Silent:
@@ -42,6 +43,7 @@ targets:
       properties:
         CFBundleDisplayName: Silent VPN
         SilentBootstrapVKHash: $(SILENT_BOOTSTRAP_VK_HASH)
+        SilentBootstrapTransport: $(SILENT_BOOTSTRAP_TRANSPORT)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

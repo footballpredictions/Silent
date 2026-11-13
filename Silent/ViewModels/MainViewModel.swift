@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Combine
 
 enum MenuPage: String {
     case root, subscription, exclusions, dns, server, bonuses, devices, support, about
@@ -19,7 +20,11 @@ final class MainViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var loggedIn = false
     @Published var authLoading = false
+    @Published var authLoadingTitle = "Вход…"
     @Published var authError: String?
+    @Published var bootstrapDeadline: Date?
+    @Published var bootstrapStarting = false
+    @Published var connectionLog: [String] = []
     @Published var regNeedMail = false
     @Published var forgotSent = false
     @Published var darkMode = LocalStore.appearanceDark
@@ -59,6 +64,14 @@ final class MainViewModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private let vpn = VpnManager.shared
     private var siteRoutingUpdate: Task<Void, Never>?
+    private var vpnObserver: AnyCancellable?
+    private var bootstrapActive = false
+    private var vpnActionInProgress = false
+    private var profileLoading = false
+
+    private let bootstrapHash = (Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    var canStartBootstrap: Bool { !bootstrapHash.isEmpty }
 
     var palette: Palette { Palette.resolve(theme: theme, dark: darkMode) }
     var hasAccess: Bool { profile?.is_admin == true || profile?.subscription.is_active == true }
@@ -74,23 +87,66 @@ final class MainViewModel: ObservableObject {
 
     init() {
         theme = api.cachedTheme()
-        loggedIn = api.isLoggedIn
+        vpnObserver = vpn.$state.removeDuplicates().sink { [weak self] state in
+            self?.onVPNStateChanged(state)
+        }
         Task {
             await vpn.refresh()
-            vpnState = vpn.state
+            if !api.isLoggedIn, !bootstrapActive, vpn.state == .connected || vpn.state == .connecting {
+                await vpn.disconnect()
+            }
             await loadInitialData()
         }
-        Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                if self.vpnState != self.vpn.state {
-                    self.vpnState = self.vpn.state
-                    if self.vpn.state == .disconnected, let err = self.vpn.readError() {
-                        self.errorMessage = err
-                    }
-                }
+    }
+
+    private func onVPNStateChanged(_ state: VpnState) {
+        if bootstrapActive {
+            if state == .disconnected, !bootstrapStarting {
+                bootstrapActive = false
+                bootstrapDeadline = nil
+                authError = vpn.readError()
             }
+            return
         }
+        guard !vpnActionInProgress, state != vpnState else { return }
+        vpnState = state
+        if state == .disconnected {
+            errorMessage = vpn.readError()
+            logConnection(errorMessage == nil ? "VPN отключён" : "VPN остановлен с ошибкой")
+        }
+    }
+
+    private func logConnection(_ text: String) {
+        let time = Date().formatted(date: .omitted, time: .standard)
+        connectionLog.append("\(time)  \(text)")
+        if connectionLog.count > 30 { connectionLog.removeFirst() }
+    }
+
+    func startBootstrap() async {
+        guard canStartBootstrap, !loggedIn, !authLoading, !bootstrapActive else { return }
+        bootstrapActive = true
+        bootstrapStarting = true
+        authError = nil
+        defer { bootstrapStarting = false }
+        do {
+            let config = try await api.bootstrapConfig(hash: bootstrapHash)
+            let duration = 120
+            try await vpn.connect(makeTunnel(config, bootstrapDuration: duration))
+            bootstrapDeadline = Date().addingTimeInterval(TimeInterval(duration))
+        } catch {
+            await vpn.disconnect()
+            bootstrapActive = false
+            authError = error.localizedDescription
+        }
+    }
+
+    private func stopBootstrap() async {
+        guard bootstrapActive else { return }
+        bootstrapStarting = true
+        await vpn.disconnect()
+        bootstrapDeadline = nil
+        bootstrapActive = false
+        bootstrapStarting = false
     }
 
     func toggleAppearance() {
@@ -99,15 +155,35 @@ final class MainViewModel: ObservableObject {
     }
 
     func loadInitialData() async {
-        theme = (try? await api.getTheme()) ?? theme
-        guard api.isLoggedIn else { return }
+        if api.isLoggedIn, !authLoading, !profileLoading {
+            profileLoading = true
+            authLoading = true
+            authLoadingTitle = "Загрузка аккаунта…"
+            do { try await loadAccount() }
+            catch { authError = "Не удалось загрузить аккаунт. \(error.localizedDescription)" }
+            profileLoading = false
+            authLoading = false
+        }
+        await loadAppearanceAndServers()
+    }
+
+    private func loadAccount() async throws {
+        authLoadingTitle = "Загрузка аккаунта…"
+        let loaded = try await api.getProfile()
+        await stopBootstrap()
+        profile = loaded
         loggedIn = true
-        profile = try? await api.getProfile()
-        await refreshServers()
+    }
+
+    private func loadAppearanceAndServers() async {
+        theme = (try? await api.getTheme()) ?? theme
+        if loggedIn { await refreshServers() }
     }
 
     func login(email: String, password: String, remember: Bool) async {
+        guard !authLoading, !bootstrapStarting else { return }
         authLoading = true
+        authLoadingTitle = "Вход…"
         authError = nil
         defer { authLoading = false }
         do {
@@ -120,15 +196,17 @@ final class MainViewModel: ObservableObject {
                 LocalStore.rememberedEmail = ""
                 LocalStore.rememberedPassword = ""
             }
-            loggedIn = true
-            await loadInitialData()
+            try await loadAccount()
+            Task { await loadAppearanceAndServers() }
         } catch {
             authError = error.localizedDescription
         }
     }
 
     func register(email: String, password: String, code: String, remember: Bool) async {
+        guard !authLoading, !bootstrapStarting else { return }
         authLoading = true
+        authLoadingTitle = "Создание аккаунта…"
         authError = nil
         regNeedMail = false
         defer { authLoading = false }
@@ -140,8 +218,8 @@ final class MainViewModel: ObservableObject {
                 LocalStore.rememberedPassword = password
             }
             if entered {
-                loggedIn = true
-                await loadInitialData()
+                try await loadAccount()
+                Task { await loadAppearanceAndServers() }
             } else {
                 regNeedMail = true
             }
@@ -151,7 +229,9 @@ final class MainViewModel: ObservableObject {
     }
 
     func forgot(email: String) async {
+        guard !authLoading, !bootstrapStarting else { return }
         authLoading = true
+        authLoadingTitle = "Отправка…"
         authError = nil
         defer { authLoading = false }
         do {
@@ -179,11 +259,17 @@ final class MainViewModel: ObservableObject {
     }
 
     func toggleVPN() async {
+        guard !vpnActionInProgress else { return }
+        vpnActionInProgress = true
+        defer { vpnActionInProgress = false }
         errorMessage = nil
         if vpnState == .connected || vpnState == .connecting {
-            try? await api.disconnect()
+            vpnState = .disconnecting
+            logConnection("Отключение VPN")
             await vpn.disconnect()
-            vpnState = .disconnected
+            vpnState = vpn.state
+            try? await api.disconnect()
+            if vpnState == .disconnected { logConnection("VPN отключён") }
             return
         }
         guard hasAccess else {
@@ -192,20 +278,34 @@ final class MainViewModel: ObservableObject {
             return
         }
         vpnState = .connecting
+        logConnection("Запрос настроек VPN")
+        var sessionStarted = false
+        var stage = "Не удалось получить настройки VPN"
         do {
             let cfg = try await api.registerDevice(name: UIDevice.current.name, preferredServer: selectedServer)
-            try await api.connect(preferredServer: selectedServer)
+            stage = "Сервер не подтвердил подключение VPN"
+            try await api.connect(preferredServer: cfg.selected_server ?? selectedServer)
+            sessionStarted = true
+            stage = "Не удалось запустить туннель"
+            logConnection("Ожидание ответа сервера VPN")
             let tunnel = makeTunnel(cfg)
             try await vpn.connect(tunnel)
-            profile = try? await api.getProfile()
+            vpnState = vpn.state
+            guard vpnState == .connected else {
+                throw APIError.server(vpn.readError() ?? "VPN отключился во время подключения")
+            }
+            logConnection("Рукопожатие WireGuard подтверждено")
+            Task { await refreshSessions() }
         } catch {
-            vpnState = .disconnected
-            errorMessage = error.localizedDescription
             await vpn.disconnect()
+            vpnState = vpn.state
+            errorMessage = "\(stage). \(error.localizedDescription)"
+            logConnection(stage)
+            if sessionStarted { try? await api.disconnect() }
         }
     }
 
-    private func makeTunnel(_ cfg: VpnConfig) -> TunnelConfig {
+    private func makeTunnel(_ cfg: VpnConfig, bootstrapDuration: Int? = nil) -> TunnelConfig {
         let dns: [String]
         if dnsPreset == "custom", let custom = DnsInput.sanitize(customDns) {
             dns = custom
@@ -214,20 +314,19 @@ final class MainViewModel: ObservableObject {
         }
         let workers = max(9, min(cfg.stream_count, 27))
         return TunnelConfig(
-            deviceId: cfg.device_id,
+            deviceId: bootstrapDuration == nil ? cfg.device_id : "boot:\(api.deviceFingerprint)",
             serverIP: cfg.server_ip,
             serverPort: cfg.server_port,
             password: cfg.wdtt_password,
             hashes: cfg.vk_hashes,
             workers: workers,
-            privateKey: cfg.wg_private_key,
-            publicKey: cfg.server_public_key,
             address: cfg.wg_address,
             dns: dns,
-            mtu: ServerCatalog.mtu(slot: selectedServer, ip: cfg.server_ip, recommended: cfg.wg_mtu),
-            excludeCIDRs: siteRules,
-            sitesWhitelist: sitesWhitelist,
-            russian: RussianServices.policy(enabled: russianDirect)
+            mtu: ServerCatalog.mtu(slot: cfg.selected_server ?? selectedServer, ip: cfg.server_ip, recommended: cfg.wg_mtu),
+            excludeCIDRs: bootstrapDuration == nil ? siteRules : [],
+            sitesWhitelist: bootstrapDuration == nil && sitesWhitelist,
+            russian: bootstrapDuration == nil ? RussianServices.policy(enabled: russianDirect) : nil,
+            bootstrapDuration: bootstrapDuration
         )
     }
 

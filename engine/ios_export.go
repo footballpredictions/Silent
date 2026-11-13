@@ -15,8 +15,6 @@ import "C"
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -37,13 +35,14 @@ import (
 // пакеты utun ходят через wdtt_input / callback. Файл собирается только с -tags ios.
 
 var (
-	engineMu     sync.Mutex
-	engineCancel context.CancelFunc
-	engineDev    *device.Device
-	engineTUN    *flowTUN
-	outputCb     C.packet_cb
-	iosPause     int32
-	errStorage   [240]byte
+	engineMu      sync.Mutex
+	engineCancel  context.CancelFunc
+	engineDev     *device.Device
+	engineAddress string
+	engineTUN     *flowTUN
+	outputCb      C.packet_cb
+	iosPause      int32
+	errStorage    [240]byte
 )
 
 func setEngineErr(msg string) {
@@ -131,6 +130,7 @@ func wdtt_stop() {
 	t := engineTUN
 	engineCancel = nil
 	engineDev = nil
+	engineAddress = ""
 	engineTUN = nil
 	engineMu.Unlock()
 	if cancel != nil {
@@ -152,8 +152,6 @@ func wdtt_start(
 	password *C.char,
 	deviceID *C.char,
 	workers C.int,
-	privB64 *C.char,
-	pubB64 *C.char,
 	mtu C.int,
 	workDir *C.char,
 ) C.int {
@@ -226,23 +224,40 @@ func wdtt_start(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stopLocal := context.AfterFunc(ctx, func() { _ = localConn.Close() })
+	configCh := make(chan string, 1)
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(workersDone)
+		runIOSWorkers(ctx, localConn, peer, hashes, wrapKey, devID, pass, nWorkers, localPort, configCh)
+	}()
+
+	var relayConfig relayWireGuardConfig
+	var configErr error
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case raw := <-configCh:
+		relayConfig, configErr = parseRelayWireGuardConfig(raw, localPort)
+	case <-workersDone:
+		configErr = fmt.Errorf("Ретрансляторы не установили связь с сервером")
+	case <-timer.C:
+		configErr = fmt.Errorf("Сервер не выдал конфигурацию VPN за 30 секунд")
+	}
+	if configErr != nil {
+		cancel()
+		_ = localConn.Close()
+		setEngineErr(configErr.Error())
+		return 6
+	}
 
 	mtuN := int(mtu)
-	if mtuN < 1280 {
+	if mtuN < 1200 {
 		mtuN = 1200
 	}
 	flow := newFlowTUN(mtuN)
-	uapi, err := wgUAPI(C.GoString(privB64), C.GoString(pubB64), localPort, mtuN)
-	if err != nil {
-		cancel()
-		stopLocal()
-		_ = localConn.Close()
-		setEngineErr(err.Error())
-		return 6
-	}
 	logger := device.NewLogger(device.LogLevelError, "[wg] ")
 	wgDev := device.NewDevice(flow, conn.NewStdNetBind(), logger)
-	if err := wgDev.IpcSet(uapi); err != nil {
+	if err := wgDev.IpcSet(relayConfig.uapi); err != nil {
 		wgDev.Close()
 		cancel()
 		stopLocal()
@@ -262,10 +277,10 @@ func wdtt_start(
 	engineMu.Lock()
 	engineCancel = cancel
 	engineDev = wgDev
+	engineAddress = relayConfig.address
 	engineTUN = flow
 	engineMu.Unlock()
 
-	go runIOSWorkers(ctx, localConn, peer, hashes, wrapKey, devID, pass, nWorkers, localPort)
 	log.Printf("[iOS] слушаю 127.0.0.1:%s peer %s workers %d", localPort, peerAddr, nWorkers)
 	return 0
 }
@@ -279,6 +294,7 @@ func runIOSWorkers(
 	deviceID, password string,
 	numW int,
 	localPort string,
+	configCh chan<- string,
 ) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -296,17 +312,6 @@ func runIOSWorkers(
 
 	disp := NewDispatcher(ctx, localConn, stats)
 	defer disp.Shutdown()
-
-	configCh := make(chan string, 1)
-	go func() {
-		select {
-		case raw, ok := <-configCh:
-			if ok && raw != "" {
-				log.Printf("[КОНФИГ] GETCONF %d байт", len(raw))
-			}
-		case <-ctx.Done():
-		}
-	}()
 
 	tp := &TurnParams{Hashes: hashes, WrapKey: wrapKey}
 	numGroups := numW / workersPerGroup
@@ -328,58 +333,49 @@ func runIOSWorkers(
 			workerID++
 		}
 		gID := g + 1
-		var cc chan<- string
-		if g == 0 {
-			cc = configCh
-		}
 		waitReady := groupGate
 		var signalNext chan struct{}
 		if g < numGroups-1 {
 			signalNext = make(chan struct{})
 			groupGate = signalNext
 		}
-		isFirst := g == 0
 		hashIdx := g % hashCount
 		wg.Add(1)
 		safeGo("worker-group", func() {
 			defer wg.Done()
 			WorkerGroup(ctx, gID, hashIdx, tp, peer, disp, localPort,
-				isFirst, cc, ids, &iosPause, deviceID, password, stats, waitReady, signalNext)
+				true, configCh, ids, &iosPause, deviceID, password, stats, waitReady, signalNext)
 		})
 	}
 	wg.Wait()
 	log.Println("[iOS] воркеры остановлены")
 }
 
-func wgUAPI(privB64, pubB64, localPort string, mtu int) (string, error) {
-	priv, err := keyToHex(privB64)
-	if err != nil {
-		return "", fmt.Errorf("private key: %w", err)
-	}
-	pub, err := keyToHex(pubB64)
-	if err != nil {
-		return "", fmt.Errorf("public key: %w", err)
-	}
-	_ = mtu
-	return fmt.Sprintf(
-		"private_key=%s\nlisten_port=0\nreplace_peers=true\npublic_key=%s\nendpoint=127.0.0.1:%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n",
-		priv, pub, localPort,
-	), nil
+//export wdtt_assigned_address
+func wdtt_assigned_address() *C.char {
+	engineMu.Lock()
+	defer engineMu.Unlock()
+	return C.CString(engineAddress)
 }
 
-func keyToHex(b64 string) (string, error) {
-	s := strings.TrimSpace(b64)
-	raw, err := base64.StdEncoding.DecodeString(s)
-	if err != nil || len(raw) != 32 {
-		raw, err = base64.RawStdEncoding.DecodeString(s)
+//export wdtt_has_handshake
+func wdtt_has_handshake() C.int {
+	engineMu.Lock()
+	dev := engineDev
+	engineMu.Unlock()
+	if dev == nil {
+		return 0
 	}
+	status, err := dev.IpcGet()
 	if err != nil {
-		return "", err
+		return 0
 	}
-	if len(raw) != 32 {
-		return "", fmt.Errorf("длина %d", len(raw))
+	for _, line := range strings.Split(status, "\n") {
+		if seconds, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok && seconds != "" && seconds != "0" {
+			return 1
+		}
 	}
-	return hex.EncodeToString(raw), nil
+	return 0
 }
 
 type russianFlow struct {

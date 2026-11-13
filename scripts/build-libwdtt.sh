@@ -23,10 +23,12 @@ if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
   exit 1
 fi
 
+go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cp -R "$SRC/." "$TMP/"
-cp "$EXPORT" "$TMP/ios_export.go"
+cp "$EXPORT" "$ROOT/engine/wg_config.go" "$TMP/"
 # Shared domain policy and userspace DIRECT transport, same as Android.
 cp "$MONO/android/app/site-router/russian.go" "$TMP/russian.go"
 cp "$MONO/android/app/site-router/packet.go" "$TMP/russian_packet.go"

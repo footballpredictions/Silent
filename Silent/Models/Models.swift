@@ -68,6 +68,7 @@ struct VpnConfig: Decodable {
     let vk_hashes: [String]
     let stream_count: Int
     let wg_mtu: Int?
+    let selected_server: String?
 }
 
 struct ShopPlan: Decodable, Identifiable {

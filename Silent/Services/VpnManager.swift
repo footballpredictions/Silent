@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import NetworkExtension
 
 @MainActor
@@ -16,10 +17,13 @@ final class VpnManager: ObservableObject {
         ) { [weak self] note in
             guard let conn = note.object as? NEVPNConnection else { return }
             Task { @MainActor in
-                self?.state = Self.map(conn.status)
+                guard let self, self.manager?.connection === conn else { return }
+                self.state = Self.map(conn.status)
             }
         }
     }
+
+    private var manager: NETunnelProviderManager?
 
     func refresh() async {
         guard let mgr = try? await load() else { return }
@@ -28,12 +32,12 @@ final class VpnManager: ObservableObject {
 
     func isApiTunnelActive() async -> Bool {
         guard let mgr = try? await load() else { return false }
-        return mgr.connection.status == .connected || mgr.connection.status == .reasserting
+        return mgr.connection.status == .connected
     }
 
     func connect(_ config: TunnelConfig) async throws {
         guard let url = AppIdentity.configURL else {
-            throw APIError.server("Нет App Group. Включите group.io.github.silentvpn3.silentvpn в подписи приложения и расширения.")
+            throw APIError.server("Приложение не может передать настройки расширению VPN")
         }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent().appendingPathComponent("engine"),
@@ -44,6 +48,9 @@ final class VpnManager: ObservableObject {
         try data.write(to: url, options: .atomic)
 
         let mgr = try await load()
+        guard mgr.connection.status == .disconnected || mgr.connection.status == .invalid else {
+            throw APIError.server("Дождитесь отключения предыдущего VPN-соединения")
+        }
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = AppIdentity.tunnelBundleId
         proto.serverAddress = config.serverIP
@@ -54,7 +61,31 @@ final class VpnManager: ObservableObject {
         try await mgr.saveToPreferences()
         try await mgr.loadFromPreferences()
         state = .connecting
-        try mgr.connection.startVPNTunnel()
+        do {
+            try mgr.connection.startVPNTunnel()
+            try await waitForConnection(mgr.connection)
+        } catch {
+            mgr.connection.stopVPNTunnel()
+            state = Self.map(mgr.connection.status)
+            throw error
+        }
+    }
+
+    private func waitForConnection(_ connection: NEVPNConnection) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 50
+        repeat {
+            try await Task.sleep(nanoseconds: 250_000_000)
+            switch connection.status {
+            case .connected:
+                state = .connected
+                return
+            case .disconnected, .invalid:
+                throw APIError.server(readError() ?? "VPN не запустился. Проверьте разрешение iOS и попробуйте ещё раз.")
+            default:
+                break
+            }
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        throw APIError.server("Не удалось подключиться к VPN за 50 секунд")
     }
 
     func disconnect() async {
@@ -62,8 +93,18 @@ final class VpnManager: ObservableObject {
             state = .disconnected
             return
         }
+        let connection = mgr.connection
+        guard connection.status != .invalid, connection.status != .disconnected else {
+            state = .disconnected
+            return
+        }
         state = .disconnecting
-        mgr.connection.stopVPNTunnel()
+        connection.stopVPNTunnel()
+        for _ in 0..<20 {
+            if connection.status == .disconnected || connection.status == .invalid { break }
+            do { try await Task.sleep(nanoseconds: 250_000_000) } catch { break }
+        }
+        state = Self.map(connection.status)
     }
 
     func updateSiteRouting(rules: [String], whitelist: Bool, russian: RussianRoutingPolicy?) async throws {
@@ -93,13 +134,14 @@ final class VpnManager: ObservableObject {
     }
 
     private func load() async throws -> NETunnelProviderManager {
+        if let manager { return manager }
         let all = try await NETunnelProviderManager.loadAllFromPreferences()
-        if let existing = all.first(where: {
+        let own = all.first(where: {
             ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == AppIdentity.tunnelBundleId
-        }) ?? all.first {
-            return existing
-        }
-        return NETunnelProviderManager()
+        }) ?? NETunnelProviderManager()
+        if let manager { return manager }
+        manager = own
+        return own
     }
 
     private static func map(_ status: NEVPNStatus) -> VpnState {

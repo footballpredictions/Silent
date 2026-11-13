@@ -35,6 +35,27 @@ struct LoginView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 12)
 
+                    if let deadline = vm.bootstrapDeadline {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let seconds = max(0, Int(ceil(deadline.timeIntervalSince(context.date))))
+                            Label("Временный VPN для входа · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
+                                .font(.footnote.monospacedDigit())
+                                .foregroundColor(p.fg)
+                        }
+                    } else if vm.bootstrapStarting {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(p.fg)
+                            Text("Подключение временного VPN…").font(.footnote)
+                        }
+                        .foregroundColor(p.fg)
+                    } else if vm.canStartBootstrap {
+                        Button("Включить временный VPN для входа") { Task { await vm.startBootstrap() } }
+                            .font(.footnote.weight(.medium))
+                            .foregroundColor(p.link)
+                            .frame(minHeight: 44)
+                            .disabled(vm.authLoading)
+                    }
+
                     if forgot {
                         Text(theme?.login_forgot_title ?? "Восстановление пароля")
                             .font(AppFont.text(16, weight: .semibold))
@@ -48,7 +69,7 @@ struct LoginView: View {
                                 .font(AppFont.text(12))
                                 .foregroundColor(p.fg.opacity(0.7))
                         }
-                        primaryButton(vm.authLoading ? "…" : "Отправить", p: p) {
+                        primaryButton("Отправить", p: p) {
                             Task { await vm.forgot(email: email) }
                         }
                         Button("Назад ко входу") { forgot = false; vm.forgotSent = false }
@@ -82,10 +103,7 @@ struct LoginView: View {
                                 .font(AppFont.text(13, weight: .medium))
                                 .foregroundColor(p.link)
                         }
-                        if let authError = vm.authError {
-                            Text(authError).font(AppFont.text(12)).foregroundColor(.red)
-                        }
-                        primaryButton(vm.authLoading ? "…" : (tab == "login" ? "Войти" : "Создать аккаунт"), p: p) {
+                        primaryButton(tab == "login" ? "Войти" : "Создать аккаунт", p: p) {
                             Task {
                                 if tab == "login" {
                                     await vm.login(email: email, password: password, remember: remember)
@@ -94,7 +112,10 @@ struct LoginView: View {
                                 }
                             }
                         }
-                        .disabled(vm.authLoading || email.isEmpty || password.count < 8 && tab == "register" || password.isEmpty)
+                        .disabled(email.isEmpty || password.count < 8 && tab == "register" || password.isEmpty)
+                    }
+                    if let authError = vm.authError {
+                        Text(authError).font(.footnote).foregroundColor(.red)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -156,7 +177,10 @@ struct LoginView: View {
 
     private func primaryButton(_ title: String, p: Palette, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
+            HStack(spacing: 8) {
+                if vm.authLoading { ProgressView().tint(p.bg) }
+                Text(vm.authLoading ? vm.authLoadingTitle : title)
+            }
                 .font(AppFont.text(14, weight: .semibold))
                 .foregroundColor(p.bg)
                 .frame(maxWidth: .infinity)
@@ -164,5 +188,6 @@ struct LoginView: View {
                 .background(p.fg)
                 .cornerRadius(14)
         }
+        .disabled(vm.authLoading || vm.bootstrapStarting)
     }
 }

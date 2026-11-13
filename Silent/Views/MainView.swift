@@ -23,6 +23,7 @@ struct RootView: View {
 
 struct MainView: View {
     @EnvironmentObject var vm: MainViewModel
+    @State private var showConnectionLog = false
 
     var body: some View {
         let p = vm.palette
@@ -42,6 +43,24 @@ struct MainView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: vm.menuOpen)
+        .sheet(isPresented: $showConnectionLog) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if vm.connectionLog.isEmpty { Text("Подключений в этой сессии ещё не было.") }
+                        ForEach(Array(vm.connectionLog.enumerated()), id: \.offset) { entry in
+                            Text(entry.element).font(.footnote.monospacedDigit())
+                        }
+                        if let error = vm.errorMessage { Text(error).foregroundStyle(.red) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+                }
+                .navigationTitle("Журнал подключения")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { showConnectionLog = false } } }
+            }
+        }
     }
 
     private func home(_ p: Palette) -> some View {
@@ -65,6 +84,13 @@ struct MainView: View {
                         .foregroundColor(p.fg)
                         .frame(width: 44, height: 44)
                 }
+                Button { showConnectionLog = true } label: {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(AppFont.text(16, weight: .medium))
+                        .foregroundColor(p.fg)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Журнал подключения")
             }
             .padding(.horizontal, 12)
             .frame(height: 52)
@@ -81,13 +107,15 @@ struct MainView: View {
                         .font(AppFont.text(12, weight: .medium))
                         .tracking(1)
                         .foregroundColor(vm.vpnState == .connected ? Color(red: 0.09, green: 0.64, blue: 0.29) : p.fg.opacity(0.4))
-                    Spacer().frame(height: 36)
+                    Spacer().frame(height: 24)
                     BigToggle(
                         isOn: vm.vpnState == .connected,
                         isLoading: vm.vpnState == .connecting || vm.vpnState == .disconnecting,
                         onColor: p.on,
                         offColor: p.off,
                         bg: p.bg,
+                        progressColor: p.link,
+                        status: statusText,
                         action: { Task { await vm.toggleVPN() } }
                     )
                     if let errorMessage = vm.errorMessage {
@@ -257,32 +285,66 @@ struct BigToggle: View {
     let onColor: Color
     let offColor: Color
     let bg: Color
+    let progressColor: Color
+    let status: String
     let action: () -> Void
-    @State private var isAnimating = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        ZStack {
-            if isOn {
-                Circle()
-                    .fill(onColor.opacity(0.12))
-                    .frame(width: 140, height: 140)
-                    .scaleEffect(isAnimating ? 1.15 : 1.0)
-                    .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: isAnimating)
-                    .onAppear { isAnimating = true }
+        Button(action: action) {
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || scenePhase != .active || (!isOn && !isLoading))) { context in
+                track(at: context.date.timeIntervalSinceReferenceDate)
             }
-            Capsule()
-                .fill(isOn ? onColor : offColor)
-                .frame(width: 130, height: 64)
+            .frame(width: 144, height: 86)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(VpnToggleButtonStyle(reduceMotion: reduceMotion))
+        .disabled(isLoading)
+        .accessibilityLabel(isOn ? "Отключить VPN" : "Подключить VPN")
+        .accessibilityValue(status)
+    }
+
+    private func track(at time: TimeInterval) -> some View {
+        let pulse = reduceMotion ? 1.0 : 1 + 0.06 * (1 - cos(time * 2 * .pi / 3))
+        let thumb = reduceMotion ? 1.0 : 1 + 0.05 * (1 - cos(time * 2 * .pi / 1.04))
+        let rotation = reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 2.2) / 2.2 * 360
+        let color = isOn ? onColor : offColor
+        return ZStack {
+            if isOn {
+                Capsule()
+                    .fill(onColor.opacity(0.20))
+                    .frame(width: 120, height: 60)
+                    .scaleEffect(pulse)
+            }
+            Capsule().fill(color).frame(width: 120, height: 60)
             Circle()
                 .fill(bg)
-                .overlay(Circle().stroke(isOn ? onColor : offColor, lineWidth: 2))
-                .overlay { if isLoading { ProgressView().tint(isOn ? onColor : offColor) } }
-                .frame(width: 56, height: 56)
-                .offset(x: isOn ? 34 : -34)
-                .animation(.spring(response: 0.35, dampingFraction: 0.7), value: isOn)
+                .overlay {
+                    if isLoading {
+                        Circle().strokeBorder(
+                            AngularGradient(colors: [.clear, .clear, progressColor.opacity(0.35), progressColor, .clear], center: .center),
+                            lineWidth: 4
+                        )
+                        .rotationEffect(.degrees(rotation))
+                    } else {
+                        Circle().strokeBorder(color, lineWidth: 2)
+                    }
+                }
+                .frame(width: 48, height: 48)
+                .scaleEffect(isLoading ? thumb : 1)
+                .offset(x: isOn ? 32 : -32)
+                .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.7), value: isOn)
         }
-        .frame(width: 160, height: 160)
-        .contentShape(Rectangle())
-        .onTapGesture { if !isLoading { action() } }
+    }
+}
+
+private struct VpnToggleButtonStyle: ButtonStyle {
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.65), value: configuration.isPressed)
     }
 }

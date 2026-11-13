@@ -22,12 +22,11 @@ struct TunnelConfig: Codable {
     var password: String
     var hashes: [String]
     var workers: Int
-    var privateKey: String
-    var publicKey: String
     var address: String
     var dns: [String]
     var mtu: Int
     var excludeCIDRs: [String]
     var sitesWhitelist: Bool? = nil
     var russian: RussianRoutingPolicy? = nil
+    var bootstrapDuration: Int? = nil
 }

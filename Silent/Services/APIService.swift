@@ -79,7 +79,8 @@ class APIService: ObservableObject {
         body: Encodable?,
         auth: Bool,
         base: String,
-        allowRefresh: Bool
+        allowRefresh: Bool,
+        verifyTLS: Bool = false
     ) async throws -> Data {
         let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
         guard let url = URL(string: "\(base)/\(trimmed)") else { throw APIError.invalidURL }
@@ -88,6 +89,9 @@ class APIService: ObservableObject {
         req.httpMethod = method
         req.timeoutInterval = PublicApiFailover.timeoutSeconds(base)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            req.setValue(version, forHTTPHeaderField: "X-App-Version")
+        }
         if auth, let token = accessToken {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -96,7 +100,7 @@ class APIService: ObservableObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = PublicApiFailover.timeoutSeconds(base)
         cfg.timeoutIntervalForResource = PublicApiFailover.timeoutSeconds(base) + 2
-        let session = URLSession(configuration: cfg, delegate: TrustAllDelegate(), delegateQueue: nil)
+        let session = URLSession(configuration: cfg, delegate: verifyTLS ? nil : TrustAllDelegate(), delegateQueue: nil)
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: req)
@@ -204,6 +208,18 @@ class APIService: ObservableObject {
 
     func getPlans() async throws -> [ShopPlan] {
         try await request("api/payments/plans?all=1", auth: false)
+    }
+
+    func bootstrapConfig(hash: String) async throws -> VpnConfig {
+        struct Req: Encodable {
+            let bootstrap_hash: String
+            let device_fingerprint: String
+            let device_type = "ios"
+        }
+        let data = try await requestOnce("api/vpn/bootstrap-config", method: "POST",
+                                         body: Req(bootstrap_hash: hash, device_fingerprint: deviceFingerprint),
+                                         auth: false, base: PublicApiFailover.hiveHttps, allowRefresh: false, verifyTLS: true)
+        return try JSONDecoder().decode(VpnConfig.self, from: data)
     }
 
     func registerDevice(name: String, preferredServer: String) async throws -> VpnConfig {

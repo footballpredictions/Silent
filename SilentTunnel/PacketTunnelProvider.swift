@@ -18,11 +18,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var reading = false
     private var activeConfig: TunnelConfig?
     private var policyRefresh: Task<Void, Never>?
+    private var handshakeCheck: Task<Void, Never>?
+    private var bootstrapExpiry: Task<Void, Never>?
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         TunnelBridge.provider = self
-        guard let config = loadConfig() else {
-            completionHandler(tunnelError("Нет конфига туннеля"))
+        guard var config = loadConfig() else {
+            let text = "Не удалось прочитать настройки VPN"
+            writeError(text)
+            completionHandler(tunnelError(text))
             return
         }
         if wdtt_engine_linked() == 0 {
@@ -38,13 +42,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let code = config.hashes.joined(separator: ",").withCString { hashes in
             config.password.withCString { password in
                 config.deviceId.withCString { deviceId in
-                    config.privateKey.withCString { priv in
-                        config.publicKey.withCString { pub in
-                            config.serverIP.withCString { ip in
-                                work.withCString { dir in
-                                    wdtt_start(ip, Int32(config.serverPort), hashes, password, deviceId, Int32(config.workers), priv, pub, Int32(config.mtu), dir)
-                                }
-                            }
+                    config.serverIP.withCString { ip in
+                        work.withCString { dir in
+                            wdtt_start(ip, Int32(config.serverPort), hashes, password, deviceId, Int32(config.workers), Int32(config.mtu), dir)
                         }
                     }
                 }
@@ -58,9 +58,20 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
+        guard let address = wdtt_assigned_address() else {
+            wdtt_stop()
+            let text = "Сервер не выдал адрес VPN"
+            writeError(text)
+            completionHandler(tunnelError(text))
+            return
+        }
+        config.address = String(cString: address)
+        free(address)
         guard applyRussianPolicy(config.russian) else {
             wdtt_stop()
-            completionHandler(tunnelError("Не удалось применить российские сервисы"))
+            let text = "Не удалось применить правила российских сервисов"
+            writeError(text)
+            completionHandler(tunnelError(text))
             return
         }
         activeConfig = config
@@ -74,13 +85,49 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             self?.reading = true
             self?.readLoop()
-            self?.startPolicyRefresh()
-            completionHandler(nil)
+            guard let self else { completionHandler(CancellationError()); return }
+            self.handshakeCheck = Task { [weak self] in
+                for _ in 0..<60 {
+                    guard !Task.isCancelled else { completionHandler(CancellationError()); return }
+                    if wdtt_has_handshake() != 0 {
+                        self?.startPolicyRefresh()
+                        self?.scheduleBootstrapExpiry(config.bootstrapDuration)
+                        completionHandler(nil)
+                        return
+                    }
+                    do { try await Task.sleep(nanoseconds: 250_000_000) }
+                    catch { completionHandler(error); return }
+                }
+                guard !Task.isCancelled, let self else { completionHandler(CancellationError()); return }
+                self.reading = false
+                self.activeConfig = nil
+                wdtt_stop()
+                let text = "Сервер не ответил на рукопожатие VPN. Попробуйте другой сервер."
+                self.writeError(text)
+                completionHandler(self.tunnelError(text))
+            }
+        }
+    }
+
+    private func scheduleBootstrapExpiry(_ duration: Int?) {
+        bootstrapExpiry?.cancel()
+        guard let duration, (1...120).contains(duration) else { return }
+        bootstrapExpiry = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000_000) }
+            catch { return }
+            guard let self, !Task.isCancelled else { return }
+            let text = "Время временного VPN истекло"
+            self.writeError(text)
+            self.cancelTunnelWithError(self.tunnelError(text))
         }
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         reading = false
+        handshakeCheck?.cancel()
+        handshakeCheck = nil
+        bootstrapExpiry?.cancel()
+        bootstrapExpiry = nil
         policyRefresh?.cancel()
         policyRefresh = nil
         activeConfig = nil
@@ -109,11 +156,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        guard messageData == Data("site-routing".utf8), let config = loadConfig() else {
+        guard messageData == Data("site-routing".utf8), var config = loadConfig() else {
             completionHandler?(nil)
             return
         }
         let previous = activeConfig
+        guard let address = previous?.address else { completionHandler?(nil); return }
+        config.address = address
         guard applyRussianPolicy(config.russian) else { completionHandler?(nil); return }
         setTunnelNetworkSettings(makeSettings(config)) { [weak self] error in
             if error == nil { self?.activeConfig = config; self?.startPolicyRefresh() }
@@ -154,6 +203,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: config.serverIP)
         let parsed = parseAddress(config.address)
         let ipv4 = NEIPv4Settings(addresses: [parsed.ip], subnetMasks: [parsed.mask])
+        if config.bootstrapDuration != nil {
+            ipv4.includedRoutes = [NEIPv4Route(destinationAddress: "10.66.66.1", subnetMask: "255.255.255.255")]
+            settings.ipv4Settings = ipv4
+            settings.mtu = NSNumber(value: config.mtu)
+            return settings
+        }
         let russian = config.russian?.enabled == true
         let sites = russian ? [] : excludeRoutes(config.excludeCIDRs)
         if config.sitesWhitelist == true && !russian {

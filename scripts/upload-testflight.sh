@@ -2,7 +2,7 @@
 set -euo pipefail
 
 for name in IOS_DISTRIBUTION_P12 IOS_DISTRIBUTION_PASSWORD IOS_APP_PROFILE \
-    IOS_TUNNEL_PROFILE ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY IOS_BUILD_NUMBER; do
+    IOS_TUNNEL_PROFILE ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY IOS_BUILD_NUMBER IOS_BOOTSTRAP_VK_HASH; do
   if [[ -z "${!name:-}" ]]; then
     echo "Missing $name" >&2
     exit 1
@@ -92,8 +92,16 @@ mkdir "$work/private_keys"
 printf '%s' "$ASC_PRIVATE_KEY" | base64 -D > "$work/private_keys/AuthKey_${ASC_KEY_ID}.p8"
 unset IOS_DISTRIBUTION_P12 IOS_DISTRIBUTION_PASSWORD IOS_APP_PROFILE IOS_TUNNEL_PROFILE ASC_PRIVATE_KEY
 
+if [[ ! "$IOS_BOOTSTRAP_VK_HASH" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo 'Invalid iOS bootstrap hash format.' >&2
+  exit 1
+fi
+printf 'SILENT_BOOTSTRAP_VK_HASH = %s\n' "$IOS_BOOTSTRAP_VK_HASH" > "$work/bootstrap.xcconfig"
+unset IOS_BOOTSTRAP_VK_HASH
+
 xcodebuild -project Silent.xcodeproj -scheme Silent -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$work/Silent.xcarchive" \
+  -xcconfig "$work/bootstrap.xcconfig" \
   CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Distribution' DEVELOPMENT_TEAM="$team" \
   SILENT_APP_PROFILE="$app_profile" SILENT_TUNNEL_PROFILE="$tunnel_profile" \
   CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" archive
@@ -132,6 +140,10 @@ for target in ("app", "tunnel"):
 
 app_info = plistlib.loads((app / "Info.plist").read_bytes())
 tunnel_info = plistlib.loads((tunnel / "Info.plist").read_bytes())
+if not app_info.get("SilentBootstrapVKHash") or "$" in app_info["SilentBootstrapVKHash"]:
+    sys.exit("Exported app is missing its temporary VPN configuration.")
+if app_info.get("CFBundleIcons", {}).get("CFBundlePrimaryIcon", {}).get("CFBundleIconName") != "AppIcon":
+    sys.exit("Exported app is missing the branded AppIcon.")
 ipad_orientations = {f"UIInterfaceOrientation{value}" for value in (
     "Portrait", "PortraitUpsideDown", "LandscapeLeft", "LandscapeRight",
 )}

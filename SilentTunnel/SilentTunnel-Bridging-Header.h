@@ -10,11 +10,11 @@ int wdtt_start(
     const char *password,
     const char *deviceID,
     int workers,
-    const char *privB64,
-    const char *pubB64,
     int mtu,
     const char *workDir
 );
+char *wdtt_assigned_address(void);
+int wdtt_has_handshake(void);
 int wdtt_set_russian_policy(const char *json);
 void wdtt_stop(void);
 void wdtt_set_output(void (*cb)(const unsigned char *data, int len));

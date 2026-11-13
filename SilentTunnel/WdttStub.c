@@ -13,15 +13,16 @@ int wdtt_start(
     const char *password,
     const char *deviceID,
     int workers,
-    const char *privB64,
-    const char *pubB64,
     int mtu,
     const char *workDir
 ) {
     (void)serverIP; (void)serverPort; (void)hashesCSV; (void)password;
-    (void)deviceID; (void)workers; (void)privB64; (void)pubB64; (void)mtu; (void)workDir;
+    (void)deviceID; (void)workers; (void)mtu; (void)workDir;
     return 1;
 }
+
+char *wdtt_assigned_address(void) { return 0; }
+int wdtt_has_handshake(void) { return 0; }
 
 void wdtt_stop(void) {}
 

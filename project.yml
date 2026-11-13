@@ -26,22 +26,27 @@ targets:
     dependencies:
       - target: SilentTunnel
         embed: true
-    entitlements:
-      path: Silent/Silent.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.silentvpn3.silentvpn
+        CODE_SIGN_ENTITLEMENTS: Silent/Silent.entitlements
         PROVISIONING_PROFILE_SPECIFIER: "$(SILENT_APP_PROFILE)"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Silent VPN
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
     info:
       path: Silent/Info.plist
       properties:
         CFBundleDisplayName: Silent VPN
         UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         CFBundleURLTypes:
@@ -67,11 +72,10 @@ targets:
           - "*.entitlements"
       - path: SilentTunnel/Generated/EngineBridge.c
       - path: Shared
-    entitlements:
-      path: SilentTunnel/SilentTunnel.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.silentvpn3.silentvpn.tunnel
+        CODE_SIGN_ENTITLEMENTS: SilentTunnel/SilentTunnel.entitlements
         PROVISIONING_PROFILE_SPECIFIER: "$(SILENT_TUNNEL_PROFILE)"
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: SilentTunnel/SilentTunnel-Bridging-Header.h
@@ -79,6 +83,7 @@ targets:
     info:
       path: SilentTunnel/Info.plist
       properties:
+        CFBundleDisplayName: Silent VPN Tunnel
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider

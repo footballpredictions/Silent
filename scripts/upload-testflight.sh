@@ -111,6 +111,37 @@ if [[ "${#ipas[@]}" -ne 1 ]]; then
   exit 1
 fi
 
+ditto -x -k "${ipas[0]}" "$work/verified-ipa"
+exported_app="$work/verified-ipa/Payload/Silent.app"
+exported_tunnel="$exported_app/PlugIns/SilentTunnel.appex"
+codesign --verify --deep --strict "$exported_app"
+codesign -d --entitlements - "$exported_app" > "$work/exported-app-entitlements.plist"
+codesign -d --entitlements - "$exported_tunnel" > "$work/exported-tunnel-entitlements.plist"
+python3 - "$work" "$exported_app" "$exported_tunnel" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+work, app, tunnel = map(Path, sys.argv[1:])
+for target in ("app", "tunnel"):
+    entitlements = plistlib.loads((work / f"exported-{target}-entitlements.plist").read_bytes())
+    if "packet-tunnel-provider" not in entitlements.get("com.apple.developer.networking.networkextension", []):
+        sys.exit(f"Exported {target} lacks the Packet Tunnel entitlement.")
+    if "group.io.github.silentvpn3.silentvpn" not in entitlements.get("com.apple.security.application-groups", []):
+        sys.exit(f"Exported {target} lacks the Silent VPN app group.")
+
+app_info = plistlib.loads((app / "Info.plist").read_bytes())
+tunnel_info = plistlib.loads((tunnel / "Info.plist").read_bytes())
+ipad_orientations = {f"UIInterfaceOrientation{value}" for value in (
+    "Portrait", "PortraitUpsideDown", "LandscapeLeft", "LandscapeRight",
+)}
+if not ipad_orientations.issubset(app_info.get("UISupportedInterfaceOrientations~ipad", [])):
+    sys.exit("Exported app is missing supported iPad orientations.")
+if not tunnel_info.get("CFBundleDisplayName"):
+    sys.exit("Exported tunnel is missing its display name.")
+print("Exported iOS bundle metadata and VPN entitlements verified.")
+PY
+
 (
   cd "$work"
   xcrun altool --upload-app --type ios --file "${ipas[0]}" \

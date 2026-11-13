@@ -20,9 +20,9 @@ enum VPNLog {
     private static let maxSize: UInt64 = 96 * 1024
 
     // Only explicitly selected events go into the shareable journal.
-    static func write(_ message: String, level: VPNLogLevel = .info) {
+    static func write(_ message: String, level: VPNLogLevel = .info, source: String = "Туннель") {
         guard let file, var data = try? JSONEncoder().encode(
-            VPNLogEntry(date: Date(), level: level, source: "Туннель", message: message)
+            VPNLogEntry(date: Date(), level: level, source: source, message: message)
         ) else { return }
         lock.lock()
         defer { lock.unlock() }

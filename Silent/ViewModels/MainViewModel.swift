@@ -52,7 +52,7 @@ final class MainViewModel: ObservableObject {
     @Published var customDns = LocalStore.customDns
     @Published var dnsHint = ""
 
-    @Published var servers: [VpnServer] = []
+    @Published private(set) var servers = ServerCatalog.fixedList
     @Published var selectedServer = LocalStore.preferredServer
     @Published var serverHint = ""
     @Published private(set) var selectingServer = false
@@ -413,7 +413,7 @@ final class MainViewModel: ObservableObject {
             bootstrapAttempted = false
             profile = nil
             loggedIn = false
-            servers = []
+            servers = ServerCatalog.fixedList
             serverHint = ""
             vpnState = .disconnected
             connectedAt = nil
@@ -447,11 +447,12 @@ final class MainViewModel: ObservableObject {
             return
         }
         vpnState = .connecting
-        logConnection("Запрос настроек VPN")
+        let preferred = selectedServer
+        let title = servers.first(where: { $0.key == preferred })?.title ?? "Выбранный сервер"
+        logConnection("\(title) · запрос настроек VPN")
         var sessionStarted = false
         var stage = "Сервер не подтвердил подключение VPN"
         do {
-            let preferred = selectedServer
             do {
                 try await api.connect(preferredServer: preferred)
             } catch APIError.http(404, _) {
@@ -466,10 +467,13 @@ final class MainViewModel: ObservableObject {
             if let profile { UserDefaults.standard.set(cfg.device_id, forKey: "vpn-session-\(profile.id)") }
             logConnection("Конфигурация получена. Подготовка сессии")
             if let confirmed = cfg.selected_server?.lowercased(), confirmed != selectedServer,
-               ServerCatalog.slots.contains(where: { $0.key == confirmed }) {
+               servers.contains(where: { $0.key == confirmed }) {
                 serverSelectionVersion += 1
                 selectedServer = confirmed
                 LocalStore.preferredServer = confirmed
+                if let title = servers.first(where: { $0.key == confirmed })?.title {
+                    logConnection("API подтвердил другой сервер: \(title)")
+                }
             }
             stage = "Не удалось запустить туннель"
             logConnection("Ожидание ответа сервера VPN")
@@ -660,6 +664,7 @@ final class MainViewModel: ObservableObject {
 
     func refreshServers() async {
         guard loggedIn, !selectingServer else { return }
+        serverSelectionVersion += 1
         let version = serverSelectionVersion
         let account = profile?.id
         do {
@@ -668,8 +673,8 @@ final class MainViewModel: ObservableObject {
             applyServers(body)
             serverHint = ""
         } catch {
-            guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion, servers.isEmpty else { return }
-            serverHint = "Не удалось загрузить список серверов. Попробуйте ещё раз."
+            guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion else { return }
+            serverHint = "Не удалось обновить список. Проверьте подключение."
         }
     }
 
@@ -696,13 +701,7 @@ final class MainViewModel: ObservableObject {
     }
 
     private func applyServers(_ body: VpnServersBody) {
-        var seen = Set<String>()
-        servers = body.servers.compactMap { item in
-            let key = item.key.lowercased()
-            guard let slot = ServerCatalog.slots.first(where: { $0.key == key }), seen.insert(key).inserted else { return nil }
-            let title = (item.title.isEmpty || (key == "server4" && item.title == "Сервер 4")) ? slot.title : item.title
-            return VpnServer(key: key, title: title)
-        }
+        servers = ServerCatalog.displayList(body.servers)
         if let selected = body.selected_server?.lowercased(), servers.contains(where: { $0.key == selected }) {
             selectedServer = selected
             LocalStore.preferredServer = selected

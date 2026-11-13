@@ -347,11 +347,6 @@ private struct ServerPage: View {
                 if loading || vm.selectingServer {
                     ProgressView(vm.selectingServer ? "Применяем выбор…" : "Загружаем серверы…")
                         .tint(p.fg)
-                } else if vm.servers.isEmpty {
-                    Button("Повторить") { Task { await loadServers() } }
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(p.link)
-                        .frame(minHeight: 44)
                 }
                 ForEach(vm.servers) { server in
                     let selected = vm.selectedServer == server.key
@@ -375,11 +370,12 @@ private struct ServerPage: View {
             .padding(16)
         }
         .task { await loadServers() }
+        .refreshable { await loadServers() }
         .alert("Применить выбор?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), presenting: pending) { server in
             Button("Применить") { Task { await vm.selectServer(server.key) } }
             Button("Отмена", role: .cancel) {}
         } message: { server in
-            Text("При следующем подключении будет использован «\(server.title)».")
+            Text("Выбрать «\(server.title)» для следующего подключения?")
         }
     }
 

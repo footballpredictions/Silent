@@ -2,6 +2,15 @@ import Darwin
 import Foundation
 import NetworkExtension
 
+@_cdecl("silent_relay_event")
+func silent_relay_event(_ message: UnsafePointer<CChar>?, _ level: Int32) {
+    guard let message else { return }
+    autoreleasepool {
+        let severity: VPNLogLevel = level == 2 ? .error : (level == 1 ? .success : .info)
+        VPNLog.write(String(cString: message), level: severity, source: "WDTT")
+    }
+}
+
 enum TunnelBridge {
     private static let lock = NSLock()
     private static weak var provider: PacketTunnelProvider?
@@ -59,6 +68,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let work = AppIdentity.workURL?.path ?? NSTemporaryDirectory()
         try? FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
         wdtt_set_output(silent_packet_out)
+        wdtt_set_journal(silent_relay_event)
         let code = config.hashes.joined(separator: ",").withCString { hashes in
             config.password.withCString { password in
                 config.deviceId.withCString { deviceId in

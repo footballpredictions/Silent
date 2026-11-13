@@ -325,6 +325,30 @@ enum ServerCatalog {
         ("server5", "Сервер 5"),
     ]
 
+    static var fixedList: [VpnServer] {
+        slots.map { VpnServer(key: $0.key, title: $0.title) }
+    }
+
+    static func displayList(_ remote: [VpnServer]) -> [VpnServer] {
+        var byKey: [String: VpnServer] = [:]
+        var order: [String] = []
+        for server in remote {
+            let key = server.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !key.isEmpty, byKey[key] == nil else { continue }
+            byKey[key] = server
+            order.append(key)
+        }
+        let fixed = fixedList.map { slot in
+            let title = byKey.removeValue(forKey: slot.key)?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return VpnServer(key: slot.key, title: title.isEmpty || (slot.key == "server4" && title == "Сервер 4") ? slot.title : title)
+        }
+        return fixed + order.compactMap { key in
+            guard let server = byKey[key] else { return nil }
+            let title = server.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return VpnServer(key: key, title: title.isEmpty ? key : title)
+        }
+    }
+
     static func mtu(slot: String, ip: String, recommended: Int? = nil) -> Int {
         if let mtu = recommended, (1200...1420).contains(mtu) { return mtu }
         if slot == "server3" || ip == "78.17.74.27" { return 1420 }

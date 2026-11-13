@@ -197,7 +197,6 @@ struct MainView: View {
                             vm.menuOpen = false
                             if page == .bonuses { Task { await vm.loadReferral() } }
                             if page == .subscription { Task { await vm.loadPlans() } }
-                            if page == .server { Task { await vm.refreshServers() } }
                         } label: {
                             HStack {
                                 Text(title)

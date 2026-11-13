@@ -28,6 +28,8 @@ void wdtt_stop(void) {}
 
 void wdtt_set_output(void (*cb)(const unsigned char *data, int len)) { (void)cb; }
 
+void wdtt_set_journal(void (*cb)(const char *message, int level)) { (void)cb; }
+
 void wdtt_input(const unsigned char *data, int len) { (void)data; (void)len; }
 
 int wdtt_set_russian_policy(const char *json) { (void)json; return 1; }

@@ -5,6 +5,10 @@ package main
 /*
 #include <stdlib.h>
 typedef void (*packet_cb)(const unsigned char *data, int len);
+typedef void (*journal_cb)(const char *message, int level);
+static void call_journal(journal_cb cb, const char *message, int level) {
+	if (cb != 0) cb(message, level);
+}
 static void call_output(packet_cb cb, const unsigned char *data, int len) {
 	if (cb != 0 && data != 0 && len > 0) {
 		cb(data, len);
@@ -18,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -45,8 +50,8 @@ var (
 	engineDev     *device.Device
 	engineAddress string
 	engineTUN     *flowTUN
-	engineLog     *os.File
 	outputCb      C.packet_cb
+	journalCb     C.journal_cb
 	iosPause      int32
 	engineError   string
 )
@@ -65,6 +70,35 @@ func wdtt_last_error() *C.char {
 	engineMu.Lock()
 	defer engineMu.Unlock()
 	return C.CString(engineError)
+}
+
+//export wdtt_set_journal
+func wdtt_set_journal(cb C.journal_cb) {
+	engineMu.Lock()
+	journalCb = cb
+	engineMu.Unlock()
+}
+
+func writeIOSJournal(message string, level int) {
+	engineMu.Lock()
+	cb := journalCb
+	engineMu.Unlock()
+	if cb == nil || message == "" {
+		return
+	}
+	value := C.CString(message)
+	defer C.free(unsafe.Pointer(value))
+	C.call_journal(cb, value, C.int(level))
+}
+
+type iosJournalWriter struct{}
+
+func (iosJournalWriter) Write(p []byte) (int, error) {
+	if len(p) <= 4096 {
+		message, level := relayJournalEvent(string(p))
+		writeIOSJournal(message, level)
+	}
+	return len(p), nil
 }
 
 //export wdtt_set_output
@@ -140,13 +174,11 @@ func stopIOSEngine() {
 	done := engineDone
 	dev := engineDev
 	t := engineTUN
-	logFile := engineLog
 	engineCancel = nil
 	engineDone = nil
 	engineDev = nil
 	engineAddress = ""
 	engineTUN = nil
-	engineLog = nil
 	engineMu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -160,10 +192,7 @@ func stopIOSEngine() {
 	if t != nil {
 		_ = t.Close()
 	}
-	if logFile != nil {
-		log.SetOutput(os.Stderr)
-		_ = logFile.Close()
-	}
+	log.SetOutput(io.Discard)
 }
 
 //export wdtt_start
@@ -180,6 +209,7 @@ func wdtt_start(
 	engineLifeMu.Lock()
 	defer engineLifeMu.Unlock()
 	stopIOSEngine()
+	log.SetOutput(iosJournalWriter{})
 	setEngineErr("")
 	runtime.GOMAXPROCS(2)
 	debug.SetGCPercent(50)
@@ -198,12 +228,8 @@ func wdtt_start(
 	}
 	if dir != "" {
 		_ = os.MkdirAll(dir, 0o700)
-		_ = os.Chdir(dir)
-		if f, err := os.OpenFile("wdtt.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
-			engineMu.Lock()
-			engineLog = f
-			engineMu.Unlock()
-			log.SetOutput(f)
+		if os.Chdir(dir) == nil {
+			_ = os.Remove("wdtt.log")
 		}
 	}
 
@@ -230,8 +256,12 @@ func wdtt_start(
 	var attempt int
 	relay, configErr := tryIOSRelayHashes(ctx, hashes, func(ctx context.Context, hash string, budget time.Duration) (iosRelay, error) {
 		attempt++
-		log.Printf("[iOS] попытка подключения к ретранслятору №%d", attempt)
-		return startIOSRelay(ctx, peer, hash, wrapKey, devID, pass, budget, attempt)
+		writeIOSJournal(fmt.Sprintf("Ретранслятор №%d · запрос параметров VK · воркеров: %d", attempt, workersPerGroup), 0)
+		result, err := startIOSRelay(ctx, peer, hash, wrapKey, devID, pass, budget, attempt)
+		if err != nil && ctx.Err() == nil {
+			writeIOSJournal(fmt.Sprintf("Ретранслятор №%d · %s", attempt, err), 2)
+		}
+		return result, err
 	})
 	if configErr != nil {
 		cancel()
@@ -272,7 +302,7 @@ func wdtt_start(
 	engineTUN = flow
 	engineMu.Unlock()
 
-	log.Printf("[iOS] WireGuard готов; каналов: %d", workersPerGroup)
+	writeIOSJournal("Сетевой модуль WireGuard запущен", 1)
 	return 0
 }
 
@@ -361,8 +391,7 @@ func runIOSWorkers(
 ) {
 	defer func() {
 		if r := recover(); r != nil {
-			writeCrashLog("ios.workers", r)
-			log.Printf("[FATAL] %v", r)
+			writeIOSJournal("Группа ретрансляторов завершилась с внутренней ошибкой", 2)
 		}
 	}()
 	stats := NewStats()

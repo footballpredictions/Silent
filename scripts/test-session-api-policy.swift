@@ -19,6 +19,15 @@ struct SessionsApiPolicyTest {
             precondition(!PublicApiFailover.shouldTryNextBase(httpCode: code))
         }
         precondition(PublicApiFailover.shouldTryNextBase(httpCode: 503))
+        let incompleteList = ServerCatalog.displayList([
+            VpnServer(key: "server5", title: "Сервер 5"),
+            VpnServer(key: " SERVER2 ", title: "Резервный"),
+            VpnServer(key: "server4", title: "Сервер 4"),
+            VpnServer(key: "server6", title: "Сервер 6")
+        ])
+        precondition(ServerCatalog.displayList([]).map(\.key) == ["server1", "server2", "server3", "server4", "server5"])
+        precondition(incompleteList.map(\.key) == ["server1", "server2", "server3", "server4", "server5", "server6"])
+        precondition(incompleteList[1].title == "Резервный" && incompleteList[3].title == "Сервер 4 для ИИ")
         let hash = "Example_VK-hash-123456789"
         precondition(BootstrapLaunch.callHash("https://vk.ru/call/join/\(hash)?from=invite") == hash)
         precondition(BootstrapLaunch.callHash("https://vk.ru.example/call/join/\(hash)") == nil)

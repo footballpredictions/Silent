@@ -6,7 +6,7 @@ enum MenuPage: String {
     case root, subscription, exclusions, dns, server, bonuses, devices, support, about
 }
 
-enum PaymentUi { case idle, waiting, success, failed, timeout }
+enum PaymentUi { case idle, preparing, waiting, success, failed, timeout }
 
 @MainActor
 final class MainViewModel: ObservableObject {
@@ -65,6 +65,12 @@ final class MainViewModel: ObservableObject {
 
     private let api = APIService.shared
     private var pollTask: Task<Void, Never>?
+    private var paymentTask: Task<Void, Never>?
+    private var paymentTunnelActive = false
+    private var paymentCleanupActive = false
+    private var savedMainForPayment: TunnelConfig?
+    private var paymentUsesTunnel = false
+    private let paymentRestoreKey = "ios-payment-main-restore"
     private let vpn = VpnManager.shared
     private var siteRoutingUpdate: Task<Void, Never>?
     private var vpnObserver: AnyCancellable?
@@ -77,6 +83,9 @@ final class MainViewModel: ObservableObject {
     private var tunnelRecovery: Task<Void, Never>?
     private var profileLoading = false
     private var serverSelectionVersion = 0
+    private var prefetchTask: Task<Void, Never>?
+    private var serverConfigCache: ServerConfigCache?
+    private let serverConfigCacheKey = "ios-server-configs-v1"
 
     private let bootstrapHash = BootstrapLaunch.callHash(Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "") ?? ""
     private let bootstrapPassword: String = {
@@ -111,7 +120,12 @@ final class MainViewModel: ObservableObject {
                 bootstrapActive = true
             }
             await vpn.refresh()
-            if bootstrapActive && (!api.isLoggedIn || vpn.state == .disconnected) {
+            if AppIdentity.readTunnelConfig()?.paymentRouting == true || KeychainHelper.get(paymentRestoreKey) != nil {
+                bootstrapActive = false
+                let account = api.isLoggedIn ? (try? await api.getProfile())?.id : nil
+                paymentTunnelActive = true
+                await finishPaymentTunnel(account: account)
+            } else if bootstrapActive && (!api.isLoggedIn || vpn.state == .disconnected) {
                 await stopBootstrap()
             } else if !api.isLoggedIn, vpn.state == .connected || vpn.state == .connecting {
                 await vpn.disconnect()
@@ -125,6 +139,12 @@ final class MainViewModel: ObservableObject {
     }
 
     private func onVPNStateChanged(_ state: VpnState) {
+        if paymentTunnelActive {
+            if state == .disconnected, payment == .waiting, !paymentCleanupActive {
+                Task { await releasePaymentTunnel() }
+            }
+            return
+        }
         if bootstrapActive {
             if state == .disconnected, !bootstrapStarting {
                 bootstrapActive = false
@@ -165,6 +185,7 @@ final class MainViewModel: ObservableObject {
               config.deviceId == sessionDeviceId else { return }
         do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
         guard !Task.isCancelled, vpnState == .disconnected, loggedIn, !vpnActionInProgress else { return }
+        guard !paymentTunnelActive, paymentTask == nil else { return }
         vpnActionInProgress = true
         defer { vpnActionInProgress = false; tunnelRecovery = nil }
         vpnState = .connecting
@@ -316,10 +337,15 @@ final class MainViewModel: ObservableObject {
     private func loadAccount() async throws {
         authLoadingTitle = "Загрузка аккаунта…"
         let loaded = try await api.getProfile()
-        await stopBootstrap()
         profile = loaded
+        loadServerConfigCache(account: loaded.id)
+        if bootstrapActive, vpn.state == .connected, (loaded.is_admin || loaded.subscription.is_active) {
+            await prefetchServerConfigs(account: loaded.id, slots: [selectedServer], tunnelActive: true)
+        }
+        await stopBootstrap()
         loggedIn = true
         bootstrapFailed = false
+        scheduleServerPrefetch()
     }
 
     private func rememberLoginSession() {
@@ -401,7 +427,11 @@ final class MainViewModel: ObservableObject {
     }
 
     func logout() {
+        guard paymentTask == nil, !paymentTunnelActive, !paymentCleanupActive else { return }
         tunnelRecovery?.cancel()
+        prefetchTask?.cancel()
+        serverConfigCache = nil
+        KeychainHelper.delete(serverConfigCacheKey)
         canRecoverTunnel = false
         sessionsVersion += 1
         serverSelectionVersion += 1
@@ -425,7 +455,8 @@ final class MainViewModel: ObservableObject {
     }
 
     func toggleVPN() async {
-        guard !vpnActionInProgress, !selectingServer else { return }
+        guard !vpnActionInProgress, !selectingServer, !paymentTunnelActive, !paymentCleanupActive, paymentTask == nil else { return }
+        prefetchTask?.cancel()
         tunnelRecovery?.cancel()
         vpnActionInProgress = true
         defer { vpnActionInProgress = false }
@@ -453,17 +484,27 @@ final class MainViewModel: ObservableObject {
         var sessionStarted = false
         var stage = "Сервер не подтвердил подключение VPN"
         do {
+            let confirmedSlot: String?
             do {
-                try await api.connect(preferredServer: preferred)
+                confirmedSlot = try await api.connect(preferredServer: preferred)
             } catch APIError.http(404, _) {
                 _ = try await api.registerDevice(name: UIDevice.current.name, preferredServer: preferred)
-                try await api.connect(preferredServer: preferred)
+                confirmedSlot = try await api.connect(preferredServer: preferred)
             }
             sessionStarted = true
             stage = "Не удалось получить настройки VPN"
             // connect provisions missing per-account relay hashes; reading the
             // config first could leave this attempt using stale bootstrap hashes.
-            let cfg = try await api.vpnConfig(preferredServer: preferred)
+            let cfg: VpnConfig
+            if let slot = confirmedSlot, let account = profile?.id,
+               let cached = serverConfigCache?.config(server: slot, account: account, fingerprint: api.deviceFingerprint),
+               cached.device_id == sessionDeviceId {
+                cfg = cached
+                logConnection("Используем предварительно загруженный конфиг подтверждённого сервера")
+            } else {
+                cfg = try await api.vpnConfig(preferredServer: confirmedSlot ?? preferred)
+                if let slot = cfg.selected_server { saveServerConfig(cfg, slot: slot) }
+            }
             if let profile { UserDefaults.standard.set(cfg.device_id, forKey: "vpn-session-\(profile.id)") }
             logConnection("Конфигурация получена. Подготовка сессии")
             if let confirmed = cfg.selected_server?.lowercased(), confirmed != selectedServer,
@@ -536,23 +577,125 @@ final class MainViewModel: ObservableObject {
     }
 
     func buy(_ planId: String) async {
-        guard busyPlan == nil else { return }
+        guard busyPlan == nil, paymentTask == nil, !paymentTunnelActive, !paymentCleanupActive, !vpnActionInProgress, !selectingServer,
+              vpnState == .connected || vpnState == .disconnected, let account = profile?.id else { return }
         busyPlan = planId
         paymentError = nil
-        defer { busyPlan = nil }
+        payment = .preparing
+        prefetchTask?.cancel()
+        tunnelRecovery?.cancel()
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.openPayment(planId, account: account)
+        }
+        paymentTask = task
+        await task.value
+    }
+
+    private func openPayment(_ planId: String, account: String) async {
+        defer { busyPlan = nil; paymentTask = nil }
         do {
-            let res = try await api.initPayment(plan: planId)
-            guard let url = URL(string: res.url) else {
-                paymentError = "Нет ссылки на оплату"
-                return
+            try await preparePaymentRoute()
+            try Task.checkCancellation()
+            guard profile?.id == account else { throw CancellationError() }
+            guard (vpn.state == .connected) == paymentUsesTunnel else { throw APIError.network }
+            let res = try await api.initPayment(plan: planId, tunnelActive: paymentUsesTunnel)
+            try Task.checkCancellation()
+            guard let url = URL(string: res.url), PaymentRoute.isCheckoutURL(url) else {
+                throw APIError.server("Не удалось получить ссылку ЮMoney")
             }
+            guard (vpn.state == .connected) == paymentUsesTunnel else { throw APIError.network }
+            guard await UIApplication.shared.open(url) else { throw APIError.server("Не удалось открыть ЮMoney") }
+            try Task.checkCancellation()
             payment = .waiting
-            await UIApplication.shared.open(url)
             startPoll(res.label)
         } catch {
-            payment = .failed
-            paymentError = error.localizedDescription
+            let cancelled = Task.isCancelled || error is CancellationError
+            await releasePaymentTunnel()
+            if !cancelled {
+                payment = .failed
+                paymentError = error.localizedDescription
+            }
         }
+    }
+
+    private func preparePaymentRoute() async throws {
+        let current = vpn.state
+        logConnection("Оплата · проверка HTTPS ЮMoney по текущему маршруту")
+        if await PaymentRoute.check(), vpn.state == current {
+            paymentUsesTunnel = current == .connected
+            logConnection("Оплата · ЮMoney доступна", level: .success)
+            return
+        }
+        try Task.checkCancellation()
+        let routes = BootstrapLaunch.paymentHosts.indices.compactMap { index in
+            BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
+                                          password: bootstrapPassword, cell: index, payment: true)
+        }
+        guard !routes.isEmpty else {
+            throw APIError.server("ЮMoney недоступна. Попробуйте другую сеть.")
+        }
+        if current == .connected {
+            guard let config = AppIdentity.readTunnelConfig(), config.bootstrapDuration == nil else { throw APIError.network }
+            savedMainForPayment = config
+            if let account = profile?.id, let data = try? JSONEncoder().encode(PaymentMainSnapshot(account: account, config: config)) {
+                KeychainHelper.set(data.base64EncodedString(), key: paymentRestoreKey)
+            }
+        }
+        paymentTunnelActive = true
+        await vpn.disconnect()
+        let picked = try await PaymentRoute.choose(Array(routes.enumerated()), start: { entry in
+            let (index, route) = entry
+            guard vpn.state == .disconnected else { throw APIError.network }
+            logConnection("Оплата · проверка временного маршрута №\(index + 1)")
+            try await vpn.connect(route, timeout: 48)
+            try await api.checkTunnelGateway()
+        }, probe: {
+            await PaymentRoute.check() && vpn.state == .connected
+        }, stop: {
+            logConnection("Оплата · маршрут не подтвердился", level: .error)
+            await vpn.disconnect()
+            return vpn.state == .disconnected
+        })
+        if let picked {
+            paymentUsesTunnel = true
+            logConnection("Оплата · ЮMoney доступна через маршрут №\(picked + 1)", level: .success)
+            return
+        }
+        throw APIError.server("ЮMoney не ответила по доступным маршрутам. Попробуйте позже или смените сеть.")
+    }
+
+    private func releasePaymentTunnel() async {
+        // Cleanup must finish even when the preparation task was cancelled.
+        await Task { await self.finishPaymentTunnel(account: self.loggedIn ? self.profile?.id : nil) }.value
+    }
+
+    private func finishPaymentTunnel(account: String?) async {
+        guard paymentTunnelActive, !paymentCleanupActive else { return }
+        paymentCleanupActive = true
+        defer { paymentCleanupActive = false }
+        let stored = KeychainHelper.get(paymentRestoreKey).flatMap { Data(base64Encoded: $0) }
+        let snapshot = stored.flatMap { try? JSONDecoder().decode(PaymentMainSnapshot.self, from: $0) }
+        let config = savedMainForPayment ?? (snapshot?.account == account ? snapshot?.config : nil)
+        savedMainForPayment = nil
+        KeychainHelper.delete(paymentRestoreKey)
+        if AppIdentity.readTunnelConfig()?.paymentRouting == true { await vpn.disconnect() }
+        if account != nil, let config, config.bootstrapDuration == nil, vpn.state == .disconnected {
+            vpnState = .connecting
+            do {
+                try await vpn.connect(config)
+                try await api.checkTunnelGateway()
+                logConnection("Оплата · основной VPN восстановлен", level: .success)
+            } catch {
+                await vpn.disconnect()
+                errorMessage = "Не удалось восстановить основной VPN после оплаты. Подключитесь снова."
+            }
+        }
+        vpnState = vpn.state
+        connectedAt = vpnState == .connected ? Date() : nil
+        canRecoverTunnel = vpnState == .connected
+        paymentTunnelActive = false
+        if payment == .waiting { paymentUsesTunnel = false }
     }
 
     func preparePayment(_ planId: String) async {
@@ -591,26 +734,33 @@ final class MainViewModel: ObservableObject {
                         self.profile = fresh
                         self.payment = .success
                         self.showSubscriptionShop = false
+                        await self.releasePaymentTunnel()
                         return
                     }
                     if status.status == "failed" || status.status == "expired" || status.status == "cancelled" {
                         self.payment = .failed
+                        await self.releasePaymentTunnel()
                         return
                     }
                 }
             }
             self?.payment = .timeout
+            await self?.releasePaymentTunnel()
         }
     }
 
     func resetPayment() {
+        paymentTask?.cancel()
         pollTask?.cancel()
         payment = .idle
         paymentError = nil
+        paymentUsesTunnel = false
+        if paymentTask == nil { Task { await releasePaymentTunnel() } }
     }
 
     func onPaymentReturn() async {
-        if let fresh = try? await api.getProfile() { profile = fresh }
+        let account = profile?.id
+        if let fresh = try? await api.getProfile(), profile?.id == account, fresh.id == account { profile = fresh }
     }
 
     func loadReferral() async {
@@ -672,6 +822,7 @@ final class MainViewModel: ObservableObject {
             guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion else { return }
             applyServers(body)
             serverHint = ""
+            scheduleServerPrefetch()
         } catch {
             guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion else { return }
             serverHint = "Не удалось обновить список. Проверьте подключение."
@@ -679,7 +830,8 @@ final class MainViewModel: ObservableObject {
     }
 
     func selectServer(_ key: String) async {
-        guard loggedIn, !selectingServer, key != selectedServer, servers.contains(where: { $0.key == key }) else { return }
+        guard loggedIn, !selectingServer, !paymentTunnelActive, paymentTask == nil,
+              key != selectedServer, servers.contains(where: { $0.key == key }) else { return }
         guard vpnState == .disconnected, !vpnActionInProgress else {
             serverHint = "Отключите VPN перед сменой сервера."
             return
@@ -694,6 +846,7 @@ final class MainViewModel: ObservableObject {
             guard loggedIn, profile?.id == account else { return }
             applyServers(body)
             serverHint = selectedServer == key ? "Сервер выбран" : "Сервер предложил другой доступный вариант"
+            scheduleServerPrefetch()
         } catch {
             guard loggedIn, profile?.id == account else { return }
             serverHint = error.localizedDescription
@@ -706,6 +859,61 @@ final class MainViewModel: ObservableObject {
             selectedServer = selected
             LocalStore.preferredServer = selected
         }
+    }
+
+    private func loadServerConfigCache(account: String) {
+        let fingerprint = api.deviceFingerprint
+        if let stored = KeychainHelper.get(serverConfigCacheKey), let bytes = Data(base64Encoded: stored),
+           let saved = try? JSONDecoder().decode(ServerConfigCache.self, from: bytes),
+           saved.account == account, saved.fingerprint == fingerprint {
+            serverConfigCache = saved
+        } else {
+            serverConfigCache = ServerConfigCache(account: account, fingerprint: fingerprint)
+        }
+    }
+
+    private func saveServerConfig(_ config: VpnConfig, slot: String) {
+        serverConfigCache?.save(config, for: slot)
+        if let cache = serverConfigCache, let bytes = try? JSONEncoder().encode(cache) {
+            KeychainHelper.set(bytes.base64EncodedString(), key: serverConfigCacheKey)
+        }
+    }
+
+    private func scheduleServerPrefetch() {
+        guard loggedIn, hasAccess, let account = profile?.id, !vpnActionInProgress,
+              paymentTask == nil, !paymentTunnelActive else { return }
+        prefetchTask?.cancel()
+        let slots = [selectedServer] + servers.map(\.key).filter { $0 != selectedServer }
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            await self.prefetchServerConfigs(account: account, slots: Array(slots.prefix(8)), tunnelActive: self.vpn.state == .connected)
+        }
+    }
+
+    private func prefetchServerConfigs(account: String, slots: [String], tunnelActive: Bool) async {
+        let fingerprint = api.deviceFingerprint
+        var loaded = 0
+        for slot in slots {
+            guard !Task.isCancelled, profile?.id == account, !vpnActionInProgress, paymentTask == nil else { break }
+            if serverConfigCache?.config(server: slot, account: account, fingerprint: fingerprint) != nil { continue }
+            do {
+                let config = try await api.previewVpnConfig(server: slot, tunnelActive: tunnelActive)
+                guard !Task.isCancelled, profile?.id == account, !vpnActionInProgress, paymentTask == nil else { break }
+                if config.selected_server == slot {
+                    saveServerConfig(config, slot: slot)
+                    loaded += 1
+                }
+            } catch APIError.http(404, _) {
+                break
+            } catch APIError.http(402, _) {
+                break
+            } catch APIError.http(401, _) {
+                break
+            } catch {
+                if error is URLError { break }
+            }
+        }
+        if loaded > 0 { logConnection("Предварительно загружены конфиги VPN: \(loaded)") }
     }
 
     func addSite() {
@@ -843,6 +1051,11 @@ final class MainViewModel: ObservableObject {
 
 private struct BootstrapCache: Codable {
     let savedAt: Date
+    let config: TunnelConfig
+}
+
+private struct PaymentMainSnapshot: Codable {
+    let account: String
     let config: TunnelConfig
 }
 

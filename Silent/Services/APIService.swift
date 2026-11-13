@@ -295,17 +295,20 @@ class APIService: ObservableObject {
         )
     }
 
-    func connect(preferredServer: String) async throws {
+    @discardableResult
+    func connect(preferredServer: String) async throws -> String? {
         struct Req: Encodable {
             let device_fingerprint: String
             let device_type: String
             let preferred_server: String
         }
-        _ = try await requestData(
+        struct Reply: Decodable { let selected_server: String? }
+        let reply: Reply = try await request(
             "api/vpn/connect",
             method: "POST",
             body: Req(device_fingerprint: deviceFingerprint, device_type: "ios", preferred_server: preferredServer)
         )
+        return reply.selected_server
     }
 
     func disconnect() async throws {
@@ -320,9 +323,14 @@ class APIService: ObservableObject {
         refreshToken = nil
     }
 
-    func initPayment(plan: String, promo: String? = nil) async throws -> PaymentResponse {
+    func initPayment(plan: String, promo: String? = nil, tunnelActive: Bool) async throws -> PaymentResponse {
         struct Req: Encodable { let plan_type: String; let promo_code: String? }
-        return try await request("api/payments/init", method: "POST", body: Req(plan_type: plan, promo_code: promo))
+        // Creating a payment is a write. Do not replay it on another API base
+        // when the first response times out after the backend may have committed.
+        let base = tunnelActive ? PublicApiFailover.tunnelAPI : PublicApiFailover.hiveHttps
+        let data = try await requestOnce("api/payments/init", method: "POST", body: Req(plan_type: plan, promo_code: promo),
+                                         auth: true, base: base, allowRefresh: false, verifyTLS: true)
+        return try JSONDecoder().decode(PaymentResponse.self, from: data)
     }
 
     func previewPayment(plan: String) async throws -> PaymentPreview {
@@ -350,6 +358,14 @@ class APIService: ObservableObject {
 
     func vpnConfig(preferredServer: String) async throws -> VpnConfig {
         try await request(PublicApiFailover.serverQuery("api/vpn/config", fingerprint: deviceFingerprint, preferred: preferredServer))
+    }
+
+    func previewVpnConfig(server: String, tunnelActive: Bool) async throws -> VpnConfig {
+        let path = PublicApiFailover.serverQuery("api/vpn/config-preview", fingerprint: deviceFingerprint, preferred: server)
+        let base = tunnelActive ? PublicApiFailover.tunnelAPI : PublicApiFailover.hiveHttps
+        let data = try await requestOnce(path, method: "GET", body: nil, auth: true, base: base,
+                                         allowRefresh: false, verifyTLS: true, timeout: 3)
+        return try JSONDecoder().decode(VpnConfig.self, from: data)
     }
 
     func selectServer(_ slot: String) async throws -> VpnServersBody {

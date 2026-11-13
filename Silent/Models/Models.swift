@@ -66,9 +66,9 @@ struct UserProfile: Decodable {
     }
 }
 
-struct VpnConfig: Decodable {
+struct VpnConfig: Codable {
     let device_id: String
-    let wg_private_key: String
+    var wg_private_key: String
     let wg_address: String
     let wg_dns: String
     let server_ip: String

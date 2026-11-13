@@ -32,6 +32,7 @@ trap 'rm -rf "$TMP"' EXIT
 xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
   "$ROOT/Silent/Services/BootstrapHTTPResponse.swift" \
   "$ROOT/Silent/Services/BootstrapLaunch.swift" \
+  "$ROOT/Silent/Services/PaymentRoute.swift" "$ROOT/Silent/Services/ServerConfigCache.swift" \
   "$ROOT/Silent/Models/Models.swift" \
   "$ROOT/Shared/AppIdentity.swift" "$ROOT/Shared/RussianServices.swift" \
   "$ROOT/scripts/test-session-api-policy.swift" -o "$TMP/silent-session-policy"

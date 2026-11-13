@@ -45,6 +45,11 @@ private struct SubscriptionPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 switch vm.payment {
+                case .preparing:
+                    ProgressView("Проверяем доступность ЮMoney…")
+                        .foregroundStyle(p.fg)
+                    Button(theme?.payment_cancel_button_text ?? "Отмена") { vm.resetPayment() }
+                        .font(.subheadline).foregroundColor(p.link)
                 case .waiting:
                     Text(theme?.payment_waiting_title ?? "").font(.headline.weight(.semibold)).foregroundColor(p.fg)
                     Text(theme?.payment_waiting_text ?? "").font(.subheadline).foregroundColor(p.fg.opacity(0.55))

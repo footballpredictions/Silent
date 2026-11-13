@@ -35,9 +35,13 @@ final class VpnManager: ObservableObject {
         return mgr.connection.status == .connected
     }
 
-    func connect(_ config: TunnelConfig) async throws {
+    func connect(_ config: TunnelConfig, timeout: TimeInterval = 50) async throws {
         guard let url = AppIdentity.configURL else {
             throw APIError.server("Приложение не может передать настройки расширению VPN")
+        }
+        let mgr = try await load()
+        guard mgr.connection.status == .disconnected || mgr.connection.status == .invalid else {
+            throw APIError.server("Дождитесь отключения предыдущего VPN-соединения")
         }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent().appendingPathComponent("engine"),
@@ -47,14 +51,11 @@ final class VpnManager: ObservableObject {
         let data = try JSONEncoder().encode(config)
         try data.write(to: url, options: .atomic)
 
-        let mgr = try await load()
-        guard mgr.connection.status == .disconnected || mgr.connection.status == .invalid else {
-            throw APIError.server("Дождитесь отключения предыдущего VPN-соединения")
-        }
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = AppIdentity.tunnelBundleId
         proto.serverAddress = config.serverIP
         proto.disconnectOnSleep = false
+        proto.enforceRoutes = config.paymentRouting == true
         mgr.protocolConfiguration = proto
         mgr.localizedDescription = "Silent VPN"
         mgr.isEnabled = true
@@ -62,8 +63,9 @@ final class VpnManager: ObservableObject {
         try await mgr.loadFromPreferences()
         state = .connecting
         do {
+            try Task.checkCancellation()
             try mgr.connection.startVPNTunnel()
-            try await waitForConnection(mgr.connection)
+            try await waitForConnection(mgr.connection, timeout: timeout)
         } catch {
             mgr.connection.stopVPNTunnel()
             state = Self.map(mgr.connection.status)
@@ -71,8 +73,8 @@ final class VpnManager: ObservableObject {
         }
     }
 
-    private func waitForConnection(_ connection: NEVPNConnection) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 50
+    private func waitForConnection(_ connection: NEVPNConnection, timeout: TimeInterval) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
         repeat {
             try await Task.sleep(nanoseconds: 250_000_000)
             switch connection.status {
@@ -85,7 +87,7 @@ final class VpnManager: ObservableObject {
                 break
             }
         } while ProcessInfo.processInfo.systemUptime < deadline
-        throw APIError.server("Не удалось подключиться к VPN за 50 секунд")
+        throw APIError.server("Не удалось подключиться к VPN за \(Int(timeout)) секунд")
     }
 
     func disconnect() async {
@@ -113,6 +115,7 @@ final class VpnManager: ObservableObject {
               let session = mgr.connection as? NETunnelProviderSession,
               let url = AppIdentity.configURL else { return }
         var config = try JSONDecoder().decode(TunnelConfig.self, from: Data(contentsOf: url))
+        guard config.bootstrapDuration == nil else { return }
         config.excludeCIDRs = rules
         config.sitesWhitelist = whitelist
         config.russian = russian

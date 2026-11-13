@@ -4,6 +4,7 @@ enum BootstrapLaunch {
     static let duration = 120
     // Same public overlay nodes as Android. The login route is limited to the API gateway.
     static let cellHosts = ["87.58.213.193", "78.17.74.27"]
+    static let paymentHosts = cellHosts + ["89.37.192.241", PublicApiFailover.hiveIP]
 
     static func callHash(_ input: String) -> String? {
         let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -24,10 +25,12 @@ enum BootstrapLaunch {
         return candidate
     }
 
-    static func configuration(hash: String, fingerprint: String, password: String, cell: Int) -> TunnelConfig? {
-        guard !password.isEmpty, let hash = callHash(hash), cellHosts.indices.contains(cell) else { return nil }
-        return TunnelConfig(deviceId: "boot:\(fingerprint)", serverIP: cellHosts[cell], serverPort: 56000,
-                            password: password, hashes: [hash], workers: 3, address: "", dns: [], mtu: 1200,
-                            excludeCIDRs: [], bootstrapDuration: duration)
+    static func configuration(hash: String, fingerprint: String, password: String, cell: Int, payment: Bool = false) -> TunnelConfig? {
+        let hosts = payment ? paymentHosts : cellHosts
+        guard !password.isEmpty, let hash = callHash(hash), hosts.indices.contains(cell) else { return nil }
+        return TunnelConfig(deviceId: "boot:\(fingerprint)", serverIP: hosts[cell], serverPort: 56000,
+                            password: password, hashes: [hash], workers: 3, address: "",
+                            dns: payment ? ["1.1.1.1", "9.9.9.9"] : [], mtu: 1200,
+                            excludeCIDRs: [], bootstrapDuration: payment ? 300 : duration, paymentRouting: payment ? true : nil)
     }
 }

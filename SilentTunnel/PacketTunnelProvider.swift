@@ -132,7 +132,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                     if wdtt_has_handshake() != 0 {
                         VPNLog.write("Рукопожатие WireGuard подтверждено", level: .success)
                         self?.startPolicyRefresh()
-                        self?.scheduleBootstrapExpiry(config.bootstrapDuration)
+                        self?.scheduleBootstrapExpiry(config.bootstrapDuration, payment: config.paymentRouting == true)
                         completionHandler(nil)
                         return
                     }
@@ -150,9 +150,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func scheduleBootstrapExpiry(_ duration: Int?) {
+    private func scheduleBootstrapExpiry(_ duration: Int?, payment: Bool) {
         bootstrapExpiry?.cancel()
-        guard let duration, (1...120).contains(duration) else { return }
+        guard let duration, (1...(payment ? 300 : 120)).contains(duration) else { return }
         bootstrapExpiry = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000_000) }
             catch { return }
@@ -248,7 +248,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: config.serverIP)
         let parsed = parseAddress(config.address)
         let ipv4 = NEIPv4Settings(addresses: [parsed.ip], subnetMasks: [parsed.mask])
-        if config.bootstrapDuration != nil {
+        if config.bootstrapDuration != nil && config.paymentRouting != true {
             ipv4.includedRoutes = [NEIPv4Route(destinationAddress: "10.66.66.1", subnetMask: "255.255.255.255")]
             settings.ipv4Settings = ipv4
             settings.mtu = NSNumber(value: config.mtu)

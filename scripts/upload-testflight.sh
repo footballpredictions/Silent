@@ -115,8 +115,8 @@ ditto -x -k "${ipas[0]}" "$work/verified-ipa"
 exported_app="$work/verified-ipa/Payload/Silent.app"
 exported_tunnel="$exported_app/PlugIns/SilentTunnel.appex"
 codesign --verify --deep --strict "$exported_app"
-codesign -d --entitlements - "$exported_app" > "$work/exported-app-entitlements.plist"
-codesign -d --entitlements - "$exported_tunnel" > "$work/exported-tunnel-entitlements.plist"
+codesign -d --entitlements - --xml "$exported_app" > "$work/exported-app-entitlements.plist"
+codesign -d --entitlements - --xml "$exported_tunnel" > "$work/exported-tunnel-entitlements.plist"
 python3 - "$work" "$exported_app" "$exported_tunnel" <<'PY'
 import plistlib
 import sys

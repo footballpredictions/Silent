@@ -8,7 +8,9 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if vm.loggedIn {
+            if let stage = vm.launchStage {
+                LaunchSplash(stage: stage, palette: vm.palette)
+            } else if vm.loggedIn {
                 MainView()
             } else {
                 LoginView()
@@ -94,9 +96,6 @@ struct MainView: View {
                     status: statusText,
                     action: { Task { await vm.toggleVPN() } }
                 )
-                if let stage = vm.connectionStage {
-                    ConnectionProgress(stage: stage, palette: p)
-                }
                 if let errorMessage = vm.errorMessage {
                     Text(errorMessage)
                         .font(.footnote)
@@ -177,6 +176,11 @@ struct MainView: View {
                         Text("Аккаунт: \(vm.profile?.display_id ?? "—")")
                             .font(.footnote)
                             .foregroundColor(p.fg.opacity(0.65))
+                        if let id = vm.sessionDeviceId {
+                            Text("Сессия: \(id.prefix(8).uppercased())")
+                                .font(.footnote.monospacedDigit())
+                                .foregroundColor(p.fg.opacity(0.65))
+                        }
                     }
                     Spacer()
                     Button { withAnimation { vm.menuOpen = false } } label: {

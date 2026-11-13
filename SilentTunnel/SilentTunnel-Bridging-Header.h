@@ -2,7 +2,7 @@
 #define SilentTunnel_Bridging_Header_h
 
 int wdtt_engine_linked(void);
-const char *wdtt_last_error(void);
+char *wdtt_last_error(void);
 int wdtt_start(
     const char *serverIP,
     int serverPort,

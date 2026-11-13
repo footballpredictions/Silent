@@ -3,15 +3,34 @@ import Foundation
 import NetworkExtension
 
 enum TunnelBridge {
-    static weak var provider: PacketTunnelProvider?
+    private static let lock = NSLock()
+    private static weak var provider: PacketTunnelProvider?
+
+    static func setProvider(_ value: PacketTunnelProvider?) {
+        lock.lock()
+        defer { lock.unlock() }
+        provider = value
+    }
+
+    static func currentProvider() -> PacketTunnelProvider? {
+        lock.lock()
+        defer { lock.unlock() }
+        return provider
+    }
 }
 
 @_cdecl("silent_packet_out")
 func silent_packet_out(_ data: UnsafePointer<UInt8>?, _ len: Int32) {
-    guard let data, len > 0, let provider = TunnelBridge.provider else { return }
-    let buf = Data(bytes: data, count: Int(len))
-    let proto: NSNumber = (buf.first ?? 0) >> 4 == 6 ? 30 : 2
-    provider.packetFlow.writePackets([buf], withProtocols: [proto])
+    guard let data, len > 0 else { return }
+    autoreleasepool {
+        guard let provider = TunnelBridge.currentProvider() else { return }
+        let buf = Data(bytes: data, count: Int(len))
+        switch data.pointee >> 4 {
+        case 4: _ = provider.packetFlow.writePackets([buf], withProtocols: [NSNumber(value: AF_INET)])
+        case 6: _ = provider.packetFlow.writePackets([buf], withProtocols: [NSNumber(value: AF_INET6)])
+        default: break
+        }
+    }
 }
 
 class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -22,13 +41,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var bootstrapExpiry: Task<Void, Never>?
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-        TunnelBridge.provider = self
+        TunnelBridge.setProvider(self)
         guard var config = loadConfig() else {
             let text = "Не удалось прочитать настройки VPN"
             writeError(text)
             completionHandler(tunnelError(text))
             return
         }
+        VPNLog.write(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
         if wdtt_engine_linked() == 0 {
             let text = "Туннель не собран. На Mac запустите scripts/build-libwdtt.sh и заново сделайте Archive."
             writeError(text)
@@ -51,7 +71,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
         if code != 0 {
-            let raw = String(cString: wdtt_last_error())
+            let raw: String
+            if let error = wdtt_last_error() {
+                raw = String(cString: error)
+                free(error)
+            } else {
+                raw = "Не удалось запустить сетевой модуль"
+            }
+            VPNLog.write("Сетевой модуль вернул ошибку \(code)", level: .error)
             wdtt_stop()
             writeError(raw)
             completionHandler(tunnelError(raw))
@@ -67,6 +94,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         config.address = String(cString: address)
         free(address)
+        VPNLog.write("Сервер выдал конфигурацию WireGuard", level: .success)
         guard applyRussianPolicy(config.russian) else {
             wdtt_stop()
             let text = "Не удалось применить правила российских сервисов"
@@ -85,11 +113,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             self?.reading = true
             self?.readLoop()
+            VPNLog.write("Настройки маршрутизации применены. Ожидание WireGuard")
             guard let self else { completionHandler(CancellationError()); return }
             self.handshakeCheck = Task { [weak self] in
                 for _ in 0..<60 {
                     guard !Task.isCancelled else { completionHandler(CancellationError()); return }
                     if wdtt_has_handshake() != 0 {
+                        VPNLog.write("Рукопожатие WireGuard подтверждено", level: .success)
                         self?.startPolicyRefresh()
                         self?.scheduleBootstrapExpiry(config.bootstrapDuration)
                         completionHandler(nil)
@@ -123,6 +153,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        VPNLog.write("Остановка расширения iOS: \(reason.rawValue)", level: reason == .userInitiated ? .info : .error)
         if reason != .userInitiated, reason != .none,
            AppIdentity.errorURL.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true {
             writeError("iOS завершила VPN (код остановки \(reason.rawValue))")
@@ -135,8 +166,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         policyRefresh?.cancel()
         policyRefresh = nil
         activeConfig = nil
+        TunnelBridge.setProvider(nil)
         wdtt_stop()
-        TunnelBridge.provider = nil
         completionHandler()
     }
 
@@ -307,6 +338,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func writeError(_ text: String) {
+        VPNLog.write("Сетевое расширение не завершило текущий этап", level: .error)
         guard let url = AppIdentity.errorURL else { return }
         try? text.write(to: url, atomically: true, encoding: .utf8)
     }

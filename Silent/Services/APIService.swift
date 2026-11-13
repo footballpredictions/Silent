@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // MARK: - API Service
 
@@ -153,7 +154,9 @@ class APIService: ObservableObject {
     // ─── API Methods ─────────────────────────────────────────────────────────
 
     func login(email: String, password: String) async throws -> TokenResponse {
-        let resp: TokenResponse = try await request("api/auth/login", method: "POST", body: LoginRequest(email: email, password: password), auth: false)
+        let deviceName = await MainActor.run { UIDevice.current.name }
+        let device = LoginRequest.Device(device_fingerprint: deviceFingerprint, device_name: deviceName)
+        let resp: TokenResponse = try await request("api/auth/login", method: "POST", body: LoginRequest(email: email, password: password, device: device), auth: false)
         accessToken = resp.access_token
         refreshToken = resp.refresh_token
         return resp
@@ -214,7 +217,7 @@ class APIService: ObservableObject {
         try await request("api/payments/plans?all=1", auth: false)
     }
 
-    func bootstrapConfig(hash: String, onAttempt: (Int) -> Void) async throws -> VpnConfig {
+    func bootstrapConfig(hash: String, onAttempt: (String) -> Void) async throws -> VpnConfig {
         struct Req: Encodable {
             let bootstrap_hash: String
             let device_fingerprint: String
@@ -222,21 +225,26 @@ class APIService: ObservableObject {
         }
         let req = Req(bootstrap_hash: hash, device_fingerprint: deviceFingerprint)
         var lastCode: Int?
-        for (index, base) in PublicApiFailover.bootstrapHTTPS.enumerated() {
+        for base in PublicApiFailover.bootstrapHTTPS {
             try Task.checkCancellation()
-            onAttempt(index + 1)
+            let port = URL(string: base)?.port ?? 443
+            onAttempt("HTTPS :\(port): запрос конфигурации")
             do {
                 let data = try await requestOnce("api/vpn/bootstrap-config", method: "POST", body: req,
-                                                 auth: false, base: base, allowRefresh: false, verifyTLS: true, timeout: 4)
-                return try JSONDecoder().decode(VpnConfig.self, from: data)
+                                                 auth: false, base: base, allowRefresh: false, verifyTLS: true, timeout: 9)
+                let config = try JSONDecoder().decode(VpnConfig.self, from: data)
+                onAttempt("HTTPS :\(port): конфигурация получена")
+                return config
             } catch let error as URLError {
                 lastCode = error.code.rawValue
+                onAttempt("HTTPS :\(port): ошибка сети \(error.code.rawValue)")
             } catch APIError.network {
                 lastCode = nil
+                onAttempt("HTTPS :\(port): сервер не ответил")
             }
         }
         let detail = lastCode.map { " (код сети \($0))" } ?? ""
-        throw APIError.server("Сервер временного VPN недоступен\(detail)")
+        throw APIError.bootstrapUnavailable("Сервер временного VPN недоступен\(detail)")
     }
 
     func checkTunnelGateway() async throws {
@@ -353,13 +361,14 @@ class APIService: ObservableObject {
 enum APIError: LocalizedError {
     case noServer, invalidURL, network, unauthorized
     case server(String)
+    case bootstrapUnavailable(String)
     var errorDescription: String? {
         switch self {
         case .noServer: return "Сервер не настроен"
         case .invalidURL: return "Неверный URL"
         case .network: return "Ошибка сети"
         case .unauthorized: return "Необходима авторизация"
-        case .server(let msg): return msg
+        case .server(let msg), .bootstrapUnavailable(let msg): return msg
         }
     }
 }

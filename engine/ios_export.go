@@ -45,16 +45,13 @@ var (
 	engineLog     *os.File
 	outputCb      C.packet_cb
 	iosPause      int32
-	errStorage    [240]byte
+	engineError   string
 )
 
 func setEngineErr(msg string) {
-	b := []byte(msg)
-	if len(b) > len(errStorage)-1 {
-		b = b[:len(errStorage)-1]
-	}
-	copy(errStorage[:], b)
-	errStorage[len(b)] = 0
+	engineMu.Lock()
+	engineError = msg
+	engineMu.Unlock()
 }
 
 //export wdtt_engine_linked
@@ -62,7 +59,9 @@ func wdtt_engine_linked() C.int { return 1 }
 
 //export wdtt_last_error
 func wdtt_last_error() *C.char {
-	return (*C.char)(unsafe.Pointer(&errStorage[0]))
+	engineMu.Lock()
+	defer engineMu.Unlock()
+	return C.CString(engineError)
 }
 
 //export wdtt_set_output

@@ -133,13 +133,13 @@ final class VpnManager: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    func lastDisconnectCode() async -> Int? {
+    func lastDisconnectError() async -> NSError? {
         guard let manager, manager.connection.status == .disconnected else { return nil }
         do {
             try await manager.connection.fetchLastDisconnectError()
             return nil
         } catch {
-            return (error as NSError).code
+            return error as NSError
         }
     }
 

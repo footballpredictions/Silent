@@ -19,14 +19,13 @@ final class MainViewModel: ObservableObject {
     @Published var theme: ThemeData?
     @Published var errorMessage: String?
     @Published var loggedIn = false
+    @Published private(set) var launchStage: ConnectionStage? = .configuration
     @Published var authLoading = false
     @Published var authLoadingTitle = "Вход…"
     @Published var authError: String?
     @Published var bootstrapDeadline: Date?
     @Published var bootstrapStarting = false
-    @Published var connectionLog: [String] = []
-    @Published private(set) var connectionStage: ConnectionStage?
-    @Published private(set) var bootstrapStage: ConnectionStage?
+    @Published private(set) var connectionLog: [VPNLogEntry] = []
     @Published var regNeedMail = false
     @Published var forgotSent = false
     @Published var darkMode = LocalStore.appearanceDark
@@ -71,15 +70,23 @@ final class MainViewModel: ObservableObject {
     private var bootstrapAttempted = false
     private var vpnActionInProgress = false
     private var connectedAt: Date?
+    private var canRecoverTunnel = false
+    private var tunnelRecovery: Task<Void, Never>?
     private var profileLoading = false
 
     private let bootstrapHash = (Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    private let bootstrapCacheKey = "ios-vpn-bootstrap-config"
 
     var palette: Palette { Palette.resolve(theme: theme, dark: darkMode) }
     var hasAccess: Bool { profile?.is_admin == true || profile?.subscription.is_active == true }
     var sessionDeviceId: String? {
-        AppIdentity.readTunnelConfig()?.deviceId
+        guard let profile else { return nil }
+        if let id = UserDefaults.standard.string(forKey: "vpn-session-\(profile.id)"),
+           profile.devices.contains(where: { $0.id == id }) { return id }
+        guard let config = AppIdentity.readTunnelConfig(), config.bootstrapDuration == nil,
+              profile.devices.contains(where: { $0.id == config.deviceId }) else { return nil }
+        return config.deviceId
     }
 
     func sessionOnline(_ device: DeviceInfo) -> Bool {
@@ -102,6 +109,10 @@ final class MainViewModel: ObservableObject {
                 await vpn.disconnect()
             }
             await loadInitialData()
+            launchStage = .complete
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            launchStage = nil
+            await loadAppearanceAndServers()
         }
     }
 
@@ -118,26 +129,64 @@ final class MainViewModel: ObservableObject {
         guard !vpnActionInProgress, state != vpnState else { return }
         let wasActive = vpnState == .connected || vpnState == .connecting || connectedAt != nil
         vpnState = state
-        if state == .connected, connectedAt == nil { connectedAt = Date() }
+        if state == .connected, connectedAt == nil {
+            connectedAt = Date()
+            canRecoverTunnel = true
+        }
         if state == .disconnected, wasActive {
             let uptime = connectedAt.map { max(0, Int(Date().timeIntervalSince($0))) }
             connectedAt = nil
             let reason = vpn.readError() ?? "Соединение VPN завершено"
             let duration = uptime.map { " · \($0) с" } ?? ""
             errorMessage = reason
-            logConnection(reason + duration)
-            Task {
-                if let code = await vpn.lastDisconnectCode(), vpnState == .disconnected {
-                    logConnection("Код отключения iOS: \(code)")
-                }
+            logConnection(reason + duration, level: .error)
+            let shouldRecover = canRecoverTunnel && loggedIn
+            canRecoverTunnel = false
+            tunnelRecovery?.cancel()
+            tunnelRecovery = Task { [weak self] in
+                await self?.recoverAfterDisconnect(allowed: shouldRecover)
             }
         }
     }
 
-    private func logConnection(_ text: String) {
-        let time = Date().formatted(date: .omitted, time: .standard)
-        connectionLog.append("\(time)  \(text)")
-        if connectionLog.count > 30 { connectionLog.removeFirst() }
+    private func recoverAfterDisconnect(allowed: Bool) async {
+        guard let error = await vpn.lastDisconnectError(), !Task.isCancelled, vpnState == .disconnected else { return }
+        logConnection("iOS: \(error.domain) / \(error.code)", level: .error)
+        guard allowed, error.domain == "NEVPNConnectionErrorDomain", error.code == 12,
+              hasAccess, let config = AppIdentity.readTunnelConfig(), config.bootstrapDuration == nil,
+              config.deviceId == sessionDeviceId else { return }
+        do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+        guard !Task.isCancelled, vpnState == .disconnected, loggedIn, !vpnActionInProgress else { return }
+        vpnActionInProgress = true
+        defer { vpnActionInProgress = false; tunnelRecovery = nil }
+        vpnState = .connecting
+        logConnection("iOS остановила расширение. Восстановление VPN")
+        do {
+            try await vpn.connect(config)
+            try await api.checkTunnelGateway()
+            guard vpn.state == .connected else { throw APIError.network }
+            vpnState = .connected
+            connectedAt = Date()
+            errorMessage = nil
+            logConnection("Соединение восстановлено", level: .success)
+        } catch {
+            await vpn.disconnect()
+            vpnState = vpn.state
+            if !Task.isCancelled {
+                errorMessage = "Не удалось восстановить VPN. Подключитесь снова."
+                logConnection(errorMessage ?? "Ошибка восстановления", level: .error)
+            }
+        }
+    }
+
+    private func logConnection(_ text: String, level: VPNLogLevel = .info) {
+        connectionLog.append(VPNLogEntry(date: Date(), level: level, source: "Приложение", message: text))
+        if connectionLog.count > 200 { connectionLog.removeFirst() }
+    }
+
+    func clearVPNLog() {
+        connectionLog.removeAll()
+        VPNLog.clear()
     }
 
     private func startBootstrap() async {
@@ -145,34 +194,48 @@ final class MainViewModel: ObservableObject {
         bootstrapAttempted = true
         bootstrapActive = true
         bootstrapStarting = true
-        bootstrapStage = .configuration
-        defer {
-            bootstrapStarting = false
-            bootstrapStage = nil
-        }
+        if launchStage != nil { launchStage = .configuration }
+        defer { bootstrapStarting = false }
         var stage = "Не удалось получить настройки временного VPN"
         do {
-            let config = try await api.bootstrapConfig(hash: bootstrapHash) { [weak self] attempt in
-                self?.logConnection("Временный VPN: запрос настроек, попытка \(attempt)")
+            let config: TunnelConfig
+            do {
+                let fresh = try await api.bootstrapConfig(hash: bootstrapHash) { [weak self] message in
+                    self?.logConnection("Временный VPN: \(message)")
+                }
+                config = makeTunnel(fresh, bootstrapDuration: 120)
+            } catch APIError.bootstrapUnavailable(let message) {
+                guard let value = KeychainHelper.get(bootstrapCacheKey), let data = Data(base64Encoded: value),
+                      let saved = try? JSONDecoder().decode(BootstrapCache.self, from: data),
+                      saved.config.deviceId == "boot:\(api.deviceFingerprint)",
+                      saved.config.hashes.contains(bootstrapHash),
+                      saved.savedAt > Date().addingTimeInterval(-86_400) else {
+                    throw APIError.server(message)
+                }
+                logConnection("Сервер конфигурации недоступен. Используем сохранённые настройки временного VPN")
+                config = saved.config
             }
             let duration = 120
             stage = "Не удалось запустить временный VPN"
-            bootstrapStage = .tunnel
+            if launchStage != nil { launchStage = .tunnel }
             logConnection("Запуск временного VPN")
-            try await vpn.connect(makeTunnel(config, bootstrapDuration: duration))
+            try await vpn.connect(config)
             let deadline = Date().addingTimeInterval(TimeInterval(duration))
             stage = "Временный VPN не передаёт данные"
-            bootstrapStage = .data
+            if launchStage != nil { launchStage = .data }
             try await api.checkTunnelGateway()
             guard vpn.state == .connected else { throw APIError.network }
             bootstrapDeadline = deadline
-            logConnection("Временный VPN готов: шлюз ответил")
+            if let data = try? JSONEncoder().encode(BootstrapCache(savedAt: Date(), config: config)) {
+                KeychainHelper.set(data.base64EncodedString(), key: bootstrapCacheKey)
+            }
+            logConnection("Временный VPN готов: шлюз ответил", level: .success)
         } catch {
             await vpn.disconnect()
             bootstrapActive = false
             let message = "\(stage). \(error.localizedDescription)"
             authError = message
-            logConnection(message)
+            logConnection(message, level: .error)
         }
     }
 
@@ -190,18 +253,29 @@ final class MainViewModel: ObservableObject {
         LocalStore.appearanceDark = darkMode
     }
 
-    func loadInitialData() async {
+    private func loadInitialData() async {
         if api.isLoggedIn, !authLoading, !profileLoading {
             profileLoading = true
             authLoading = true
             authLoadingTitle = "Загрузка аккаунта…"
+            launchStage = .session
             do { try await loadAccount() }
             catch { authError = "Не удалось загрузить аккаунт. \(error.localizedDescription)" }
             profileLoading = false
             authLoading = false
         }
-        if !loggedIn { await startBootstrap() }
-        await loadAppearanceAndServers()
+        if !loggedIn {
+            await startBootstrap()
+            if api.isLoggedIn, bootstrapDeadline != nil {
+                launchStage = .session
+                do {
+                    try await loadAccount()
+                    authError = nil
+                } catch {
+                    authError = "Не удалось восстановить аккаунт. \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     private func loadAccount() async throws {
@@ -210,6 +284,14 @@ final class MainViewModel: ObservableObject {
         await stopBootstrap()
         profile = loaded
         loggedIn = true
+    }
+
+    private func rememberLoginSession() {
+        guard let profile else { return }
+        let devices = profile.devices.filter { $0.device_type.lowercased() == "ios" }
+        if devices.count == 1, let device = devices.first {
+            UserDefaults.standard.set(device.id, forKey: "vpn-session-\(profile.id)")
+        }
     }
 
     private func loadAppearanceAndServers() async {
@@ -234,6 +316,7 @@ final class MainViewModel: ObservableObject {
                 LocalStore.rememberedPassword = ""
             }
             try await loadAccount()
+            rememberLoginSession()
             Task { await loadAppearanceAndServers() }
         } catch {
             authError = error.localizedDescription
@@ -257,6 +340,7 @@ final class MainViewModel: ObservableObject {
             }
             if entered {
                 try await loadAccount()
+                rememberLoginSession()
                 Task { await loadAppearanceAndServers() }
             } else {
                 regNeedMail = true
@@ -281,6 +365,8 @@ final class MainViewModel: ObservableObject {
     }
 
     func logout() {
+        tunnelRecovery?.cancel()
+        canRecoverTunnel = false
         sessionsVersion += 1
         Task {
             if vpnState == .connected || vpnState == .connecting {
@@ -301,11 +387,9 @@ final class MainViewModel: ObservableObject {
 
     func toggleVPN() async {
         guard !vpnActionInProgress else { return }
+        tunnelRecovery?.cancel()
         vpnActionInProgress = true
-        defer {
-            vpnActionInProgress = false
-            connectionStage = nil
-        }
+        defer { vpnActionInProgress = false }
         errorMessage = nil
         if vpnState == .connected || vpnState == .connecting {
             vpnState = .disconnecting
@@ -313,6 +397,7 @@ final class MainViewModel: ObservableObject {
             await vpn.disconnect()
             vpnState = vpn.state
             connectedAt = nil
+            canRecoverTunnel = false
             try? await api.disconnect()
             if vpnState == .disconnected { logConnection("VPN отключён") }
             return
@@ -323,22 +408,20 @@ final class MainViewModel: ObservableObject {
             return
         }
         vpnState = .connecting
-        connectionStage = .configuration
         logConnection("Запрос настроек VPN")
         var sessionStarted = false
         var stage = "Не удалось получить настройки VPN"
         do {
             let cfg = try await api.registerDevice(name: UIDevice.current.name, preferredServer: selectedServer)
-            connectionStage = .session
+            if let profile { UserDefaults.standard.set(cfg.device_id, forKey: "vpn-session-\(profile.id)") }
+            logConnection("Конфигурация получена. Подготовка сессии")
             stage = "Сервер не подтвердил подключение VPN"
             try await api.connect(preferredServer: cfg.selected_server ?? selectedServer)
             sessionStarted = true
             stage = "Не удалось запустить туннель"
-            connectionStage = .tunnel
             logConnection("Ожидание ответа сервера VPN")
             let tunnel = makeTunnel(cfg)
             try await vpn.connect(tunnel)
-            connectionStage = .data
             stage = "VPN не передаёт данные"
             logConnection("Проверка передачи данных через VPN")
             try await api.checkTunnelGateway()
@@ -347,14 +430,15 @@ final class MainViewModel: ObservableObject {
             }
             vpnState = .connected
             connectedAt = Date()
-            logConnection("VPN подключён: шлюз ответил")
+            canRecoverTunnel = true
+            logConnection("VPN подключён: шлюз ответил", level: .success)
             Task { await refreshSessions() }
         } catch {
             await vpn.disconnect()
             vpnState = vpn.state
             connectedAt = nil
             errorMessage = "\(stage). \(error.localizedDescription)"
-            logConnection("\(stage). \(error.localizedDescription)")
+            logConnection("\(stage). \(error.localizedDescription)", level: .error)
             if sessionStarted { try? await api.disconnect() }
         }
     }
@@ -697,8 +781,13 @@ final class MainViewModel: ObservableObject {
     }
 }
 
+private struct BootstrapCache: Codable {
+    let savedAt: Date
+    let config: TunnelConfig
+}
+
 enum ConnectionStage: Double {
-    case configuration = 0.18, session = 0.40, tunnel = 0.65, data = 0.90
+    case configuration = 0.18, session = 0.40, tunnel = 0.65, data = 0.90, complete = 1
 
     var title: String {
         switch self {
@@ -706,6 +795,7 @@ enum ConnectionStage: Double {
         case .session: return "Подготовка сессии…"
         case .tunnel: return "Подключение к серверу…"
         case .data: return "Проверка передачи данных…"
+        case .complete: return "Готово"
         }
     }
 }

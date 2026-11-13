@@ -1,6 +1,16 @@
 import Foundation
 
-struct LoginRequest: Encodable { let email: String; let password: String }
+struct LoginRequest: Encodable {
+    struct Device: Encodable {
+        let device_fingerprint: String
+        let device_name: String
+        let device_type = "ios"
+    }
+
+    let email: String
+    let password: String
+    let device: Device
+}
 struct RegisterRequest: Encodable { let email: String; let password: String; let referral_or_promo: String? }
 struct TokenResponse: Decodable { let access_token: String; let refresh_token: String }
 struct EmptyBody: Encodable {}

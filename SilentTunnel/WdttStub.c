@@ -4,7 +4,7 @@ static const char *kStubError = "Native engine is not linked";
 
 int wdtt_engine_linked(void) { return 0; }
 
-const char *wdtt_last_error(void) { return kStubError; }
+char *wdtt_last_error(void) { return strdup(kStubError); }
 
 int wdtt_start(
     const char *serverIP,

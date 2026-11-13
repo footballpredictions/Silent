@@ -26,17 +26,11 @@ struct LoginView: View {
                 ConnectionLogButton(palette: p)
             }
             .padding(.horizontal, 16)
-            Divider().overlay(p.fg.opacity(0.14))
 
             GeometryReader { geometry in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(displayName)
-                            .font(AppFont.text(13, weight: .bold))
-                            .tracking(3)
-                            .foregroundColor(p.fg)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 12)
+                        SilentBrandHeader(title: displayName, color: p.fg)
 
                         if let deadline = vm.bootstrapDeadline {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -45,8 +39,10 @@ struct LoginView: View {
                                     .font(.footnote.monospacedDigit())
                                     .foregroundColor(p.fg)
                             }
-                        } else if let stage = vm.bootstrapStage {
-                            ConnectionProgress(stage: stage, palette: p)
+                        } else if vm.bootstrapStarting {
+                            Text("Подключение временного VPN…")
+                                .font(.footnote)
+                                .foregroundColor(p.fg.opacity(0.7))
                         }
 
                         if forgot {

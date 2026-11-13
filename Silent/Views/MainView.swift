@@ -23,144 +23,136 @@ struct RootView: View {
 
 struct MainView: View {
     @EnvironmentObject var vm: MainViewModel
-    @State private var showConnectionLog = false
 
     var body: some View {
         let p = vm.palette
-        ZStack(alignment: .leading) {
-            home(p)
-            if vm.menuPage != .root {
-                MenuPageHost()
-                    .background(p.bg.ignoresSafeArea())
-                    .zIndex(1)
-            }
-            if vm.menuOpen && vm.menuPage == .root {
-                Color.black.opacity(0.2)
-                    .ignoresSafeArea()
-                    .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { vm.menuOpen = false } }
-                drawer(p)
-                    .transition(.move(edge: .leading))
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: vm.menuOpen)
-        .sheet(isPresented: $showConnectionLog) {
-            NavigationStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if vm.connectionLog.isEmpty { Text("Подключений в этой сессии ещё не было.") }
-                        ForEach(Array(vm.connectionLog.enumerated()), id: \.offset) { entry in
-                            Text(entry.element).font(.footnote.monospacedDigit())
-                        }
-                        if let error = vm.errorMessage { Text(error).foregroundStyle(.red) }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                home(p)
+                if vm.menuPage != .root {
+                    MenuPageHost()
+                        .background(p.bg.ignoresSafeArea())
+                        .zIndex(1)
                 }
-                .navigationTitle("Журнал подключения")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { showConnectionLog = false } } }
+                if vm.menuOpen && vm.menuPage == .root {
+                    Color.black.opacity(0.2)
+                        .ignoresSafeArea()
+                        .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { vm.menuOpen = false } }
+                    drawer(p)
+                        .frame(width: min(360, geometry.size.width * 0.79))
+                        .transition(.move(edge: .leading))
+                }
             }
+            .animation(.easeInOut(duration: 0.2), value: vm.menuOpen)
         }
     }
 
     private func home(_ p: Palette) -> some View {
         VStack(spacing: 0) {
-            HStack {
-                Button { withAnimation { vm.menuOpen.toggle() } } label: {
-                    Image(systemName: "line.horizontal.3")
-                        .font(AppFont.text(18, weight: .medium))
-                        .foregroundColor(p.fg)
-                        .frame(width: 44, height: 44)
-                }
-                Spacer()
+            ZStack {
                 Text(displayName)
                     .font(AppFont.text(13, weight: .bold))
                     .tracking(3)
                     .foregroundColor(p.fg)
-                Spacer()
-                Button(action: vm.toggleAppearance) {
-                    Image(systemName: vm.darkMode ? "sun.max" : "moon")
-                        .font(AppFont.text(16, weight: .medium))
-                        .foregroundColor(p.fg)
-                        .frame(width: 44, height: 44)
-                }
-                Button { showConnectionLog = true } label: {
-                    Image(systemName: "list.bullet.rectangle")
-                        .font(AppFont.text(16, weight: .medium))
-                        .foregroundColor(p.fg)
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Журнал подключения")
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 52)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .padding(.horizontal, 104)
 
-            ZStack {
-                if let url = ThemePalette.assetURL(vm.theme?.home_bg_image_url ?? "") {
-                    AsyncImage(url: url) { image in
-                        image.resizable().scaledToFill().saturation(0).opacity(0.22)
-                    } placeholder: { Color.clear }
+                HStack(spacing: 4) {
+                    Button { withAnimation { vm.menuOpen.toggle() } } label: {
+                        Image(systemName: "line.horizontal.3")
+                            .font(AppFont.text(18, weight: .medium))
+                            .foregroundColor(p.fg)
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Меню")
+                    Spacer()
+                    Button(action: vm.toggleAppearance) {
+                        Image(systemName: vm.darkMode ? "sun.max" : "moon")
+                            .font(AppFont.text(16, weight: .medium))
+                            .foregroundColor(p.fg)
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Сменить тему")
+                    ConnectionLogButton(palette: p)
                 }
-                VStack(spacing: 0) {
-                    Spacer()
-                    Text(statusText)
-                        .font(AppFont.text(12, weight: .medium))
-                        .tracking(1)
-                        .foregroundColor(vm.vpnState == .connected ? Color(red: 0.09, green: 0.64, blue: 0.29) : p.fg.opacity(0.4))
-                    Spacer().frame(height: 24)
-                    BigToggle(
-                        isOn: vm.vpnState == .connected,
-                        isLoading: vm.vpnState == .connecting || vm.vpnState == .disconnecting,
-                        onColor: p.on,
-                        offColor: p.off,
-                        bg: p.bg,
-                        progressColor: p.link,
-                        status: statusText,
-                        action: { Task { await vm.toggleVPN() } }
-                    )
-                    if let errorMessage = vm.errorMessage {
-                        Text(errorMessage)
-                            .font(AppFont.text(12))
-                            .foregroundColor(.red)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 24)
-                            .padding(.top, 16)
-                    }
-                    Spacer()
-                    if vm.hasAccess {
-                        VStack(spacing: 2) {
-                            Text("Оплачено")
-                                .font(AppFont.text(12, weight: .semibold))
-                                .foregroundColor(Color(red: 0.09, green: 0.64, blue: 0.29))
-                            if let exp = vm.profile?.subscription.expires_at {
-                                Text("до \(formatDate(exp))")
-                                    .font(AppFont.text(11))
-                                    .foregroundColor(p.fg.opacity(0.5))
-                            }
-                            Text("Сессии \(vm.profile?.sessionsBadge ?? "0/3")")
-                                .font(AppFont.text(11))
-                                .foregroundColor(p.fg.opacity(0.4))
-                        }
-                        .padding(.bottom, 36)
-                    } else {
-                        Button {
-                            vm.menuPage = .subscription
-                        } label: {
-                            Text("Оформить подписку")
-                                .font(AppFont.text(14, weight: .semibold))
-                                .foregroundColor(p.bg)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 48)
-                                .background(p.fg)
-                                .cornerRadius(14)
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 36)
-                    }
+                .padding(.horizontal, 8)
+            }
+            .frame(height: 52)
+            Divider().overlay(p.fg.opacity(0.14))
+
+            VStack(spacing: 12) {
+                Text(statusText)
+                    .font(AppFont.text(12, weight: .medium))
+                    .tracking(1)
+                    .foregroundColor(vm.vpnState == .connected ? statusGreen : p.fg.opacity(0.65))
+                BigToggle(
+                    isOn: vm.vpnState == .connected,
+                    isLoading: vm.vpnState == .connecting || vm.vpnState == .disconnecting,
+                    onColor: p.on, offColor: p.off, bg: p.bg,
+                    progressColor: p.dark ? Color(white: 0.65) : Color(white: 0.34),
+                    status: statusText,
+                    action: { Task { await vm.toggleVPN() } }
+                )
+                if let stage = vm.connectionStage {
+                    ConnectionProgress(stage: stage, palette: p)
+                }
+                if let errorMessage = vm.errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
                 }
             }
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider().overlay(p.fg.opacity(0.14))
+            accessFooter(p)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
         }
         .background(p.bg.ignoresSafeArea())
+    }
+
+    private var statusGreen: Color { Color(red: 0.09, green: 0.64, blue: 0.29) }
+
+    @ViewBuilder
+    private func accessFooter(_ p: Palette) -> some View {
+        if let profile = vm.profile {
+            let subscription = profile.subscription
+            if profile.is_admin || (subscription.is_active && subscription.plan_type == "unlimited") {
+                accessStatus("Бессрочно", detail: "Полный доступ", color: statusGreen, palette: p)
+            } else if subscription.is_active && subscription.plan_type == "test" {
+                accessStatus("Тестовый режим", detail: "Безлимит", color: .purple, palette: p)
+            } else if subscription.is_active && subscription.plan_type == "trial" {
+                accessStatus("Пробный период", detail: "Осталось \(subscription.days_left) дн.", color: .blue, palette: p)
+            } else if subscription.is_active {
+                let detail = subscription.expires_at.map { "до \(formatDate($0))" }
+                    ?? "Осталось \(subscription.days_left) дн."
+                accessStatus("Оплачено", detail: detail, color: statusGreen, palette: p)
+            } else {
+                Button { vm.menuPage = .subscription } label: {
+                    Text("Оформить подписку")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(p.bg)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(p.fg, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+            }
+        } else {
+            ProgressView().tint(p.fg).accessibilityLabel("Загрузка аккаунта")
+        }
+    }
+
+    private func accessStatus(_ title: String, detail: String, color: Color, palette p: Palette) -> some View {
+        VStack(spacing: 3) {
+            Text(title).font(.footnote.weight(.semibold)).foregroundColor(color)
+            Text(detail).font(.footnote).foregroundColor(p.fg.opacity(0.65))
+        }
     }
 
     private func drawer(_ p: Palette) -> some View {
@@ -179,24 +171,26 @@ struct MainView: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(vm.profile?.email ?? "—")
-                            .font(AppFont.text(12, weight: .semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundColor(p.fg)
                             .lineLimit(1)
                         Text("Аккаунт: \(vm.profile?.display_id ?? "—")")
-                            .font(AppFont.text(12))
-                            .foregroundColor(p.fg.opacity(0.4))
+                            .font(.footnote)
+                            .foregroundColor(p.fg.opacity(0.65))
                     }
                     Spacer()
                     Button { withAnimation { vm.menuOpen = false } } label: {
                         Image(systemName: "xmark")
-                            .font(AppFont.text(14, weight: .medium))
+                            .font(.body.weight(.medium))
                             .foregroundColor(p.fg)
                     }
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel("Закрыть меню")
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 18)
                 .padding(.vertical, 14)
             }
-            Divider().opacity(0.15)
+            Divider().overlay(p.fg.opacity(0.14))
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(items, id: \.0) { page, title in
@@ -209,13 +203,15 @@ struct MainView: View {
                         } label: {
                             HStack {
                                 Text(title)
-                                    .font(AppFont.text(14))
+                                    .font(.body)
                                     .foregroundColor(p.fg)
                                 Spacer()
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
+                            .padding(.horizontal, 18)
+                            .frame(minHeight: 48)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                     #if DEBUG
                     if let proxy = vm.theme?.telegram_proxy_url.nilIfEmpty {
@@ -233,27 +229,28 @@ struct MainView: View {
                         } label: {
                             HStack {
                                 Text(vm.theme?.telegram_proxy_menu_label.nilIfEmpty ?? "Ускорить Telegram")
-                                    .font(AppFont.text(14))
+                                    .font(.body)
                                     .foregroundColor(p.fg)
                                 Spacer()
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
+                            .padding(.horizontal, 18)
+                            .frame(minHeight: 48)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                     #endif
                     Button(action: vm.logout) {
                         Text("Выйти")
-                            .font(AppFont.text(14, weight: .medium))
+                            .font(.body.weight(.medium))
                             .foregroundColor(.red)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
+                            .padding(.horizontal, 18)
                             .padding(.vertical, 16)
                     }
                 }
             }
         }
-        .frame(width: 208)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(p.bg)
     }

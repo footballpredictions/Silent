@@ -25,6 +25,8 @@ final class MainViewModel: ObservableObject {
     @Published var bootstrapDeadline: Date?
     @Published var bootstrapStarting = false
     @Published var connectionLog: [String] = []
+    @Published private(set) var connectionStage: ConnectionStage?
+    @Published private(set) var bootstrapStage: ConnectionStage?
     @Published var regNeedMail = false
     @Published var forgotSent = false
     @Published var darkMode = LocalStore.appearanceDark
@@ -66,12 +68,12 @@ final class MainViewModel: ObservableObject {
     private var siteRoutingUpdate: Task<Void, Never>?
     private var vpnObserver: AnyCancellable?
     private var bootstrapActive = false
+    private var bootstrapAttempted = false
     private var vpnActionInProgress = false
     private var profileLoading = false
 
     private let bootstrapHash = (Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-    var canStartBootstrap: Bool { !bootstrapHash.isEmpty }
 
     var palette: Palette { Palette.resolve(theme: theme, dark: darkMode) }
     var hasAccess: Bool { profile?.is_admin == true || profile?.subscription.is_active == true }
@@ -105,6 +107,7 @@ final class MainViewModel: ObservableObject {
                 bootstrapActive = false
                 bootstrapDeadline = nil
                 authError = vpn.readError()
+                logConnection(authError ?? "Временный VPN отключён")
             }
             return
         }
@@ -122,21 +125,39 @@ final class MainViewModel: ObservableObject {
         if connectionLog.count > 30 { connectionLog.removeFirst() }
     }
 
-    func startBootstrap() async {
-        guard canStartBootstrap, !loggedIn, !authLoading, !bootstrapActive else { return }
+    private func startBootstrap() async {
+        guard !bootstrapHash.isEmpty, !loggedIn, !authLoading, !bootstrapActive, !bootstrapAttempted else { return }
+        bootstrapAttempted = true
         bootstrapActive = true
         bootstrapStarting = true
-        authError = nil
-        defer { bootstrapStarting = false }
+        bootstrapStage = .configuration
+        defer {
+            bootstrapStarting = false
+            bootstrapStage = nil
+        }
+        var stage = "Не удалось получить настройки временного VPN"
         do {
-            let config = try await api.bootstrapConfig(hash: bootstrapHash)
+            let config = try await api.bootstrapConfig(hash: bootstrapHash) { [weak self] attempt in
+                self?.logConnection("Временный VPN: запрос настроек, попытка \(attempt)")
+            }
             let duration = 120
+            stage = "Не удалось запустить временный VPN"
+            bootstrapStage = .tunnel
+            logConnection("Запуск временного VPN")
             try await vpn.connect(makeTunnel(config, bootstrapDuration: duration))
-            bootstrapDeadline = Date().addingTimeInterval(TimeInterval(duration))
+            let deadline = Date().addingTimeInterval(TimeInterval(duration))
+            stage = "Временный VPN не передаёт данные"
+            bootstrapStage = .data
+            try await api.checkTunnelGateway()
+            guard vpn.state == .connected else { throw APIError.network }
+            bootstrapDeadline = deadline
+            logConnection("Временный VPN готов: шлюз ответил")
         } catch {
             await vpn.disconnect()
             bootstrapActive = false
-            authError = error.localizedDescription
+            let message = "\(stage). \(error.localizedDescription)"
+            authError = message
+            logConnection(message)
         }
     }
 
@@ -164,6 +185,7 @@ final class MainViewModel: ObservableObject {
             profileLoading = false
             authLoading = false
         }
+        if !loggedIn { await startBootstrap() }
         await loadAppearanceAndServers()
     }
 
@@ -200,6 +222,7 @@ final class MainViewModel: ObservableObject {
             Task { await loadAppearanceAndServers() }
         } catch {
             authError = error.localizedDescription
+            logConnection("Вход не завершён")
         }
     }
 
@@ -249,19 +272,24 @@ final class MainViewModel: ObservableObject {
                 await vpn.disconnect()
             }
             await api.logoutSession()
+            bootstrapAttempted = false
             profile = nil
             loggedIn = false
             vpnState = .disconnected
             menuOpen = false
             menuPage = .root
             payment = .idle
+            await startBootstrap()
         }
     }
 
     func toggleVPN() async {
         guard !vpnActionInProgress else { return }
         vpnActionInProgress = true
-        defer { vpnActionInProgress = false }
+        defer {
+            vpnActionInProgress = false
+            connectionStage = nil
+        }
         errorMessage = nil
         if vpnState == .connected || vpnState == .connecting {
             vpnState = .disconnecting
@@ -278,29 +306,36 @@ final class MainViewModel: ObservableObject {
             return
         }
         vpnState = .connecting
+        connectionStage = .configuration
         logConnection("Запрос настроек VPN")
         var sessionStarted = false
         var stage = "Не удалось получить настройки VPN"
         do {
             let cfg = try await api.registerDevice(name: UIDevice.current.name, preferredServer: selectedServer)
+            connectionStage = .session
             stage = "Сервер не подтвердил подключение VPN"
             try await api.connect(preferredServer: cfg.selected_server ?? selectedServer)
             sessionStarted = true
             stage = "Не удалось запустить туннель"
+            connectionStage = .tunnel
             logConnection("Ожидание ответа сервера VPN")
             let tunnel = makeTunnel(cfg)
             try await vpn.connect(tunnel)
-            vpnState = vpn.state
-            guard vpnState == .connected else {
+            connectionStage = .data
+            stage = "VPN не передаёт данные"
+            logConnection("Проверка передачи данных через VPN")
+            try await api.checkTunnelGateway()
+            guard vpn.state == .connected else {
                 throw APIError.server(vpn.readError() ?? "VPN отключился во время подключения")
             }
-            logConnection("Рукопожатие WireGuard подтверждено")
+            vpnState = .connected
+            logConnection("VPN подключён: шлюз ответил")
             Task { await refreshSessions() }
         } catch {
             await vpn.disconnect()
             vpnState = vpn.state
             errorMessage = "\(stage). \(error.localizedDescription)"
-            logConnection(stage)
+            logConnection("\(stage). \(error.localizedDescription)")
             if sessionStarted { try? await api.disconnect() }
         }
     }
@@ -639,6 +674,19 @@ final class MainViewModel: ObservableObject {
             return nil
         } catch {
             return error.localizedDescription
+        }
+    }
+}
+
+enum ConnectionStage: Double {
+    case configuration = 0.18, session = 0.40, tunnel = 0.65, data = 0.90
+
+    var title: String {
+        switch self {
+        case .configuration: return "Получение конфигурации…"
+        case .session: return "Подготовка сессии…"
+        case .tunnel: return "Подключение к серверу…"
+        case .data: return "Проверка передачи данных…"
         }
     }
 }

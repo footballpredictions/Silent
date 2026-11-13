@@ -27,6 +27,10 @@ go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
+  "$ROOT/scripts/test-session-api-policy.swift" -o "$TMP/silent-session-policy"
+"$TMP/silent-session-policy"
+rm "$TMP/silent-session-policy"
 cp -R "$SRC/." "$TMP/"
 cp "$EXPORT" "$ROOT/engine/wg_config.go" "$TMP/"
 # Shared domain policy and userspace DIRECT transport, same as Android.

@@ -9,6 +9,11 @@ struct SessionsApiPolicyTest {
         precondition(active.count == Set(active).count)
         let offline = PublicApiFailover.bases(preferred: PublicApiFailover.hiveHttps)
         precondition(!offline.contains(PublicApiFailover.tunnelAPI), "VPN-off requests must not wait for a missing tunnel")
+        let bootstrap = PublicApiFailover.bootstrapHTTPS.compactMap(URL.init(string:))
+        precondition(bootstrap.count == 2 && bootstrap.allSatisfy { $0.scheme == "https" })
+        precondition(bootstrap[0].host == bootstrap[1].host && bootstrap[1].port == 2083,
+                     "Bootstrap fallback must preserve certificate hostname and change ports")
+        precondition(offline.contains(PublicApiFailover.hiveAlternateHTTPS))
         for code in [401, 402, 403, 404] {
             precondition(!PublicApiFailover.shouldTryNextBase(httpCode: code))
         }

@@ -3,6 +3,8 @@ import Foundation
 /// При активном VPN сначала шлюз туннеля; публичные адреса остаются резервом.
 enum PublicApiFailover {
     static let hiveHttps = "https://89-125-188-100.nip.io"
+    static let hiveAlternateHTTPS = "\(hiveHttps):2083"
+    static let bootstrapHTTPS = [hiveHttps, hiveAlternateHTTPS]
     static let hiveIpHttps = "https://89.125.188.100"
     static let cells = [
         "http://87.58.213.193:9100",
@@ -35,6 +37,7 @@ enum PublicApiFailover {
         if !out.contains(hiveIpHttps) { out.append(hiveIpHttps) }
         cells.forEach { add($0) }
         add(hiveHttps)
+        add(hiveAlternateHTTPS)
         add(preferred)
         extraBases.forEach { add($0) }
         return out

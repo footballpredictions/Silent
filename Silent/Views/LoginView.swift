@@ -20,106 +20,102 @@ struct LoginView: View {
                     Image(systemName: vm.darkMode ? "sun.max" : "moon")
                         .font(AppFont.text(16, weight: .medium))
                         .foregroundColor(p.fg)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 44, height: 44)
                 }
+                .accessibilityLabel("Сменить тему")
+                ConnectionLogButton(palette: p)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8)
+            Divider().overlay(p.fg.opacity(0.14))
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(displayName)
-                        .font(AppFont.text(13, weight: .bold))
-                        .tracking(3)
-                        .foregroundColor(p.fg)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 12)
-
-                    if let deadline = vm.bootstrapDeadline {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            let seconds = max(0, Int(ceil(deadline.timeIntervalSince(context.date))))
-                            Label("Временный VPN для входа · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
-                                .font(.footnote.monospacedDigit())
-                                .foregroundColor(p.fg)
-                        }
-                    } else if vm.bootstrapStarting {
-                        HStack(spacing: 8) {
-                            ProgressView().tint(p.fg)
-                            Text("Подключение временного VPN…").font(.footnote)
-                        }
-                        .foregroundColor(p.fg)
-                    } else if vm.canStartBootstrap {
-                        Button("Включить временный VPN для входа") { Task { await vm.startBootstrap() } }
-                            .font(.footnote.weight(.medium))
-                            .foregroundColor(p.link)
-                            .frame(minHeight: 44)
-                            .disabled(vm.authLoading)
-                    }
-
-                    if forgot {
-                        Text(theme?.login_forgot_title ?? "Восстановление пароля")
-                            .font(AppFont.text(16, weight: .semibold))
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(displayName)
+                            .font(AppFont.text(13, weight: .bold))
+                            .tracking(3)
                             .foregroundColor(p.fg)
-                        Text(theme?.login_forgot_instruction ?? "")
-                            .font(AppFont.text(12))
-                            .foregroundColor(p.fg.opacity(0.55))
-                        field("Email", text: $email, p: p)
-                        if vm.forgotSent {
-                            Text("Если email зарегистрирован, письмо отправлено.")
-                                .font(AppFont.text(12))
-                                .foregroundColor(p.fg.opacity(0.7))
-                        }
-                        primaryButton("Отправить", p: p) {
-                            Task { await vm.forgot(email: email) }
-                        }
-                        Button("Назад ко входу") { forgot = false; vm.forgotSent = false }
-                            .font(AppFont.text(13, weight: .medium))
-                            .foregroundColor(p.link)
-                    } else {
-                        HStack(spacing: 8) {
-                            chip("Войти", on: tab == "login", p: p) { tab = "login" }
-                            chip("Регистрация", on: tab == "register", p: p) { tab = "register" }
-                        }
-                        if vm.regNeedMail {
-                            Text("Подтвердите email — мы отправили письмо. После этого войдите.")
-                                .font(AppFont.text(12))
-                                .foregroundColor(p.fg.opacity(0.7))
-                        }
-                        field("Email", text: $email, p: p)
-                        passwordField(p: p)
-                        if tab == "register" {
-                            field(theme?.register_referral_or_promo_label ?? "Промокод или реферальный код", text: $code, p: p)
-                            Text(theme?.register_referral_or_promo_hint ?? "")
-                                .font(AppFont.text(11))
-                                .foregroundColor(p.fg.opacity(0.45))
-                        } else {
-                            Toggle(isOn: $remember) {
-                                Text(theme?.login_remember_me_label ?? "Запомнить меня")
-                                    .font(AppFont.text(13))
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 12)
+
+                        if let deadline = vm.bootstrapDeadline {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                let seconds = max(0, Int(ceil(deadline.timeIntervalSince(context.date))))
+                                Label("Временный VPN для входа · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
+                                    .font(.footnote.monospacedDigit())
                                     .foregroundColor(p.fg)
                             }
-                            .tint(p.fg)
-                            Button(theme?.login_forgot_password_label ?? "Забыли пароль?") { forgot = true }
+                        } else if let stage = vm.bootstrapStage {
+                            ConnectionProgress(stage: stage, palette: p)
+                        }
+
+                        if forgot {
+                            Text(theme?.login_forgot_title ?? "Восстановление пароля")
+                                .font(AppFont.text(16, weight: .semibold))
+                                .foregroundColor(p.fg)
+                            Text(theme?.login_forgot_instruction ?? "")
+                                .font(AppFont.text(12))
+                                .foregroundColor(p.fg.opacity(0.55))
+                            field("Email", text: $email, p: p)
+                            if vm.forgotSent {
+                                Text("Если email зарегистрирован, письмо отправлено.")
+                                    .font(AppFont.text(12))
+                                    .foregroundColor(p.fg.opacity(0.7))
+                            }
+                            primaryButton("Отправить", p: p) {
+                                Task { await vm.forgot(email: email) }
+                            }
+                            Button("Назад ко входу") { forgot = false; vm.forgotSent = false }
                                 .font(AppFont.text(13, weight: .medium))
                                 .foregroundColor(p.link)
-                        }
-                        primaryButton(tab == "login" ? "Войти" : "Создать аккаунт", p: p) {
-                            Task {
-                                if tab == "login" {
-                                    await vm.login(email: email, password: password, remember: remember)
-                                } else {
-                                    await vm.register(email: email, password: password, code: code, remember: remember)
+                        } else {
+                            HStack(spacing: 8) {
+                                chip("Войти", on: tab == "login", p: p) { tab = "login" }
+                                chip("Регистрация", on: tab == "register", p: p) { tab = "register" }
+                            }
+                            if vm.regNeedMail {
+                                Text("Подтвердите email — мы отправили письмо. После этого войдите.")
+                                    .font(AppFont.text(12))
+                                    .foregroundColor(p.fg.opacity(0.7))
+                            }
+                            field("Email", text: $email, p: p)
+                            passwordField(p: p)
+                            if tab == "register" {
+                                field(theme?.register_referral_or_promo_label ?? "Промокод или реферальный код", text: $code, p: p)
+                                Text(theme?.register_referral_or_promo_hint ?? "")
+                                    .font(AppFont.text(11))
+                                    .foregroundColor(p.fg.opacity(0.45))
+                            } else {
+                                Toggle(isOn: $remember) {
+                                    Text(theme?.login_remember_me_label ?? "Запомнить меня")
+                                        .font(AppFont.text(13))
+                                        .foregroundColor(p.fg)
+                                }
+                                .tint(p.fg)
+                                Button(theme?.login_forgot_password_label ?? "Забыли пароль?") { forgot = true }
+                                    .font(AppFont.text(13, weight: .medium))
+                                    .foregroundColor(p.link)
+                            }
+                            primaryButton(tab == "login" ? "Войти" : "Создать аккаунт", p: p) {
+                                Task {
+                                    if tab == "login" {
+                                        await vm.login(email: email, password: password, remember: remember)
+                                    } else {
+                                        await vm.register(email: email, password: password, code: code, remember: remember)
+                                    }
                                 }
                             }
+                            .disabled(email.isEmpty || password.count < 8 && tab == "register" || password.isEmpty)
                         }
-                        .disabled(email.isEmpty || password.count < 8 && tab == "register" || password.isEmpty)
+                        if let authError = vm.authError {
+                            Text(authError).font(.footnote).foregroundColor(.red)
+                        }
                     }
-                    if let authError = vm.authError {
-                        Text(authError).font(.footnote).foregroundColor(.red)
-                    }
+                    .frame(maxWidth: 440)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .center)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 32)
             }
         }
         .background(p.bg.ignoresSafeArea())

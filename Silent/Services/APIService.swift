@@ -80,14 +80,16 @@ class APIService: ObservableObject {
         auth: Bool,
         base: String,
         allowRefresh: Bool,
-        verifyTLS: Bool = false
+        verifyTLS: Bool = false,
+        timeout: TimeInterval? = nil
     ) async throws -> Data {
         let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
         guard let url = URL(string: "\(base)/\(trimmed)") else { throw APIError.invalidURL }
 
         var req = URLRequest(url: url)
         req.httpMethod = method
-        req.timeoutInterval = PublicApiFailover.timeoutSeconds(base)
+        let requestTimeout = timeout ?? PublicApiFailover.timeoutSeconds(base)
+        req.timeoutInterval = requestTimeout
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
             req.setValue(version, forHTTPHeaderField: "X-App-Version")
@@ -98,14 +100,16 @@ class APIService: ObservableObject {
         if let body { req.httpBody = try JSONEncoder().encode(AnyEncodable(body)) }
 
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = PublicApiFailover.timeoutSeconds(base)
-        cfg.timeoutIntervalForResource = PublicApiFailover.timeoutSeconds(base) + 2
+        cfg.timeoutIntervalForRequest = requestTimeout
+        cfg.timeoutIntervalForResource = requestTimeout + 2
         let session = URLSession(configuration: cfg, delegate: verifyTLS ? nil : TrustAllDelegate(), delegateQueue: nil)
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: req)
         } catch {
             session.invalidateAndCancel()
+            try Task.checkCancellation()
+            if verifyTLS { throw error }
             throw APIError.network
         }
         session.finishTasksAndInvalidate()
@@ -210,16 +214,39 @@ class APIService: ObservableObject {
         try await request("api/payments/plans?all=1", auth: false)
     }
 
-    func bootstrapConfig(hash: String) async throws -> VpnConfig {
+    func bootstrapConfig(hash: String, onAttempt: (Int) -> Void) async throws -> VpnConfig {
         struct Req: Encodable {
             let bootstrap_hash: String
             let device_fingerprint: String
             let device_type = "ios"
         }
-        let data = try await requestOnce("api/vpn/bootstrap-config", method: "POST",
-                                         body: Req(bootstrap_hash: hash, device_fingerprint: deviceFingerprint),
-                                         auth: false, base: PublicApiFailover.hiveHttps, allowRefresh: false, verifyTLS: true)
-        return try JSONDecoder().decode(VpnConfig.self, from: data)
+        let req = Req(bootstrap_hash: hash, device_fingerprint: deviceFingerprint)
+        var lastCode: Int?
+        for (index, base) in PublicApiFailover.bootstrapHTTPS.enumerated() {
+            try Task.checkCancellation()
+            onAttempt(index + 1)
+            do {
+                let data = try await requestOnce("api/vpn/bootstrap-config", method: "POST", body: req,
+                                                 auth: false, base: base, allowRefresh: false, verifyTLS: true, timeout: 4)
+                return try JSONDecoder().decode(VpnConfig.self, from: data)
+            } catch let error as URLError {
+                lastCode = error.code.rawValue
+            } catch APIError.network {
+                lastCode = nil
+            }
+        }
+        let detail = lastCode.map { " (код сети \($0))" } ?? ""
+        throw APIError.server("Сервер временного VPN недоступен\(detail)")
+    }
+
+    func checkTunnelGateway() async throws {
+        struct Health: Decodable { let status: String }
+        let data = try await requestOnce("api/health", method: "GET", body: nil,
+                                         auth: false, base: PublicApiFailover.tunnelAPI,
+                                         allowRefresh: false, timeout: 5)
+        guard try JSONDecoder().decode(Health.self, from: data).status == "ok" else {
+            throw APIError.server("Шлюз VPN не подтвердил передачу данных")
+        }
     }
 
     func registerDevice(name: String, preferredServer: String) async throws -> VpnConfig {

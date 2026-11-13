@@ -21,6 +21,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +42,7 @@ var (
 	engineDev     *device.Device
 	engineAddress string
 	engineTUN     *flowTUN
+	engineLog     *os.File
 	outputCb      C.packet_cb
 	iosPause      int32
 	errStorage    [240]byte
@@ -128,10 +131,12 @@ func wdtt_stop() {
 	cancel := engineCancel
 	dev := engineDev
 	t := engineTUN
+	logFile := engineLog
 	engineCancel = nil
 	engineDev = nil
 	engineAddress = ""
 	engineTUN = nil
+	engineLog = nil
 	engineMu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -141,6 +146,10 @@ func wdtt_stop() {
 	}
 	if t != nil {
 		_ = t.Close()
+	}
+	if logFile != nil {
+		log.SetOutput(os.Stderr)
+		_ = logFile.Close()
 	}
 }
 
@@ -157,6 +166,10 @@ func wdtt_start(
 ) C.int {
 	wdtt_stop()
 	setEngineErr("")
+	runtime.GOMAXPROCS(2)
+	debug.SetGCPercent(50)
+	debug.SetMemoryLimit(24 << 20)
+	socketBufSize = 256 << 10
 
 	ip := C.GoString(serverIP)
 	pass := C.GoString(password)
@@ -171,7 +184,10 @@ func wdtt_start(
 	if dir != "" {
 		_ = os.MkdirAll(dir, 0o700)
 		_ = os.Chdir(dir)
-		if f, err := os.OpenFile("wdtt.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+		if f, err := os.OpenFile("wdtt.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
+			engineMu.Lock()
+			engineLog = f
+			engineMu.Unlock()
 			log.SetOutput(f)
 		}
 	}
@@ -188,15 +204,7 @@ func wdtt_start(
 		return 3
 	}
 
-	nWorkers := int(workers)
-	if nWorkers < workersPerGroup {
-		nWorkers = workersPerGroup
-	}
-	// Расширение iOS режут по памяти: три группы, не 63 воркера телефона.
-	if nWorkers > workersPerGroup*3 {
-		nWorkers = workersPerGroup * 3
-	}
-	nWorkers = (nWorkers / workersPerGroup) * workersPerGroup
+	nWorkers := workersPerGroup
 
 	peerAddr := fmt.Sprintf("%s:%d", ip, port)
 	peer, err := net.ResolveUDPAddr("udp", peerAddr)

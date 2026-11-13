@@ -70,6 +70,7 @@ final class MainViewModel: ObservableObject {
     private var bootstrapActive = false
     private var bootstrapAttempted = false
     private var vpnActionInProgress = false
+    private var connectedAt: Date?
     private var profileLoading = false
 
     private let bootstrapHash = (Bundle.main.object(forInfoDictionaryKey: "SilentBootstrapVKHash") as? String ?? "")
@@ -78,9 +79,7 @@ final class MainViewModel: ObservableObject {
     var palette: Palette { Palette.resolve(theme: theme, dark: darkMode) }
     var hasAccess: Bool { profile?.is_admin == true || profile?.subscription.is_active == true }
     var sessionDeviceId: String? {
-        guard let url = AppIdentity.configURL, let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(TunnelConfig.self, from: data) else { return nil }
-        return config.deviceId
+        AppIdentity.readTunnelConfig()?.deviceId
     }
 
     func sessionOnline(_ device: DeviceInfo) -> Bool {
@@ -93,8 +92,13 @@ final class MainViewModel: ObservableObject {
             self?.onVPNStateChanged(state)
         }
         Task {
+            if AppIdentity.readTunnelConfig()?.bootstrapDuration != nil {
+                bootstrapActive = true
+            }
             await vpn.refresh()
-            if !api.isLoggedIn, !bootstrapActive, vpn.state == .connected || vpn.state == .connecting {
+            if bootstrapActive && (!api.isLoggedIn || vpn.state == .disconnected) {
+                await stopBootstrap()
+            } else if !api.isLoggedIn, vpn.state == .connected || vpn.state == .connecting {
                 await vpn.disconnect()
             }
             await loadInitialData()
@@ -112,10 +116,21 @@ final class MainViewModel: ObservableObject {
             return
         }
         guard !vpnActionInProgress, state != vpnState else { return }
+        let wasActive = vpnState == .connected || vpnState == .connecting || connectedAt != nil
         vpnState = state
-        if state == .disconnected {
-            errorMessage = vpn.readError()
-            logConnection(errorMessage == nil ? "VPN отключён" : "VPN остановлен с ошибкой")
+        if state == .connected, connectedAt == nil { connectedAt = Date() }
+        if state == .disconnected, wasActive {
+            let uptime = connectedAt.map { max(0, Int(Date().timeIntervalSince($0))) }
+            connectedAt = nil
+            let reason = vpn.readError() ?? "Соединение VPN завершено"
+            let duration = uptime.map { " · \($0) с" } ?? ""
+            errorMessage = reason
+            logConnection(reason + duration)
+            Task {
+                if let code = await vpn.lastDisconnectCode(), vpnState == .disconnected {
+                    logConnection("Код отключения iOS: \(code)")
+                }
+            }
         }
     }
 
@@ -276,6 +291,7 @@ final class MainViewModel: ObservableObject {
             profile = nil
             loggedIn = false
             vpnState = .disconnected
+            connectedAt = nil
             menuOpen = false
             menuPage = .root
             payment = .idle
@@ -296,6 +312,7 @@ final class MainViewModel: ObservableObject {
             logConnection("Отключение VPN")
             await vpn.disconnect()
             vpnState = vpn.state
+            connectedAt = nil
             try? await api.disconnect()
             if vpnState == .disconnected { logConnection("VPN отключён") }
             return
@@ -329,11 +346,13 @@ final class MainViewModel: ObservableObject {
                 throw APIError.server(vpn.readError() ?? "VPN отключился во время подключения")
             }
             vpnState = .connected
+            connectedAt = Date()
             logConnection("VPN подключён: шлюз ответил")
             Task { await refreshSessions() }
         } catch {
             await vpn.disconnect()
             vpnState = vpn.state
+            connectedAt = nil
             errorMessage = "\(stage). \(error.localizedDescription)"
             logConnection("\(stage). \(error.localizedDescription)")
             if sessionStarted { try? await api.disconnect() }

@@ -123,6 +123,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        if reason != .userInitiated, reason != .none,
+           AppIdentity.errorURL.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true {
+            writeError("iOS завершила VPN (код остановки \(reason.rawValue))")
+        }
         reading = false
         handshakeCheck?.cancel()
         handshakeCheck = nil
@@ -151,8 +155,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func loadConfig() -> TunnelConfig? {
-        guard let url = AppIdentity.configURL, let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(TunnelConfig.self, from: data)
+        AppIdentity.readTunnelConfig()
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {

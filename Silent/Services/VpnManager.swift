@@ -133,6 +133,16 @@ final class VpnManager: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    func lastDisconnectCode() async -> Int? {
+        guard let manager, manager.connection.status == .disconnected else { return nil }
+        do {
+            try await manager.connection.fetchLastDisconnectError()
+            return nil
+        } catch {
+            return (error as NSError).code
+        }
+    }
+
     private func load() async throws -> NETunnelProviderManager {
         if let manager { return manager }
         let all = try await NETunnelProviderManager.loadAllFromPreferences()

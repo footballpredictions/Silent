@@ -13,6 +13,11 @@ enum AppIdentity {
     static var configURL: URL? { groupURL?.appendingPathComponent(configName) }
     static var errorURL: URL? { groupURL?.appendingPathComponent(errorName) }
     static var workURL: URL? { groupURL?.appendingPathComponent("engine", isDirectory: true) }
+
+    static func readTunnelConfig() -> TunnelConfig? {
+        guard let configURL, let data = try? Data(contentsOf: configURL) else { return nil }
+        return try? JSONDecoder().decode(TunnelConfig.self, from: data)
+    }
 }
 
 struct TunnelConfig: Codable {

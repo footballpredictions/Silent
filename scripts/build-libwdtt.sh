@@ -33,6 +33,12 @@ xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
 rm "$TMP/silent-session-policy"
 cp -R "$SRC/." "$TMP/"
 cp "$EXPORT" "$ROOT/engine/wg_config.go" "$TMP/"
+cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"
+sed '1s/!android || !arm/(!android || !arm) \&\& !ios/' "$SRC/platform_limits_default.go" > "$TMP/platform_limits_default.go"
+# The shared client targets large Android traffic bursts. Keep the per-worker
+# packet queue bounded independently in the smaller iOS extension process.
+sed -E 's/(workerSendBuf[[:space:]]*=[[:space:]]*)2048/\1256/' "$SRC/session.go" > "$TMP/session.go"
+grep -Eq 'workerSendBuf[[:space:]]*=[[:space:]]*256' "$TMP/session.go"
 # Shared domain policy and userspace DIRECT transport, same as Android.
 cp "$MONO/android/app/site-router/russian.go" "$TMP/russian.go"
 cp "$MONO/android/app/site-router/packet.go" "$TMP/russian_packet.go"

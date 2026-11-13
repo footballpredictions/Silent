@@ -193,6 +193,31 @@ async def get_config(
     )
 
 
+@router.get("/config-preview", response_model=VpnConfigResponse)
+async def preview_vpn_config(
+    fingerprint: str,
+    preferred_server: str,
+    request: Request,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read an existing connection profile without changing the device or creating a trial."""
+    from app.services.subscription_service import get_display_subscription, user_in_test_mode
+
+    result = await db.execute(select(Device).where(
+        Device.user_id == user.id, Device.device_fingerprint == fingerprint, Device.is_active.is_(True),
+    ))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Сессия устройства не найдена.")
+    if not (is_user_admin(user) or await user_in_test_mode(user, db)
+            or await get_display_subscription(db, user, in_test_mode=False)):
+        raise HTTPException(status_code=402, detail="Нет действующей подписки.")
+    return await build_vpn_config_for_user(
+        db, device, user, True, preferred_server, app_version=_request_app_version(request), prefetch=True,
+    )
+
+
 @router.get("/hashes")
 async def get_vk_hashes(
     user: User = Depends(get_verified_user),
@@ -471,7 +496,8 @@ async def connect(
     from app.services.peak_online import record_online_peak
 
     await record_online_peak(db)
-    return {"status": "connected", "mode": "full" if await user_has_active_subscription(user, db) else "bootstrap"}
+    return {"status": "connected", "mode": "full" if await user_has_active_subscription(user, db) else "bootstrap",
+            "selected_server": device.preferred_server}
 
 
 @router.post("/disconnect")

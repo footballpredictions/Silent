@@ -787,6 +787,8 @@ async def _build_vpn_config(
     device: Device,
     preferred_override: str | None = None,
     app_version: str | None = None,
+    *,
+    prefetch: bool = False,
 ) -> VpnConfigResponse:
     from app.core.security import decrypt_value
     from app.services.user_hash_service import get_vpn_hashes_for_user
@@ -800,20 +802,20 @@ async def _build_vpn_config(
         hashes = await get_active_vk_hashes(db)
 
     selected_server, cell = await ensure_device_server_allowed(
-        db, device, user, preferred_override, app_version=app_version
+        db, device, user, preferred_override, app_version=app_version, persist=not prefetch
     )
     server_pub_key = (cell.wg_public_key or "").strip()
     if not server_pub_key:
         server_pub_key = await get_server_public_key(db)
 
     priv_key = ""
-    if device.wg_private_key_enc:
+    if not prefetch and device.wg_private_key_enc:
         try:
             priv_key = decrypt_value(device.wg_private_key_enc)
         except Exception:
             pass
 
-    if not _is_valid_wg_key(priv_key):
+    if not prefetch and not _is_valid_wg_key(priv_key):
         priv_key, pub_key = _generate_wg_keypair()
         device.wg_private_key_enc = encrypt_value(priv_key)
         device.wg_public_key = pub_key
@@ -929,6 +931,8 @@ async def ensure_device_server_allowed(
     user: User | None,
     preferred_override: str | None = None,
     app_version: str | None = None,
+    *,
+    persist: bool = True,
 ) -> tuple[str, object]:
     """Резолв слота; admin_only / старый клиент на ИИ-слоте → Улей (server1)."""
     from app.services.hive_slots import cell_visible_to_client
@@ -943,7 +947,7 @@ async def ensure_device_server_allowed(
     selected_server, cell = await hive_service.resolve_manual_server_cell(db, preferred_server)
     if not cell_visible_to_client(cell, is_admin=admin, app_version=app_version):
         selected_server, cell = await hive_service.resolve_manual_server_cell(db, "server1")
-    if device.cell_id != cell.id or getattr(device, "preferred_server", None) != selected_server:
+    if persist and (device.cell_id != cell.id or getattr(device, "preferred_server", None) != selected_server):
         _set_device_server(device, selected_server, cell.id)
         await db.commit()
     return selected_server, cell
@@ -989,13 +993,15 @@ async def build_vpn_config_for_user(
     has_subscription: bool,
     preferred_override: str | None = None,
     app_version: str | None = None,
+    *,
+    prefetch: bool = False,
 ) -> VpnConfigResponse:
     from app.services.user_hash_service import (
         get_server_hashes_for_user,
         recommended_stream_count,
     )
 
-    config = await _build_vpn_config(db, device, preferred_override, app_version=app_version)
+    config = await _build_vpn_config(db, device, preferred_override, app_version=app_version, prefetch=prefetch)
     if user.email == BOOTSTRAP_USER_EMAIL:
         return config
     server_hashes = await get_server_hashes_for_user(db, user)
@@ -1010,6 +1016,8 @@ async def build_vpn_config_for_user(
         boot = await get_bootstrap_hashes_for_user(db, user)
         if boot:
             config = config.model_copy(update={"vk_hashes": boot, "stream_count": 9})
+    if prefetch:
+        return config
     try:
         from app.services.client_sync_bundle import build_client_sync_bundle
 

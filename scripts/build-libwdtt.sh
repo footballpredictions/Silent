@@ -25,7 +25,7 @@ fi
 
 go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"
 go test "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_start_test.go"
-go test "$ROOT/engine/relay_journal.go" "$ROOT/engine/relay_journal_test.go"
+go test "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_journal.go" "$ROOT/engine/relay_journal_test.go"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -38,6 +38,9 @@ xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
   "$ROOT/scripts/test-session-api-policy.swift" -o "$TMP/silent-session-policy"
 "$TMP/silent-session-policy"
 rm "$TMP/silent-session-policy"
+xcrun swiftc -parse-as-library "$ROOT/SilentTunnel/TunnelRecovery.swift" +  "$ROOT/scripts/test-tunnel-recovery.swift" -o "$TMP/silent-tunnel-recovery"
+"$TMP/silent-tunnel-recovery"
+rm "$TMP/silent-tunnel-recovery"
 cp -R "$SRC/." "$TMP/"
 cp "$EXPORT" "$ROOT/engine/wg_config.go" "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_journal.go" "$TMP/"
 cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"

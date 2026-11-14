@@ -48,7 +48,8 @@ class APIService: ObservableObject {
         method: String = "GET",
         body: Encodable? = nil,
         auth: Bool = true,
-        allowRefresh: Bool = true
+        allowRefresh: Bool = true,
+        accessOverride: String? = nil
     ) async throws -> Data {
         let tunnelActive = await VpnManager.shared.isApiTunnelActive()
         let bases = PublicApiFailover.bases(preferred: serverURL, tunnelActive: tunnelActive)
@@ -57,7 +58,8 @@ class APIService: ObservableObject {
         for base in bases {
             try Task.checkCancellation()
             do {
-                return try await requestOnce(path, method: method, body: body, auth: auth, base: base, allowRefresh: allowRefresh)
+                return try await requestOnce(path, method: method, body: body, auth: auth, base: base,
+                                             allowRefresh: allowRefresh, accessOverride: accessOverride)
             } catch let e as APIError {
                 switch e {
                 case .network, .invalidURL:
@@ -82,7 +84,8 @@ class APIService: ObservableObject {
         base: String,
         allowRefresh: Bool,
         verifyTLS: Bool = false,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        accessOverride: String? = nil
     ) async throws -> Data {
         let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
         guard let url = URL(string: "\(base)/\(trimmed)") else { throw APIError.invalidURL }
@@ -95,7 +98,7 @@ class APIService: ObservableObject {
         if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
             req.setValue(version, forHTTPHeaderField: "X-App-Version")
         }
-        if auth, let token = accessToken {
+        if auth, let token = accessOverride ?? accessToken {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         if let body { req.httpBody = try JSONEncoder().encode(AnyEncodable(body)) }
@@ -316,11 +319,18 @@ class APIService: ObservableObject {
         _ = try await requestData("api/vpn/disconnect", method: "POST", body: Req(device_fingerprint: deviceFingerprint))
     }
 
-    func logoutSession() async {
+    func logoutSession(access: String) async {
         struct Req: Encodable { let device_fingerprint: String }
-        _ = try? await requestData("api/users/logout", method: "POST", body: Req(device_fingerprint: deviceFingerprint))
-        accessToken = nil
-        refreshToken = nil
+        let request = Req(device_fingerprint: deviceFingerprint)
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                _ = try? await self.requestData("api/users/logout", method: "POST", body: request,
+                                                allowRefresh: false, accessOverride: access)
+            }
+            group.addTask { try? await Task.sleep(nanoseconds: 8_000_000_000) }
+            _ = await group.next()
+            group.cancelAll()
+        }
     }
 
     func initPayment(plan: String, promo: String? = nil, tunnelActive: Bool) async throws -> PaymentResponse {

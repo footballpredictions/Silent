@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import NetworkExtension
 
 enum MenuPage: String {
     case root, subscription, exclusions, dns, server, bonuses, devices, support, about
@@ -25,6 +26,7 @@ final class MainViewModel: ObservableObject {
     @Published var authError: String?
     @Published var bootstrapDeadline: Date?
     @Published var bootstrapStarting = false
+    @Published private(set) var bootstrapReconnecting = false
     @Published private(set) var bootstrapFailed = false
     @Published private(set) var connectionLog: [VPNLogEntry] = []
     @Published var regNeedMail = false
@@ -61,8 +63,10 @@ final class MainViewModel: ObservableObject {
     @Published var siteDraft = ""
     @Published var russianDirect = RussianServices.enabled
     @Published var russianBusy = false
+    @Published private(set) var russianListReceived = false
 
     private let api = APIService.shared
+    private var logoutTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var paymentTask: Task<Void, Never>?
     private var paymentTunnelActive = false
@@ -76,7 +80,8 @@ final class MainViewModel: ObservableObject {
     private var bootstrapActive = false
     private var bootstrapAttempted = false
     private var bootstrapCell = 0
-    private var vpnActionInProgress = false
+    @Published private var vpnActionInProgress = false
+    var canLogout: Bool { !vpnActionInProgress && paymentTask == nil && !paymentTunnelActive && !paymentCleanupActive }
     private var connectedAt: Date?
     private var canRecoverTunnel = false
     private var tunnelRecovery: Task<Void, Never>?
@@ -96,6 +101,7 @@ final class MainViewModel: ObservableObject {
 
     var palette: Palette { Palette.resolve(theme: theme, dark: darkMode) }
     var hasAccess: Bool { profile?.is_admin == true || profile?.subscription.is_active == true }
+    var routingControlsLocked: Bool { russianBusy || vpnState == .connecting || vpnState == .reconnecting || vpnState == .disconnecting }
     var sessionDeviceId: String? {
         guard let profile else { return nil }
         if let id = profile.current_device_id,
@@ -128,7 +134,7 @@ final class MainViewModel: ObservableObject {
                 await finishPaymentTunnel(account: account)
             } else if bootstrapActive && (!api.isLoggedIn || vpn.state == .disconnected) {
                 await stopBootstrap()
-            } else if !api.isLoggedIn, vpn.state == .connected || vpn.state == .connecting {
+            } else if !api.isLoggedIn, vpn.state != .disconnected {
                 await vpn.disconnect()
             }
             await loadInitialData()
@@ -147,6 +153,7 @@ final class MainViewModel: ObservableObject {
             return
         }
         if bootstrapActive {
+            bootstrapReconnecting = state == .reconnecting
             if state == .disconnected, !bootstrapStarting {
                 bootstrapActive = false
                 bootstrapDeadline = nil
@@ -155,9 +162,11 @@ final class MainViewModel: ObservableObject {
             }
             return
         }
-        guard !vpnActionInProgress, state != vpnState else { return }
-        let wasActive = vpnState == .connected || vpnState == .connecting || connectedAt != nil
+        guard (loggedIn || api.isLoggedIn), !vpnActionInProgress, state != vpnState else { return }
+        let wasActive = vpnState == .connected || vpnState == .connecting || vpnState == .reconnecting || connectedAt != nil
         vpnState = state
+        if state != .connected { russianListReceived = false }
+        if state == .connected { errorMessage = nil }
         if state == .connected, connectedAt == nil {
             connectedAt = Date()
             canRecoverTunnel = true
@@ -181,7 +190,9 @@ final class MainViewModel: ObservableObject {
     private func recoverAfterDisconnect(allowed: Bool) async {
         guard let error = await vpn.lastDisconnectError(), !Task.isCancelled, vpnState == .disconnected else { return }
         logConnection("iOS: \(error.domain) / \(error.code)", level: .error)
-        guard allowed, error.domain == "NEVPNConnectionErrorDomain", error.code == 12,
+        let recoverable: [NEVPNConnectionError] = [.noNetworkAvailable, .unrecoverableNetworkChange, .overslept, .pluginFailed]
+        guard allowed, error.domain == NEVPNConnectionErrorDomain,
+              let code = NEVPNConnectionError(rawValue: error.code), recoverable.contains(code),
               hasAccess, let config = AppIdentity.readTunnelConfig(), config.bootstrapDuration == nil,
               config.deviceId == sessionDeviceId else { return }
         do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
@@ -189,7 +200,7 @@ final class MainViewModel: ObservableObject {
         guard !paymentTunnelActive, paymentTask == nil else { return }
         vpnActionInProgress = true
         defer { vpnActionInProgress = false; tunnelRecovery = nil }
-        vpnState = .connecting
+        vpnState = .reconnecting
         logConnection("iOS остановила расширение. Восстановление VPN")
         do {
             try await vpn.connect(config)
@@ -197,6 +208,7 @@ final class MainViewModel: ObservableObject {
             guard vpn.state == .connected else { throw APIError.network }
             vpnState = .connected
             connectedAt = Date()
+            canRecoverTunnel = true
             errorMessage = nil
             logConnection("Соединение восстановлено", level: .success)
         } catch {
@@ -293,6 +305,7 @@ final class MainViewModel: ObservableObject {
         bootstrapStarting = true
         await vpn.disconnect()
         bootstrapDeadline = nil
+        bootstrapReconnecting = false
         bootstrapActive = false
         bootstrapStarting = false
     }
@@ -368,6 +381,7 @@ final class MainViewModel: ObservableObject {
         authError = nil
         defer { authLoading = false }
         do {
+            await logoutTask?.value
             _ = try await api.login(email: email, password: password)
             LocalStore.rememberMe = remember
             if remember {
@@ -393,6 +407,7 @@ final class MainViewModel: ObservableObject {
         regNeedMail = false
         defer { authLoading = false }
         do {
+            await logoutTask?.value
             let entered = try await api.register(email: email, password: password, referralOrPromo: code)
             if remember {
                 LocalStore.rememberMe = true
@@ -425,42 +440,52 @@ final class MainViewModel: ObservableObject {
     }
 
     func logout() {
-        guard paymentTask == nil, !paymentTunnelActive, !paymentCleanupActive else { return }
+        guard loggedIn, canLogout else { return }
         tunnelRecovery?.cancel()
         prefetchTask?.cancel()
+        siteRoutingUpdate?.cancel()
         serverConfigCache = nil
         KeychainHelper.delete(serverConfigCacheKey)
+        let access = api.accessToken
+        let serverLogout = access.map { token in
+            Task { await api.logoutSession(access: token) }
+        }
+        api.logout()
         canRecoverTunnel = false
         sessionsVersion += 1
         serverSelectionVersion += 1
+        bootstrapAttempted = false
+        profile = nil
+        loggedIn = false
+        servers = ServerCatalog.fixedList
+        serverHint = ""
+        vpnState = .disconnected
+        connectedAt = nil
+        menuOpen = false
+        menuPage = .root
+        payment = .idle
+        russianListReceived = false
+        logoutTask = Task {
+            await vpn.disconnect()
+            await serverLogout?.value
+        }
         Task {
-            if vpnState == .connected || vpnState == .connecting {
-                await vpn.disconnect()
-            }
-            await api.logoutSession()
-            bootstrapAttempted = false
-            profile = nil
-            loggedIn = false
-            servers = ServerCatalog.fixedList
-            serverHint = ""
-            vpnState = .disconnected
-            connectedAt = nil
-            menuOpen = false
-            menuPage = .root
-            payment = .idle
+            await logoutTask?.value
+            guard !api.isLoggedIn else { return }
             await startBootstrap()
         }
     }
 
     func toggleVPN() async {
-        guard !vpnActionInProgress, !paymentTunnelActive, !paymentCleanupActive, paymentTask == nil else { return }
+        guard loggedIn, !vpnActionInProgress, !paymentTunnelActive, !paymentCleanupActive, paymentTask == nil else { return }
         prefetchTask?.cancel()
         tunnelRecovery?.cancel()
         vpnActionInProgress = true
         defer { vpnActionInProgress = false }
         errorMessage = nil
-        if vpnState == .connected || vpnState == .connecting {
+        if vpnState == .connected || vpnState == .connecting || vpnState == .reconnecting {
             vpnState = .disconnecting
+            russianListReceived = false
             logConnection("Отключение VPN")
             await vpn.disconnect()
             vpnState = vpn.state
@@ -479,6 +504,7 @@ final class MainViewModel: ObservableObject {
         serverHint = ""
         let preferred = selectedServer
         let title = servers.first(where: { $0.key == preferred })?.title ?? "Выбранный сервер"
+        let started = ProcessInfo.processInfo.systemUptime
         logConnection("\(title) · запрос настроек VPN")
         var sessionStarted = false
         var stage = "Сервер не подтвердил подключение VPN"
@@ -491,6 +517,7 @@ final class MainViewModel: ObservableObject {
                 confirmedSlot = try await api.connect(preferredServer: preferred)
             }
             sessionStarted = true
+            logConnection("Сессия подтверждена · \(elapsedConnectionTime(since: started))")
             stage = "Не удалось получить настройки VPN"
             // connect provisions missing per-account relay hashes; reading the
             // config first could leave this attempt using stale bootstrap hashes.
@@ -505,7 +532,7 @@ final class MainViewModel: ObservableObject {
                 if let slot = cfg.selected_server { saveServerConfig(cfg, slot: slot) }
             }
             if let profile { UserDefaults.standard.set(cfg.device_id, forKey: "vpn-session-\(profile.id)") }
-            logConnection("Конфигурация получена. Подготовка сессии")
+            logConnection("Конфигурация получена · \(elapsedConnectionTime(since: started))")
             if let confirmed = cfg.selected_server?.lowercased(), confirmed != selectedServer,
                servers.contains(where: { $0.key == confirmed }) {
                 serverSelectionVersion += 1
@@ -528,7 +555,7 @@ final class MainViewModel: ObservableObject {
             vpnState = .connected
             connectedAt = Date()
             canRecoverTunnel = true
-            logConnection("VPN подключён: шлюз ответил", level: .success)
+            logConnection("VPN подключён · \(elapsedConnectionTime(since: started))", level: .success)
             Task { await refreshSessions() }
         } catch {
             await vpn.disconnect()
@@ -540,6 +567,10 @@ final class MainViewModel: ObservableObject {
         }
     }
 
+    private func elapsedConnectionTime(since started: TimeInterval) -> String {
+        String(format: "%.1f с", ProcessInfo.processInfo.systemUptime - started)
+    }
+
     private func makeTunnel(_ cfg: VpnConfig, bootstrapDuration: Int? = nil) -> TunnelConfig {
         let dns: [String]
         if dnsPreset == "custom", let custom = DnsInput.sanitize(customDns) {
@@ -547,7 +578,7 @@ final class MainViewModel: ObservableObject {
         } else {
             dns = cfg.wg_dns.split { $0 == "," || $0 == " " }.map { String($0) }.filter { !$0.isEmpty }
         }
-        let workers = max(9, min(cfg.stream_count, 27))
+        let workers = bootstrapDuration == nil ? max(3, min(cfg.stream_count, 63)) : 3
         return TunnelConfig(
             deviceId: bootstrapDuration == nil ? cfg.device_id : "boot:\(api.deviceFingerprint)",
             serverIP: cfg.server_ip,
@@ -942,17 +973,19 @@ final class MainViewModel: ObservableObject {
     }
 
     func setRussianDirect(_ enabled: Bool) {
-        guard !russianBusy, vpnState != .connecting, vpnState != .disconnecting, let policy = RussianServices.policy(enabled: enabled) else { return }
+        guard !routingControlsLocked, !enabled || RussianServices.policy(enabled: true) != nil else { return }
         let old = russianDirect
         let rules = siteRules
         let whitelist = sitesWhitelist
         russianBusy = true
+        russianListReceived = false
         russianDirect = enabled
         RussianServices.enabled = enabled
         let previous = siteRoutingUpdate
         siteRoutingUpdate = Task {
             await previous?.value
-            do { try await vpn.updateSiteRouting(rules: rules, whitelist: whitelist, russian: policy) }
+            guard !Task.isCancelled else { russianBusy = false; return }
+            do { try await vpn.updateSiteRouting(rules: rules, whitelist: whitelist, russianEnabled: enabled) }
             catch {
                 russianDirect = old
                 RussianServices.enabled = old
@@ -962,14 +995,25 @@ final class MainViewModel: ObservableObject {
         }
     }
 
+    func updateRussianListStatus() async {
+        guard russianDirect, vpnState == .connected, !russianBusy else {
+            russianListReceived = false
+            return
+        }
+        let revision = await vpn.receivedPolicyRevision()
+        guard !Task.isCancelled else { return }
+        russianListReceived = russianDirect && vpnState == .connected && !russianBusy && revision != nil
+    }
+
     private func applySiteRouting() {
         let rules = siteRules
         let whitelist = sitesWhitelist
-        let russian = RussianServices.policy(enabled: russianDirect)
+        let russian = russianDirect
         let previous = siteRoutingUpdate
         siteRoutingUpdate = Task {
             await previous?.value
-            do { try await vpn.updateSiteRouting(rules: rules, whitelist: whitelist, russian: russian) }
+            guard !Task.isCancelled, loggedIn else { return }
+            do { try await vpn.updateSiteRouting(rules: rules, whitelist: whitelist, russianEnabled: russian) }
             catch { errorMessage = error.localizedDescription }
         }
     }

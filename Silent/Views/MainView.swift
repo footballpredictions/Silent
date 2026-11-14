@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-enum VpnState { case disconnected, connecting, connected, disconnecting }
+enum VpnState { case disconnected, connecting, connected, reconnecting, disconnecting }
 
 struct RootView: View {
     @EnvironmentObject var vm: MainViewModel
@@ -84,8 +84,9 @@ struct MainView: View {
                     .foregroundColor(vm.vpnState == .connected ? p.success : p.fg.opacity(0.65))
                     .shadow(color: vm.vpnState == .connected ? p.successGlow : .clear, radius: 4)
                 BigToggle(
-                    isOn: vm.vpnState == .connected,
-                    isLoading: vm.vpnState == .connecting || vm.vpnState == .disconnecting,
+                    isOn: vm.vpnState == .connected || vm.vpnState == .connecting || vm.vpnState == .reconnecting,
+                    isLoading: vm.vpnState != .connected && vm.vpnState != .disconnected,
+                    isDisabled: !vm.canLogout || vm.vpnState == .connecting || vm.vpnState == .disconnecting,
                     onColor: p.on, offColor: p.off, bg: p.bg,
                     progressColor: p.dark ? Color(white: 0.65) : Color(white: 0.34),
                     status: statusText,
@@ -244,6 +245,7 @@ struct MainView: View {
                             .padding(.horizontal, 18)
                             .padding(.vertical, 16)
                     }
+                    .disabled(!vm.canLogout)
                 }
             }
         }
@@ -260,6 +262,7 @@ struct MainView: View {
         switch vm.vpnState {
         case .connected: return "Подключено"
         case .connecting: return "Подключение..."
+        case .reconnecting: return "Восстановление связи…"
         case .disconnecting: return "Отключение..."
         case .disconnected: return "Отключено"
         }
@@ -275,6 +278,7 @@ struct MainView: View {
 struct BigToggle: View {
     let isOn: Bool
     let isLoading: Bool
+    let isDisabled: Bool
     let onColor: Color
     let offColor: Color
     let bg: Color
@@ -293,7 +297,7 @@ struct BigToggle: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(VpnToggleButtonStyle(reduceMotion: reduceMotion))
-        .disabled(isLoading)
+        .disabled(isDisabled)
         .accessibilityLabel(isOn ? "Отключить VPN" : "Подключить VPN")
         .accessibilityValue(status)
     }
@@ -304,7 +308,7 @@ struct BigToggle: View {
         let rotation = reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 2.2) / 2.2 * 360
         let color = isOn ? onColor : offColor
         return ZStack {
-            if isOn {
+            if isOn && !isLoading {
                 Capsule()
                     .fill(onColor.opacity(0.20))
                     .frame(width: 132, height: 66)

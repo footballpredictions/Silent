@@ -199,8 +199,14 @@ private struct ExclusionsPage: View {
                     Text("Для всех приложений. Остальной трафик — через VPN.")
                         .font(.footnote).foregroundColor(p.fg.opacity(0.5))
                 }
-            }.tint(p.fg).disabled(vm.russianBusy || vm.vpnState == .connecting || vm.vpnState == .disconnecting)
+            }.tint(p.switchOn).disabled(vm.routingControlsLocked)
             if vm.russianDirect {
+                if vm.russianListReceived {
+                    Text("Список получен")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(p.success)
+                        .shadow(color: p.successGlow, radius: 4)
+                }
                 Text("Другие исключения временно отключены. Ваши списки сохранены.")
                     .font(.footnote).foregroundColor(p.fg.opacity(0.5))
             }
@@ -246,10 +252,18 @@ private struct ExclusionsPage: View {
                         }
                     }
                 }
-            }.disabled(vm.russianDirect || vm.russianBusy).opacity(vm.russianDirect ? 0.35 : 1)
+            }.disabled(vm.russianDirect || vm.routingControlsLocked).opacity(vm.russianDirect ? 0.35 : 1)
             Spacer()
         }
         .padding(.horizontal, 16)
+        .task(id: vm.russianDirect && vm.vpnState == .connected && !vm.russianBusy) {
+            await vm.updateRussianListStatus()
+            guard vm.russianDirect, vm.vpnState == .connected, !vm.russianBusy else { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 1_500_000_000) } catch { return }
+                await vm.updateRussianListStatus()
+            }
+        }
     }
 
     private func chip(_ title: String, on: Bool, p: Palette, action: @escaping () -> Void) -> some View {
@@ -268,7 +282,7 @@ private struct DnsPage: View {
 
     var body: some View {
         let p = vm.palette
-        let locked = vm.vpnState == .connected || vm.vpnState == .connecting
+        let locked = vm.vpnState != .disconnected
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("DNS").font(.headline.weight(.semibold)).foregroundColor(p.fg)

@@ -3,10 +3,10 @@ import SwiftUI
 struct LoginView: View {
     @EnvironmentObject var vm: MainViewModel
     @State private var tab = "login"
-    @State private var email = LocalStore.rememberedEmail
-    @State private var password = LocalStore.rememberedPassword
+    @State private var email = LocalStore.rememberMe ? LocalStore.rememberedEmail : ""
+    @State private var password = LocalStore.rememberMe ? LocalStore.rememberedPassword : ""
     @State private var code = ""
-    @State private var remember = LocalStore.rememberMe
+    @AppStorage("remember_me") private var remember = false
     @State private var showPassword = false
     @State private var forgot = false
 
@@ -26,7 +26,12 @@ struct LoginView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         SilentBrandHeader(title: displayName, color: p.fg)
 
-                        if let deadline = vm.bootstrapDeadline {
+                        if vm.bootstrapReconnecting {
+                            Text("Временный интернет · восстановление связи…")
+                                .font(AppFont.text(12, weight: .medium))
+                                .foregroundStyle(p.success)
+                                .shadow(color: p.successGlow, radius: 4)
+                        } else if let deadline = vm.bootstrapDeadline {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 let seconds = max(0, Int(ceil(deadline.timeIntervalSince(context.date))))
                                 Label("Временный интернет · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
@@ -82,7 +87,13 @@ struct LoginView: View {
                                         .font(AppFont.text(13))
                                         .foregroundColor(p.fg)
                                 }
-                                .tint(p.fg)
+                                .tint(p.switchOn)
+                                .onChange(of: remember) { enabled in
+                                    if !enabled {
+                                        LocalStore.rememberedEmail = ""
+                                        LocalStore.rememberedPassword = ""
+                                    }
+                                }
                                 Button(theme?.login_forgot_password_label ?? "Забыли пароль?") { forgot = true }
                                     .font(AppFont.text(13, weight: .medium))
                                     .foregroundColor(p.link)

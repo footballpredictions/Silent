@@ -82,10 +82,11 @@ private struct VPNLogPanel: View {
     @State private var tunnelEntries: [VPNLogEntry] = []
     @State private var copied = false
 
-    private var entries: [VPNLogEntry] { (vm.connectionLog + tunnelEntries).sorted { $0.date < $1.date } }
+    private var entries: [VPNLogRow] { VPNLogRow.grouped(vm.connectionLog + tunnelEntries) }
     private let background = Color(red: 0.067, green: 0.094, blue: 0.153)
 
     var body: some View {
+        let rows = entries
         VStack(spacing: 0) {
             ViewThatFits(in: .horizontal) {
                 HStack { title; Spacer(); actions }
@@ -97,24 +98,37 @@ private struct VPNLogPanel: View {
             ScrollViewReader { scroll in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        if entries.isEmpty {
+                        if rows.isEmpty {
                             Text("Лог пуст. Подключите VPN.").foregroundStyle(.white.opacity(0.65))
                         }
-                        ForEach(entries) { entry in
-                            Text(entry.line)
-                                .foregroundStyle(color(for: entry.level))
-                                .shadow(color: entry.level == .success ? ThemePalette.successGlow(dark: true) : .clear, radius: 4)
-                                .textSelection(.enabled)
-                                .id(entry.id)
+                        ForEach(rows) { row in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(row.count.formatted())
+                                    .font(.caption2.weight(.bold).monospacedDigit())
+                                    .foregroundStyle(Color(red: 0.48, green: 0.72, blue: 1))
+                                    .padding(.horizontal, 6)
+                                    .frame(minWidth: 24, minHeight: 22)
+                                    .background(Color(red: 0.12, green: 0.24, blue: 0.39), in: Capsule())
+                                    .accessibilityLabel("Повторов: \(row.count)")
+                                Text(row.entry.line)
+                                    .foregroundStyle(color(for: row.entry.level))
+                                    .shadow(color: row.entry.level == .success ? ThemePalette.successGlow(dark: true) : .clear, radius: 4)
+                                    .textSelection(.enabled)
+                            }
                         }
+                        Color.clear.frame(height: 1).id("log-end").accessibilityHidden(true)
                     }
                     .font(.footnote.monospaced())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                 }
-                .onChange(of: entries.last?.id) { id in
-                    if let id { scroll.scrollTo(id, anchor: .bottom) }
+                .onChange(of: vm.connectionLog.last?.id) { _ in
+                    scroll.scrollTo("log-end", anchor: .bottom)
                 }
+                .onChange(of: rows.last?.id) { _ in
+                    scroll.scrollTo("log-end", anchor: .bottom)
+                }
+                .onAppear { scroll.scrollTo("log-end", anchor: .bottom) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

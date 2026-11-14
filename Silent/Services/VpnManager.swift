@@ -51,21 +51,32 @@ final class VpnManager: ObservableObject {
         let data = try JSONEncoder().encode(config)
         try data.write(to: url, options: .atomic)
 
-        let proto = NETunnelProviderProtocol()
-        proto.providerBundleIdentifier = AppIdentity.tunnelBundleId
-        proto.serverAddress = config.serverIP
-        proto.disconnectOnSleep = false
-        proto.enforceRoutes = config.paymentRouting == true
-        mgr.protocolConfiguration = proto
-        mgr.localizedDescription = "Silent VPN"
-        mgr.isEnabled = true
-        try await mgr.saveToPreferences()
-        try await mgr.loadFromPreferences()
+        let enforceRoutes = config.paymentRouting == true
+        let old = mgr.protocolConfiguration as? NETunnelProviderProtocol
+        if old?.providerBundleIdentifier != AppIdentity.tunnelBundleId || old?.serverAddress != config.serverIP ||
+            old?.disconnectOnSleep != false || old?.enforceRoutes != enforceRoutes || !mgr.isEnabled {
+            let proto = NETunnelProviderProtocol()
+            proto.providerBundleIdentifier = AppIdentity.tunnelBundleId
+            proto.serverAddress = config.serverIP
+            proto.disconnectOnSleep = false
+            proto.enforceRoutes = enforceRoutes
+            mgr.protocolConfiguration = proto
+            mgr.localizedDescription = "Silent VPN"
+            mgr.isEnabled = true
+            do {
+                try await mgr.saveToPreferences()
+                try await mgr.loadFromPreferences()
+            } catch {
+                manager = nil
+                throw error
+            }
+        }
         state = .connecting
         do {
             try Task.checkCancellation()
+            let deadline = ProcessInfo.processInfo.systemUptime + timeout
             try mgr.connection.startVPNTunnel()
-            try await waitForConnection(mgr.connection, timeout: timeout)
+            try await waitForConnection(mgr.connection, deadline: deadline)
         } catch {
             mgr.connection.stopVPNTunnel()
             state = Self.map(mgr.connection.status)
@@ -73,21 +84,34 @@ final class VpnManager: ObservableObject {
         }
     }
 
-    private func waitForConnection(_ connection: NEVPNConnection, timeout: TimeInterval) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    private func waitForConnection(_ connection: NEVPNConnection, deadline: TimeInterval) async throws {
+        let statusGrace = ProcessInfo.processInfo.systemUptime + 0.5
         repeat {
-            try await Task.sleep(nanoseconds: 250_000_000)
+            try await Task.sleep(nanoseconds: 100_000_000)
             switch connection.status {
             case .connected:
                 state = .connected
                 return
             case .disconnected, .invalid:
+                if ProcessInfo.processInfo.systemUptime < statusGrace, readError() == nil { continue }
                 throw APIError.server(readError() ?? "VPN не запустился. Проверьте разрешение iOS и попробуйте ещё раз.")
             default:
                 break
             }
         } while ProcessInfo.processInfo.systemUptime < deadline
-        throw APIError.server("Не удалось подключиться к VPN за \(Int(timeout)) секунд")
+        throw APIError.server("Истекло время ожидания подключения VPN")
+    }
+
+    func receivedPolicyRevision() async -> String? {
+        guard let mgr = try? await load(), mgr.connection.status == .connected,
+              let session = mgr.connection as? NETunnelProviderSession else { return nil }
+        return await withCheckedContinuation { continuation in
+            do {
+                try session.sendProviderMessage(Data("policy-received".utf8)) { data in
+                    continuation.resume(returning: data.flatMap { String(data: $0, encoding: .utf8) })
+                }
+            } catch { continuation.resume(returning: nil) }
+        }
     }
 
     func disconnect() async {
@@ -109,24 +133,35 @@ final class VpnManager: ObservableObject {
         state = Self.map(connection.status)
     }
 
-    func updateSiteRouting(rules: [String], whitelist: Bool, russian: RussianRoutingPolicy?) async throws {
+    func updateSiteRouting(rules: [String], whitelist: Bool, russianEnabled: Bool) async throws {
         let mgr = try await load()
-        guard mgr.connection.status == .connected || mgr.connection.status == .reasserting,
-              let session = mgr.connection as? NETunnelProviderSession,
-              let url = AppIdentity.configURL else { return }
-        var config = try JSONDecoder().decode(TunnelConfig.self, from: Data(contentsOf: url))
-        guard config.bootstrapDuration == nil else { return }
+        if mgr.connection.status == .reasserting {
+            try await waitForConnection(mgr.connection, deadline: ProcessInfo.processInfo.systemUptime + 15)
+        }
+        guard mgr.connection.status == .connected, let session = mgr.connection as? NETunnelProviderSession,
+              let url = AppIdentity.configURL, var config = AppIdentity.readTunnelConfig(),
+              config.bootstrapDuration == nil else { return }
+        try Task.checkCancellation()
+        let previous = config
         config.excludeCIDRs = rules
         config.sitesWhitelist = whitelist
-        config.russian = russian
-        try JSONEncoder().encode(config).write(to: url, options: .atomic)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            do {
-                try session.sendProviderMessage(Data("site-routing".utf8)) { reply in
-                    if reply == Data("ok".utf8) { continuation.resume() }
-                    else { continuation.resume(throwing: APIError.server("Не удалось применить маршруты сайтов")) }
-                }
-            } catch { continuation.resume(throwing: error) }
+        config.russian = RussianServices.policy(enabled: russianEnabled)
+        let data = try JSONEncoder().encode(config)
+        try data.write(to: url, options: .atomic)
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                do {
+                    try session.sendProviderMessage(Data("site-routing".utf8)) { reply in
+                        if reply == Data("ok".utf8) { continuation.resume() }
+                        else { continuation.resume(throwing: APIError.server("Не удалось применить маршруты сайтов")) }
+                    }
+                } catch { continuation.resume(throwing: error) }
+            }
+        } catch {
+            if (try? Data(contentsOf: url)) == data {
+                try? JSONEncoder().encode(previous).write(to: url, options: .atomic)
+            }
+            throw error
         }
     }
 
@@ -160,7 +195,8 @@ final class VpnManager: ObservableObject {
     private static func map(_ status: NEVPNStatus) -> VpnState {
         switch status {
         case .connected: return .connected
-        case .connecting, .reasserting: return .connecting
+        case .connecting: return .connecting
+        case .reasserting: return .reconnecting
         case .disconnecting: return .disconnecting
         default: return .disconnected
         }

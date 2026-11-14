@@ -38,7 +38,7 @@ xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
   "$ROOT/scripts/test-session-api-policy.swift" -o "$TMP/silent-session-policy"
 "$TMP/silent-session-policy"
 rm "$TMP/silent-session-policy"
-xcrun swiftc -parse-as-library "$ROOT/SilentTunnel/TunnelRecovery.swift" +  "$ROOT/scripts/test-tunnel-recovery.swift" -o "$TMP/silent-tunnel-recovery"
+xcrun swiftc -parse-as-library "$ROOT/SilentTunnel/TunnelRecovery.swift" "$ROOT/scripts/test-tunnel-recovery.swift" -o "$TMP/silent-tunnel-recovery"
 "$TMP/silent-tunnel-recovery"
 rm "$TMP/silent-tunnel-recovery"
 cp -R "$SRC/." "$TMP/"

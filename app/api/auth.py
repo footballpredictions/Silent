@@ -1,5 +1,8 @@
+from hashlib import sha256
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
@@ -32,7 +35,7 @@ from app.services.email_validation import (
     canonical_email,
     validate_registration_email_domain,
 )
-from app.services.rate_limiter import check_ip_rate_limit, get_client_ip
+from app.services.rate_limiter import check_ip_rate_limit, get_client_ip, is_rate_limited
 from app.services import admin_auth_service
 from app.services.hive_incidents import push_security_event
 from app.config import settings
@@ -184,6 +187,43 @@ async def register(
         logger.info(f"Register: {email_norm}, email confirmation skipped")
 
     return register_payload(skip_confirm)
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    req: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    if await check_ip_rate_limit(request, scope="verify-resend", max_attempts=10, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Слишком много попыток. Попробуйте позже.")
+
+    address = req.email.strip().lower()
+    result = await db.execute(select(User).where(User.email == address).with_for_update())
+    user = result.scalar_one_or_none()
+    if not user or not verify_password(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Неверный email или пароль.")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Аккаунт заблокирован.")
+    if user.is_verified:
+        return {"status": "verified"}
+
+    address_key = sha256(address.encode()).hexdigest()
+    if await is_rate_limited(f"rl:verify-resend:recipient:{address_key}", max_attempts=1, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Подождите минуту перед повторной отправкой.")
+
+    # Reuse the token so that a delayed copy of the first email still works.
+    if not user.verification_token:
+        user.verification_token = generate_token()
+    token = user.verification_token
+    fallbacks = await _email_fallback_bases(db)
+    relays = await _email_smtp_relays(db)
+    await db.commit()
+    sent = await run_in_threadpool(send_verification_email, address, token,
+                                   settings.FRONTEND_URL.rstrip("/"), fallbacks, relays)
+    if not sent:
+        raise HTTPException(status_code=503, detail="Почтовый сервер не принял письмо. Попробуйте позже.")
+    return {"status": "accepted"}
 
 
 @router.get("/verify-email", response_class=HTMLResponse)

@@ -279,6 +279,7 @@ def send_verification_email(
         to_email,
         "Silent VPN — подтвердите email",
         _base_template(content),
+        plain_body=f"Для подтверждения email в Silent VPN откройте ссылку:\n{verify_url}\n",
         smtp_relays=smtp_relays,
     )
 

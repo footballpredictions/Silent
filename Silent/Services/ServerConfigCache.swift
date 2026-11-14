@@ -1,7 +1,8 @@
 import Foundation
 
 struct ServerConfigCache: Codable {
-    static let lifetime: TimeInterval = 900
+    static let refreshInterval: TimeInterval = 900
+    static let lifetime: TimeInterval = 24 * 60 * 60
 
     struct Entry: Codable {
         let savedAt: Date
@@ -12,9 +13,11 @@ struct ServerConfigCache: Codable {
     let fingerprint: String
     private(set) var slots: [String: Entry] = [:]
 
-    func config(server: String, account: String, fingerprint: String, now: Date = Date()) -> VpnConfig? {
+    func config(server: String, account: String, fingerprint: String, deviceId: String,
+                maxAge: TimeInterval = Self.lifetime, now: Date = Date()) -> VpnConfig? {
         guard self.account == account, self.fingerprint == fingerprint, let entry = slots[server],
-              entry.savedAt <= now, now.timeIntervalSince(entry.savedAt) < Self.lifetime else { return nil }
+              entry.config.device_id == deviceId, entry.config.selected_server == server,
+              entry.savedAt <= now, now.timeIntervalSince(entry.savedAt) < maxAge else { return nil }
         return entry.config
     }
 
@@ -26,5 +29,9 @@ struct ServerConfigCache: Codable {
         var transport = config
         transport.wg_private_key = ""
         slots[server] = Entry(savedAt: now, config: transport)
+    }
+
+    mutating func remove(server: String) {
+        slots.removeValue(forKey: server)
     }
 }

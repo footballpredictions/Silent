@@ -10,6 +10,8 @@ struct SessionsApiPolicyTest {
         precondition(active.count == Set(active).count)
         let offline = PublicApiFailover.bases(preferred: PublicApiFailover.hiveHttps)
         precondition(!offline.contains(PublicApiFailover.tunnelAPI), "VPN-off requests must not wait for a missing tunnel")
+        precondition(Array(offline.prefix(2)) == PublicApiFailover.paymentPublicBases)
+        precondition(!offline.contains("https://\(PublicApiFailover.hiveIP)"), "Raw IP only serves /api/health")
         precondition(PublicApiFailover.bootstrapPorts == [443, 2083])
         precondition(URL(string: PublicApiFailover.hiveAlternateHTTPS)?.host == PublicApiFailover.hiveHost)
         let url = PublicApiFailover.serverQuery("api/vpn/servers", fingerprint: "device&123")
@@ -58,6 +60,15 @@ struct SessionsApiPolicyTest {
             attempts.last == 2
         }, stop: { stops += 1; return true })
         precondition(picked == 1 && attempts == [1, 2] && stops == 1)
+        attempts = []
+        do {
+            _ = try await PaymentRoute.choose([1, 2], start: { attempts.append($0) }, probe: {
+                throw URLError(.userAuthenticationRequired)
+            }, stop: { preconditionFailure("A definitive API rejection must reach the payment caller") })
+            preconditionFailure("A definitive API rejection must propagate")
+        } catch let error as URLError {
+            precondition(error.code == .userAuthenticationRequired && attempts == [1])
+        }
         precondition(PaymentRoute.isCheckoutURL(URL(string: "https://yoomoney.ru/quickpay/confirm.xml")!))
         precondition(!PaymentRoute.isCheckoutURL(URL(string: "https://yoomoney.ru.example/quickpay/confirm.xml")!))
         let config = VpnConfig(device_id: "device", wg_private_key: "test-private-key", wg_address: "10.66.66.2/32",
@@ -66,11 +77,18 @@ struct SessionsApiPolicyTest {
         var cache = ServerConfigCache(account: "account", fingerprint: "fp")
         let now = Date()
         cache.save(config, for: "server1", now: now)
-        precondition(cache.config(server: "server1", account: "account", fingerprint: "fp", now: now) == nil)
+        precondition(cache.config(server: "server1", account: "account", fingerprint: "fp", deviceId: "device", now: now) == nil)
         cache.save(config, for: "server2", now: now)
-        precondition(cache.config(server: "server2", account: "account", fingerprint: "fp", now: now)?.wg_private_key == "")
-        precondition(cache.config(server: "server2", account: "other", fingerprint: "fp", now: now) == nil)
-        precondition(cache.config(server: "server2", account: "account", fingerprint: "fp", now: now.addingTimeInterval(901)) == nil)
+        let persisted = try JSONDecoder().decode(ServerConfigCache.self, from: JSONEncoder().encode(cache))
+        precondition(persisted.config(server: "server2", account: "account", fingerprint: "fp", deviceId: "device", now: now)?.wg_private_key == "")
+        precondition(persisted.config(server: "server2", account: "other", fingerprint: "fp", deviceId: "device", now: now) == nil)
+        precondition(persisted.config(server: "server2", account: "account", fingerprint: "fp", deviceId: "replacement", now: now) == nil)
+        let later = now.addingTimeInterval(901)
+        precondition(persisted.config(server: "server2", account: "account", fingerprint: "fp", deviceId: "device", now: later) != nil)
+        precondition(persisted.config(server: "server2", account: "account", fingerprint: "fp", deviceId: "device",
+                                      maxAge: ServerConfigCache.refreshInterval, now: later) == nil)
+        precondition(persisted.config(server: "server2", account: "account", fingerprint: "fp", deviceId: "device",
+                                      now: now.addingTimeInterval(ServerConfigCache.lifetime)) == nil)
         let partial = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{".utf8)
         let incomplete = try BootstrapHTTPResponse.parse(partial, complete: false)
         precondition(incomplete == nil)

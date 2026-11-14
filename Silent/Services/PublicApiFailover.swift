@@ -7,7 +7,7 @@ enum PublicApiFailover {
     static let hiveHttps = "https://\(hiveHost)"
     static let hiveAlternateHTTPS = "\(hiveHttps):2083"
     static let bootstrapPorts: [UInt16] = [443, 2083]
-    static let hiveIpHttps = "https://\(hiveIP)"
+    static let paymentPublicBases = [hiveHttps, hiveAlternateHTTPS]
 
     static func serverQuery(_ path: String, fingerprint: String, preferred: String? = nil) -> String {
         var components = URLComponents()
@@ -44,10 +44,9 @@ enum PublicApiFailover {
             out.append(v)
         }
         if tunnelActive { out.append(tunnelAPI) }
-        if !out.contains(hiveIpHttps) { out.append(hiveIpHttps) }
-        cells.forEach { add($0) }
         add(hiveHttps)
         add(hiveAlternateHTTPS)
+        cells.forEach { add($0) }
         add(preferred)
         extraBases.forEach { add($0) }
         return out

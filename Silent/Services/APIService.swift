@@ -37,9 +37,10 @@ class APIService: ObservableObject {
         _ path: String,
         method: String = "GET",
         body: Encodable? = nil,
-        auth: Bool = true
+        auth: Bool = true,
+        tunnelOnly: Bool = false
     ) async throws -> T {
-        let data = try await requestData(path, method: method, body: body, auth: auth)
+        let data = try await requestData(path, method: method, body: body, auth: auth, tunnelOnly: tunnelOnly)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
@@ -49,17 +50,22 @@ class APIService: ObservableObject {
         body: Encodable? = nil,
         auth: Bool = true,
         allowRefresh: Bool = true,
-        accessOverride: String? = nil
+        accessOverride: String? = nil,
+        tunnelOnly: Bool = false
     ) async throws -> Data {
         let tunnelActive = await VpnManager.shared.isApiTunnelActive()
-        let bases = PublicApiFailover.bases(preferred: serverURL, tunnelActive: tunnelActive)
+        let bases = tunnelOnly
+            ? (tunnelActive ? [PublicApiFailover.tunnelAPI] : [])
+            : PublicApiFailover.bases(preferred: serverURL, tunnelActive: tunnelActive)
+        if tunnelOnly && bases.isEmpty { throw APIError.network }
         guard !bases.isEmpty else { throw APIError.noServer }
         var lastError: Error = APIError.network
         for base in bases {
             try Task.checkCancellation()
             do {
                 return try await requestOnce(path, method: method, body: body, auth: auth, base: base,
-                                             allowRefresh: allowRefresh, accessOverride: accessOverride)
+                                             allowRefresh: allowRefresh, accessOverride: accessOverride,
+                                             timeout: tunnelOnly ? 5 : nil, refreshOnSameBase: tunnelOnly)
             } catch let e as APIError {
                 switch e {
                 case .network, .invalidURL:
@@ -85,7 +91,9 @@ class APIService: ObservableObject {
         allowRefresh: Bool,
         verifyTLS: Bool = false,
         timeout: TimeInterval? = nil,
-        accessOverride: String? = nil
+        accessOverride: String? = nil,
+        preserveServerError: Bool = false,
+        refreshOnSameBase: Bool = false
     ) async throws -> Data {
         let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
         guard let url = URL(string: "\(base)/\(trimmed)") else { throw APIError.invalidURL }
@@ -120,10 +128,12 @@ class APIService: ObservableObject {
 
         guard let httpResp = response as? HTTPURLResponse else { throw APIError.network }
         if httpResp.statusCode == 401 && auth && allowRefresh {
-            try await refreshTokens()
-            return try await requestOnce(path, method: method, body: body, auth: auth, base: base, allowRefresh: false)
+            try await refreshTokens(base: refreshOnSameBase ? base : nil)
+            return try await requestOnce(path, method: method, body: body, auth: auth, base: base, allowRefresh: false,
+                                         verifyTLS: verifyTLS, timeout: timeout, accessOverride: accessOverride,
+                                         preserveServerError: preserveServerError)
         }
-        if PublicApiFailover.shouldTryNextBase(httpCode: httpResp.statusCode) {
+        if !preserveServerError && PublicApiFailover.shouldTryNextBase(httpCode: httpResp.statusCode) {
             throw APIError.network
         }
         guard (200..<300).contains(httpResp.statusCode) else {
@@ -143,11 +153,18 @@ class APIService: ObservableObject {
         return nil
     }
 
-    private func refreshTokens() async throws {
+    private func refreshTokens(base: String? = nil) async throws {
         guard let rt = refreshToken else { throw APIError.unauthorized }
         let oldAccess = accessToken
         struct RefReq: Encodable { let refresh_token: String }
-        let data = try await requestData("api/auth/refresh", method: "POST", body: RefReq(refresh_token: rt), auth: false, allowRefresh: false)
+        let body = RefReq(refresh_token: rt)
+        let data: Data
+        if let base {
+            data = try await requestOnce("api/auth/refresh", method: "POST", body: body, auth: false, base: base,
+                                         allowRefresh: false, verifyTLS: true, timeout: 5, preserveServerError: true)
+        } else {
+            data = try await requestData("api/auth/refresh", method: "POST", body: body, auth: false, allowRefresh: false)
+        }
         let resp = try JSONDecoder().decode(TokenResponse.self, from: data)
         guard refreshToken == rt, accessToken == oldAccess else { throw APIError.unauthorized }
         accessToken = resp.access_token
@@ -277,7 +294,7 @@ class APIService: ObservableObject {
         }
     }
 
-    func registerDevice(name: String, preferredServer: String) async throws -> VpnConfig {
+    func registerDevice(name: String, preferredServer: String, tunnelOnly: Bool = false) async throws -> VpnConfig {
         struct Req: Encodable {
             let device_name: String
             let device_type: String
@@ -294,7 +311,8 @@ class APIService: ObservableObject {
                 device_fingerprint: deviceFingerprint,
                 wg_public_key: nil,
                 preferred_server: preferredServer
-            )
+            ),
+            tunnelOnly: tunnelOnly
         )
     }
 
@@ -309,7 +327,8 @@ class APIService: ObservableObject {
         let reply: Reply = try await request(
             "api/vpn/connect",
             method: "POST",
-            body: Req(device_fingerprint: deviceFingerprint, device_type: "ios", preferred_server: preferredServer)
+            body: Req(device_fingerprint: deviceFingerprint, device_type: "ios", preferred_server: preferredServer),
+            tunnelOnly: true
         )
         return reply.selected_server
     }
@@ -333,19 +352,21 @@ class APIService: ObservableObject {
         }
     }
 
-    func initPayment(plan: String, promo: String? = nil, tunnelActive: Bool) async throws -> PaymentResponse {
+    func initPayment(plan: String, promo: String? = nil, base: String) async throws -> PaymentResponse {
         struct Req: Encodable { let plan_type: String; let promo_code: String? }
         // Creating a payment is a write. Do not replay it on another API base
         // when the first response times out after the backend may have committed.
-        let base = tunnelActive ? PublicApiFailover.tunnelAPI : PublicApiFailover.hiveHttps
         let data = try await requestOnce("api/payments/init", method: "POST", body: Req(plan_type: plan, promo_code: promo),
-                                         auth: true, base: base, allowRefresh: false, verifyTLS: true)
+                                         auth: true, base: base, allowRefresh: false, verifyTLS: true, preserveServerError: true)
         return try JSONDecoder().decode(PaymentResponse.self, from: data)
     }
 
-    func previewPayment(plan: String) async throws -> PaymentPreview {
+    func previewPayment(plan: String, base: String) async throws -> PaymentPreview {
         struct Req: Encodable { let plan_type: String }
-        return try await request("api/payments/preview", method: "POST", body: Req(plan_type: plan))
+        let data = try await requestOnce("api/payments/preview", method: "POST", body: Req(plan_type: plan),
+                                         auth: true, base: base, allowRefresh: true, verifyTLS: true,
+                                         timeout: 4, preserveServerError: true, refreshOnSameBase: true)
+        return try JSONDecoder().decode(PaymentPreview.self, from: data)
     }
 
     func paymentStatus(label: String) async throws -> PaymentStatus {
@@ -366,16 +387,29 @@ class APIService: ObservableObject {
         try await request(PublicApiFailover.serverQuery("api/vpn/servers", fingerprint: deviceFingerprint))
     }
 
-    func vpnConfig(preferredServer: String) async throws -> VpnConfig {
-        try await request(PublicApiFailover.serverQuery("api/vpn/config", fingerprint: deviceFingerprint, preferred: preferredServer))
+    func vpnConfig(preferredServer: String, tunnelOnly: Bool = false) async throws -> VpnConfig {
+        try await request(PublicApiFailover.serverQuery("api/vpn/config", fingerprint: deviceFingerprint, preferred: preferredServer),
+                          tunnelOnly: tunnelOnly)
     }
 
     func previewVpnConfig(server: String, tunnelActive: Bool) async throws -> VpnConfig {
         let path = PublicApiFailover.serverQuery("api/vpn/config-preview", fingerprint: deviceFingerprint, preferred: server)
-        let base = tunnelActive ? PublicApiFailover.tunnelAPI : PublicApiFailover.hiveHttps
-        let data = try await requestOnce(path, method: "GET", body: nil, auth: true, base: base,
-                                         allowRefresh: false, verifyTLS: true, timeout: 3)
-        return try JSONDecoder().decode(VpnConfig.self, from: data)
+        let bases = tunnelActive ? [PublicApiFailover.tunnelAPI] : PublicApiFailover.paymentPublicBases
+        var lastError: Error = APIError.network
+        for base in bases {
+            do {
+                let data = try await requestOnce(path, method: "GET", body: nil, auth: true, base: base,
+                                                 allowRefresh: false, verifyTLS: true, timeout: 3)
+                return try JSONDecoder().decode(VpnConfig.self, from: data)
+            } catch let error as APIError {
+                guard case .network = error else { throw error }
+                lastError = error
+            } catch let error as URLError {
+                lastError = error
+            }
+            try Task.checkCancellation()
+        }
+        throw lastError
     }
 
     func renameDevice(id: String, name: String) async throws {
@@ -425,10 +459,11 @@ class TrustAllDelegate: NSObject, URLSessionDelegate {
 
 struct KeychainHelper {
     static func set(_ value: String, key: String) {
-        let data = value.data(using: .utf8)!
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: key, kSecValueData as String: data]
-        SecItemDelete(query as CFDictionary)
-        SecItemAdd(query as CFDictionary, nil)
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: key]
+        let attributes = [kSecValueData as String: Data(value.utf8)]
+        if SecItemUpdate(query as CFDictionary, attributes as CFDictionary) == errSecItemNotFound {
+            SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
+        }
     }
     static func get(_ key: String) -> String? {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: key, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]

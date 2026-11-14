@@ -29,17 +29,19 @@ enum PaymentRoute {
 
     @MainActor
     static func choose<Route>(_ routes: [Route], start: (Route) async throws -> Void,
-                              probe: () async -> Bool, stop: () async -> Bool) async throws -> Int? {
+                              probe: () async throws -> Bool, stop: () async -> Bool) async throws -> Int? {
         for (index, route) in routes.enumerated() {
             try Task.checkCancellation()
             do {
                 try await start(route)
-                if await probe() {
-                    try Task.checkCancellation()
-                    return index
-                }
             } catch {
                 try Task.checkCancellation()
+                guard await stop() else { return nil }
+                continue
+            }
+            if try await probe() {
+                try Task.checkCancellation()
+                return index
             }
             try Task.checkCancellation()
             guard await stop() else { return nil }

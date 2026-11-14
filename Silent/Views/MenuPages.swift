@@ -334,8 +334,6 @@ private struct DnsPage: View {
 
 private struct ServerPage: View {
     @EnvironmentObject var vm: MainViewModel
-    @State private var pending: VpnServer?
-    @State private var loading = false
 
     var body: some View {
         let p = vm.palette
@@ -349,13 +347,9 @@ private struct ServerPage: View {
                 if !vm.serverHint.isEmpty {
                     Text(vm.serverHint).font(.footnote).foregroundColor(p.fg.opacity(0.7))
                 }
-                if loading || vm.selectingServer {
-                    ProgressView(vm.selectingServer ? "Применяем выбор…" : "Загружаем серверы…")
-                        .tint(p.fg)
-                }
                 ForEach(vm.servers) { server in
                     let selected = vm.selectedServer == server.key
-                    Button { pending = server } label: {
+                    Button { vm.selectServer(server.key) } label: {
                         HStack {
                             Text(server.title).font(.body.weight(.medium)).foregroundColor(p.fg)
                             Spacer()
@@ -368,27 +362,12 @@ private struct ServerPage: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(locked || vm.selectingServer || selected)
+                    .disabled(locked || selected)
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
             .padding(16)
         }
-        .task { await loadServers() }
-        .refreshable { await loadServers() }
-        .alert("Применить выбор?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), presenting: pending) { server in
-            Button("Применить") { Task { await vm.selectServer(server.key) } }
-            Button("Отмена", role: .cancel) {}
-        } message: { server in
-            Text("Выбрать «\(server.title)» для следующего подключения?")
-        }
-    }
-
-    private func loadServers() async {
-        guard !loading else { return }
-        loading = true
-        defer { loading = false }
-        await vm.refreshServers()
     }
 }
 
@@ -457,32 +436,14 @@ private struct DevicesPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Сессии").font(.headline.weight(.semibold)).foregroundColor(p.fg)
-                Text(vm.profile?.sessionsBadge ?? "0/3").font(.subheadline).foregroundColor(p.fg.opacity(0.5))
                 Text("VPN онлайн: \(vm.profile?.devices.filter { vm.sessionOnline($0) }.count ?? 0) из \(vm.profile?.devices_count ?? 0)")
+                    .font(.subheadline).foregroundColor(p.fg.opacity(0.5))
+                Text("Занято слотов: \(vm.profile?.devices_count ?? 0) из \(slotLimit)")
                     .font(.subheadline).foregroundColor(p.fg.opacity(0.5))
                 if !vm.sessionsError.isEmpty { Text(vm.sessionsError).font(.subheadline).foregroundColor(p.fg.opacity(0.7)) }
                 if !hint.isEmpty { Text(hint).font(.subheadline).foregroundColor(.red) }
                 ForEach(vm.profile?.devices ?? []) { device in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Circle().fill(vm.sessionOnline(device) ? Color(red: 0.09, green: 0.64, blue: 0.29) : p.fg.opacity(0.25)).frame(width: 8, height: 8)
-                            Text(device.device_name).font(.headline.weight(.semibold)).foregroundColor(p.fg)
-                            Spacer()
-                            Text(device.device_type).font(.footnote).foregroundColor(p.fg.opacity(0.65))
-                        }
-                        HStack {
-                            Button("Переименовать") {
-                                rename = device
-                                renameText = device.device_name
-                            }
-                            .font(.subheadline).foregroundColor(p.link)
-                            Button("Удалить") {
-                                deleteTarget = device
-                            }
-                            .font(.subheadline).foregroundColor(.red)
-                        }
-                    }
-                    .padding(.vertical, 8)
+                    deviceRow(device, palette: p)
                 }
             }
             .padding(16)
@@ -494,27 +455,67 @@ private struct DevicesPage: View {
                 do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
             }
         }
-        .confirmationDialog("Удалить сессию?", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
+        .confirmationDialog("Удалить сессию?", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }), presenting: deleteTarget) { device in
             Button("Удалить", role: .destructive) {
-                guard let id = deleteTarget?.id else { return }
-                Task {
-                    hint = await vm.deleteDevice(id) ?? ""
-                    deleteTarget = nil
-                }
+                Task { hint = await vm.deleteDevice(device.id) ?? "" }
             }
             Button("Отмена", role: .cancel) { deleteTarget = nil }
         }
-        .alert("Приписать имя", isPresented: Binding(get: { rename != nil }, set: { if !$0 { rename = nil } })) {
+        .alert("Переименовать устройство", isPresented: Binding(get: { rename != nil }, set: { if !$0 { rename = nil } }), presenting: rename) { device in
             TextField("Имя", text: $renameText)
             Button("Сохранить") {
-                guard let id = rename?.id else { return }
-                Task {
-                    if let err = await vm.renameDevice(id, renameText) { hint = err } else { hint = "" }
-                    rename = nil
-                }
+                let name = renameText
+                Task { hint = await vm.renameDevice(device.id, name) ?? "" }
             }
             Button("Отмена", role: .cancel) { rename = nil }
         }
+    }
+
+    private var slotLimit: String {
+        guard let profile = vm.profile else { return "3" }
+        return profile.is_admin || profile.max_devices <= 0 ? "∞" : String(profile.max_devices)
+    }
+
+    private func deviceRow(_ device: DeviceInfo, palette: Palette) -> some View {
+        let online = vm.sessionOnline(device)
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(online ? Color(red: 0.09, green: 0.64, blue: 0.29) : palette.fg.opacity(0.25))
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.platformLabel).font(.body.weight(.medium)).foregroundStyle(palette.fg)
+                    if let name = device.customLabel {
+                        Text(name).font(.subheadline).foregroundStyle(palette.fg.opacity(0.65))
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityValue(online ? "VPN онлайн" : "VPN отключён")
+                Spacer(minLength: 0)
+                deviceAction("pencil", label: "Переименовать устройство", palette: palette) {
+                    renameText = device.customLabel ?? ""
+                    rename = device
+                }
+                deviceAction("xmark", label: "Удалить сессию", palette: palette) {
+                    deleteTarget = device
+                }
+            }
+            .padding(.vertical, 6)
+            Divider().overlay(palette.fg.opacity(0.12))
+        }
+    }
+
+    private func deviceAction(_ icon: String, label: String, palette: Palette, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.body.weight(.medium))
+                .foregroundStyle(palette.fg.opacity(0.65))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 

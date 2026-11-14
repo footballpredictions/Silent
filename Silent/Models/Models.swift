@@ -28,6 +28,23 @@ struct DeviceInfo: Decodable, Identifiable {
     let device_type: String
     let is_connected: Bool
     let last_connected: String?
+
+    var platformLabel: String {
+        switch device_type.lowercased() {
+        case "android": return "Android"
+        case "android_tv": return "Android TV"
+        case "pc", "windows": return "ПК"
+        case "ios": return "iOS"
+        default: return device_type.capitalized
+        }
+    }
+
+    var customLabel: String? {
+        let name = device_name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let standardNames = ["android", "android tv", "пк", "pc", "ios", "windows"]
+        guard !name.isEmpty, !standardNames.contains(name.lowercased()), !name.lowercased().hasPrefix("bootstrap-") else { return nil }
+        return name
+    }
 }
 
 struct UserProfile: Decodable {
@@ -38,12 +55,13 @@ struct UserProfile: Decodable {
     let subscription: SubscriptionInfo
     var devices: [DeviceInfo]
     var devices_count: Int
+    let current_device_id: String?
     var connected_count: Int
     let max_devices: Int
     var payment_previews: [String: PaymentPreview]?
 
     private enum CodingKeys: String, CodingKey {
-        case id, email, display_id, is_admin, subscription, devices, devices_count, connected_count, max_devices, payment_previews
+        case id, email, display_id, is_admin, subscription, devices, devices_count, current_device_id, connected_count, max_devices, payment_previews
     }
 
     init(from decoder: Decoder) throws {
@@ -55,6 +73,7 @@ struct UserProfile: Decodable {
         subscription = try c.decode(SubscriptionInfo.self, forKey: .subscription)
         devices = try c.decodeIfPresent([DeviceInfo].self, forKey: .devices) ?? []
         devices_count = try c.decodeIfPresent(Int.self, forKey: .devices_count) ?? devices.count
+        current_device_id = try c.decodeIfPresent(String.self, forKey: .current_device_id)
         connected_count = try c.decodeIfPresent(Int.self, forKey: .connected_count) ?? 0
         max_devices = try c.decodeIfPresent(Int.self, forKey: .max_devices) ?? 3
         payment_previews = try c.decodeIfPresent([String: PaymentPreview].self, forKey: .payment_previews)

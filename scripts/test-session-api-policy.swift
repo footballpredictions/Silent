@@ -29,6 +29,17 @@ struct SessionsApiPolicyTest {
         precondition(ServerCatalog.displayList([]).map(\.key) == ["server1", "server2", "server3", "server4", "server5"])
         precondition(incompleteList.map(\.key) == ["server1", "server2", "server3", "server4", "server5", "server6"])
         precondition(incompleteList[1].title == "Резервный" && incompleteList[3].title == "Сервер 4 для ИИ")
+        let profileFixture = Data("""
+        {"id":"account","email":"test@example.invalid","display_id":"1",
+         "subscription":{"is_active":false,"days_left":0},
+         "current_device_id":"this-phone",
+         "devices":[{"id":"other-phone","device_name":"iOS","device_type":"ios","is_connected":true},
+                    {"id":"this-phone","device_name":"Мой телефон","device_type":"ios","is_connected":false}]}
+        """.utf8)
+        let profile = try JSONDecoder().decode(UserProfile.self, from: profileFixture)
+        precondition(profile.current_device_id == "this-phone" && profile.devices[1].is_connected == false)
+        precondition(profile.devices[0].platformLabel == "iOS" && profile.devices[0].customLabel == nil)
+        precondition(profile.devices[1].customLabel == "Мой телефон")
         let hash = "Example_VK-hash-123456789"
         precondition(BootstrapLaunch.callHash("https://vk.ru/call/join/\(hash)?from=invite") == hash)
         precondition(BootstrapLaunch.callHash("https://vk.ru.example/call/join/\(hash)") == nil)

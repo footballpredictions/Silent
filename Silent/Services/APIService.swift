@@ -191,7 +191,7 @@ class APIService: ObservableObject {
     }
 
     func getProfile() async throws -> UserProfile {
-        try await request("api/users/me")
+        try await request(PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint))
     }
 
     func getTheme() async throws -> ThemeData {
@@ -366,18 +366,6 @@ class APIService: ObservableObject {
         let data = try await requestOnce(path, method: "GET", body: nil, auth: true, base: base,
                                          allowRefresh: false, verifyTLS: true, timeout: 3)
         return try JSONDecoder().decode(VpnConfig.self, from: data)
-    }
-
-    func selectServer(_ slot: String) async throws -> VpnServersBody {
-        struct Req: Encodable {
-            let device_fingerprint: String
-            let preferred_server: String
-        }
-        return try await request(
-            "api/vpn/servers/select",
-            method: "POST",
-            body: Req(device_fingerprint: deviceFingerprint, preferred_server: slot)
-        )
     }
 
     func renameDevice(id: String, name: String) async throws {

@@ -53,9 +53,8 @@ final class MainViewModel: ObservableObject {
     @Published var dnsHint = ""
 
     @Published private(set) var servers = ServerCatalog.fixedList
-    @Published var selectedServer = LocalStore.preferredServer
+    @Published private(set) var selectedServer = LocalStore.preferredServer
     @Published var serverHint = ""
-    @Published private(set) var selectingServer = false
 
     @Published var siteRules: [String] = LocalStore.siteRules
     @Published var sitesWhitelist = LocalStore.sitesWhitelist
@@ -99,6 +98,8 @@ final class MainViewModel: ObservableObject {
     var hasAccess: Bool { profile?.is_admin == true || profile?.subscription.is_active == true }
     var sessionDeviceId: String? {
         guard let profile else { return nil }
+        if let id = profile.current_device_id,
+           profile.devices.contains(where: { $0.id == id }) { return id }
         if let id = UserDefaults.standard.string(forKey: "vpn-session-\(profile.id)"),
            profile.devices.contains(where: { $0.id == id }) { return id }
         guard let config = AppIdentity.readTunnelConfig(), config.bootstrapDuration == nil,
@@ -338,6 +339,8 @@ final class MainViewModel: ObservableObject {
         authLoadingTitle = "Загрузка аккаунта…"
         let loaded = try await api.getProfile()
         profile = loaded
+        selectedServer = UserDefaults.standard.string(forKey: "vpn-server-\(loaded.id)") ?? LocalStore.preferredServer
+        rememberLoginSession()
         loadServerConfigCache(account: loaded.id)
         if bootstrapActive, vpn.state == .connected, (loaded.is_admin || loaded.subscription.is_active) {
             await prefetchServerConfigs(account: loaded.id, slots: [selectedServer], tunnelActive: true)
@@ -349,11 +352,8 @@ final class MainViewModel: ObservableObject {
     }
 
     private func rememberLoginSession() {
-        guard let profile else { return }
-        let devices = profile.devices.filter { $0.device_type.lowercased() == "ios" }
-        if devices.count == 1, let device = devices.first {
-            UserDefaults.standard.set(device.id, forKey: "vpn-session-\(profile.id)")
-        }
+        guard let profile, let id = profile.current_device_id, profile.devices.contains(where: { $0.id == id }) else { return }
+        UserDefaults.standard.set(id, forKey: "vpn-session-\(profile.id)")
     }
 
     private func loadAppearanceAndServers() async {
@@ -378,7 +378,6 @@ final class MainViewModel: ObservableObject {
                 LocalStore.rememberedPassword = ""
             }
             try await loadAccount()
-            rememberLoginSession()
             Task { await loadAppearanceAndServers() }
         } catch {
             authError = error.localizedDescription
@@ -402,7 +401,6 @@ final class MainViewModel: ObservableObject {
             }
             if entered {
                 try await loadAccount()
-                rememberLoginSession()
                 Task { await loadAppearanceAndServers() }
             } else {
                 regNeedMail = true
@@ -455,7 +453,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func toggleVPN() async {
-        guard !vpnActionInProgress, !selectingServer, !paymentTunnelActive, !paymentCleanupActive, paymentTask == nil else { return }
+        guard !vpnActionInProgress, !paymentTunnelActive, !paymentCleanupActive, paymentTask == nil else { return }
         prefetchTask?.cancel()
         tunnelRecovery?.cancel()
         vpnActionInProgress = true
@@ -478,6 +476,7 @@ final class MainViewModel: ObservableObject {
             return
         }
         vpnState = .connecting
+        serverHint = ""
         let preferred = selectedServer
         let title = servers.first(where: { $0.key == preferred })?.title ?? "Выбранный сервер"
         logConnection("\(title) · запрос настроек VPN")
@@ -510,10 +509,10 @@ final class MainViewModel: ObservableObject {
             if let confirmed = cfg.selected_server?.lowercased(), confirmed != selectedServer,
                servers.contains(where: { $0.key == confirmed }) {
                 serverSelectionVersion += 1
-                selectedServer = confirmed
-                LocalStore.preferredServer = confirmed
+                storeSelectedServer(confirmed)
                 if let title = servers.first(where: { $0.key == confirmed })?.title {
                     logConnection("API подтвердил другой сервер: \(title)")
+                    serverHint = "Запрошенный сервер недоступен. Выбран «\(title)»."
                 }
             }
             stage = "Не удалось запустить туннель"
@@ -577,7 +576,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func buy(_ planId: String) async {
-        guard busyPlan == nil, paymentTask == nil, !paymentTunnelActive, !paymentCleanupActive, !vpnActionInProgress, !selectingServer,
+        guard busyPlan == nil, paymentTask == nil, !paymentTunnelActive, !paymentCleanupActive, !vpnActionInProgress,
               vpnState == .connected || vpnState == .disconnected, let account = profile?.id else { return }
         busyPlan = planId
         paymentError = nil
@@ -813,7 +812,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func refreshServers() async {
-        guard loggedIn, !selectingServer else { return }
+        guard loggedIn else { return }
         serverSelectionVersion += 1
         let version = serverSelectionVersion
         let account = profile?.id
@@ -821,43 +820,36 @@ final class MainViewModel: ObservableObject {
             let body = try await api.fetchServers()
             guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion else { return }
             applyServers(body)
-            serverHint = ""
             scheduleServerPrefetch()
-        } catch {
-            guard !Task.isCancelled, loggedIn, profile?.id == account, version == serverSelectionVersion else { return }
-            serverHint = "Не удалось обновить список. Проверьте подключение."
-        }
+        } catch { /* The built-in slots are available without the catalog. */ }
     }
 
-    func selectServer(_ key: String) async {
-        guard loggedIn, !selectingServer, !paymentTunnelActive, paymentTask == nil,
+    func selectServer(_ key: String) {
+        guard loggedIn, !paymentTunnelActive, paymentTask == nil,
               key != selectedServer, servers.contains(where: { $0.key == key }) else { return }
         guard vpnState == .disconnected, !vpnActionInProgress else {
             serverHint = "Отключите VPN перед сменой сервера."
             return
         }
-        serverSelectionVersion += 1
-        selectingServer = true
+        storeSelectedServer(key)
         serverHint = ""
-        let account = profile?.id
-        defer { selectingServer = false }
-        do {
-            let body = try await api.selectServer(key)
-            guard loggedIn, profile?.id == account else { return }
-            applyServers(body)
-            serverHint = selectedServer == key ? "Сервер выбран" : "Сервер предложил другой доступный вариант"
-            scheduleServerPrefetch()
-        } catch {
-            guard loggedIn, profile?.id == account else { return }
-            serverHint = error.localizedDescription
+        scheduleServerPrefetch()
+    }
+
+    private func storeSelectedServer(_ key: String) {
+        selectedServer = key
+        LocalStore.preferredServer = key
+        if let account = profile?.id {
+            UserDefaults.standard.set(key, forKey: "vpn-server-\(account)")
         }
     }
 
     private func applyServers(_ body: VpnServersBody) {
         servers = ServerCatalog.displayList(body.servers)
-        if let selected = body.selected_server?.lowercased(), servers.contains(where: { $0.key == selected }) {
-            selectedServer = selected
-            LocalStore.preferredServer = selected
+        if let account = profile?.id, UserDefaults.standard.string(forKey: "vpn-server-\(account)") == nil,
+           vpnState == .disconnected, !vpnActionInProgress,
+           let selected = body.selected_server?.lowercased(), servers.contains(where: { $0.key == selected }) {
+            storeSelectedServer(selected)
         }
     }
 
@@ -901,6 +893,10 @@ final class MainViewModel: ObservableObject {
                 guard !Task.isCancelled, profile?.id == account, !vpnActionInProgress, paymentTask == nil else { break }
                 if config.selected_server == slot {
                     saveServerConfig(config, slot: slot)
+                    if sessionDeviceId == nil, profile?.devices.contains(where: { $0.id == config.device_id }) == true {
+                        UserDefaults.standard.set(config.device_id, forKey: "vpn-session-\(account)")
+                        objectWillChange.send()
+                    }
                     loaded += 1
                 }
             } catch APIError.http(404, _) {
@@ -987,6 +983,7 @@ final class MainViewModel: ObservableObject {
             let fresh = try await api.getProfile()
             guard !Task.isCancelled, loggedIn, version == sessionsVersion else { return }
             profile = fresh
+            rememberLoginSession()
             sessionsError = ""
         } catch {
             if !Task.isCancelled, loggedIn, version == sessionsVersion {

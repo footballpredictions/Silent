@@ -211,10 +211,11 @@ class APIService: ObservableObject {
     }
 
     func resendVerification(email: String, password: String) async throws -> Bool {
+        struct Credentials: Encodable { let email: String; let password: String }
         struct Reply: Decodable { let status: String }
         let tunnelActive = await VpnManager.shared.isApiTunnelActive()
         let bases = (tunnelActive ? [PublicApiFailover.tunnelAPI] : []) + PublicApiFailover.paymentPublicBases
-        let body = LoginRequest(email: email, password: password, device: nil)
+        let body = Credentials(email: email, password: password)
         for base in bases {
             let data: Data
             do {

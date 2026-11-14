@@ -41,7 +41,9 @@ async def get_my_referral(
 
 
 @router.get("/me", response_model=UserProfileResponse)
-async def get_profile(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_profile(
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db), fingerprint: str | None = None,
+):
     await touch_user_last_seen(db, user, min_interval_minutes=LAST_SEEN_TOUCH_MINUTES)
     await ensure_admin_flag(user, db)
     await clear_stale_online_status(db)
@@ -83,6 +85,7 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         ).order_by(Device.last_connected.desc().nullslast(), Device.created_at.desc())
     )
     devices = result.scalars().all()
+    current_device_id = next((d.id for d in devices if d.device_fingerprint == fingerprint), None) if fingerprint else None
     online = await session_online_flags(devices)
     device_infos = [
         DeviceInfo(
@@ -109,6 +112,7 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
         subscription=subscription_info,
         devices=device_infos,
         devices_count=active_sessions,
+        current_device_id=current_device_id,
         connected_count=connected,
         max_devices=await max_devices_for_user(db, user),
         vk_linked=user.vk_user_id is not None,

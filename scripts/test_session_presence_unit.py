@@ -30,12 +30,15 @@ async def check_profile(relative, name):
     source = ast.parse((ROOT / relative).read_text(encoding="utf-8-sig"))
     fn = next(n for n in source.body if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
     fn.args.defaults = []
-    fn.args.args = [ast.arg(arg="user"), ast.arg(arg="db")] if name == "get_profile" else [ast.arg(arg="db"), ast.arg(arg="user")]
+    fn.args.args = [ast.arg(arg="user"), ast.arg(arg="db"), ast.arg(arg="fingerprint")] if name == "get_profile" else [ast.arg(arg="db"), ast.arg(arg="user")]
     fn.returns = None
     fn.decorator_list = []
     # Local imports retain production control flow but use explicit fixture dependencies.
     fn.body = [n for n in fn.body if not isinstance(n, (ast.Import, ast.ImportFrom))]
     device = NS(id="pc-id", device_name="PC", device_type="pc", is_connected=False, last_connected=None)
+    other_phone = NS(id="other-phone", device_name="iPhone", device_type="ios", device_fingerprint="other", last_connected=None)
+    phone = NS(id="this-phone", device_name="iPhone", device_type="ios", device_fingerprint="this", last_connected=None)
+    device.device_fingerprint = "desktop"
     ns = {"UserProfileResponse": NS, "SubscriptionInfo": NS, "DeviceInfo": NS,
           "select": lambda *a: Query(), "Device": Query(), "LAST_SEEN_TOUCH_MINUTES": 5,
           "is_user_admin": lambda u: True}
@@ -43,13 +46,18 @@ async def check_profile(relative, name):
         ns[symbol] = AsyncMock()
     ns.update(user_in_test_mode=AsyncMock(return_value=False), count_active_sessions=AsyncMock(return_value=1),
               count_connected_sessions=AsyncMock(return_value=0), max_devices_for_user=AsyncMock(return_value=10),
-              session_online_flags=AsyncMock(return_value={"pc-id": True}))
-    db = NS(execute=AsyncMock(return_value=NS(scalars=lambda: NS(all=lambda: [device]))))
+              session_online_flags=AsyncMock(return_value={"pc-id": True, "this-phone": False, "other-phone": False}))
+    devices = [device, other_phone, phone] if name == "get_profile" else [device]
+    db = NS(execute=AsyncMock(return_value=NS(scalars=lambda: NS(all=lambda: devices))))
     user = NS(id="owner", email="owner@example.test", display_id="1", vk_user_id=None)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), relative, "exec"), ns)
-    profile = await ns[name](user, db) if name == "get_profile" else await ns[name](db, user)
+    profile = await ns[name](user, db, "this") if name == "get_profile" else await ns[name](db, user)
     assert profile.devices[0].is_connected, f"{name}: live PC is shown offline"
     assert profile.connected_count == 1, f"{name}: count disagrees with online rows"
+    if name == "get_profile":
+        assert profile.current_device_id == "this-phone" and not profile.devices[2].is_connected
+        for fingerprint in (None, "unrelated"):
+            assert (await ns[name](user, db, fingerprint)).current_device_id is None
 
 
 async def main():

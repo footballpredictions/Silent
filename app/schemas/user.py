@@ -39,6 +39,7 @@ class UserProfileResponse(BaseModel):
     subscription: SubscriptionInfo
     devices: list[DeviceInfo]
     devices_count: int
+    current_device_id: uuid.UUID | None = None
     connected_count: int = 0
     max_devices: int = 3  # 0 = безлимит (админ)
     vk_linked: bool = False

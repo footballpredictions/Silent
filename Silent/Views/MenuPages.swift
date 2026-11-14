@@ -51,10 +51,7 @@ private struct SubscriptionPage: View {
                     Button(theme?.payment_cancel_button_text ?? "Отмена") { vm.resetPayment() }
                         .font(.subheadline).foregroundColor(p.link)
                 case .waiting:
-                    Text(theme?.payment_waiting_title ?? "").font(.headline.weight(.semibold)).foregroundColor(p.fg)
-                    Text(theme?.payment_waiting_text ?? "").font(.subheadline).foregroundColor(p.fg.opacity(0.55))
-                    Button(theme?.payment_cancel_button_text ?? "Отмена") { vm.resetPayment() }
-                        .font(.subheadline).foregroundColor(p.link)
+                    waitingForPayment(p)
                 case .success:
                     Text(theme?.payment_success_title ?? "").font(.headline.weight(.semibold))
                         .foregroundStyle(p.success).shadow(color: p.successGlow, radius: 4)
@@ -134,6 +131,43 @@ private struct SubscriptionPage: View {
             }
             Button("Отмена", role: .cancel) { vm.renewalPreview = nil }
         } message: { Text(vm.renewalPreview?.message ?? "") }
+    }
+
+    private func waitingForPayment(_ p: Palette) -> some View {
+        let theme = vm.theme ?? ThemeData()
+        return VStack(spacing: 10) {
+            Image(systemName: "hourglass")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(p.fg)
+                .frame(width: 36, height: 36)
+                .background(p.fg.opacity(0.12), in: Circle())
+                .accessibilityHidden(true)
+            Text(theme.payment_waiting_title)
+                .font(.headline)
+                .foregroundStyle(p.fg)
+                .accessibilityAddTraits(.isHeader)
+            Text(theme.payment_waiting_text)
+                .font(.subheadline)
+                .foregroundStyle(p.fg.opacity(0.72))
+            ProgressView()
+                .tint(p.fg)
+                .padding(.top, 4)
+                .accessibilityLabel("Проверяем оплату")
+            Button(theme.payment_cancel_button_text) { vm.resetPayment() }
+                .font(.subheadline)
+                .foregroundStyle(p.fg.opacity(0.72))
+                .frame(minHeight: 44)
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 24)
+        .background(p.fg.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(p.fg.opacity(0.18))
+                .allowsHitTesting(false)
+        }
     }
 
     private var shown: [ShopPlan] {

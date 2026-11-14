@@ -67,8 +67,8 @@ struct Palette {
         if dark {
             let bg = t.dark_background_color.isEmpty ? ThemePalette.color(t.text_color) : ThemePalette.color(t.dark_background_color)
             let fg = t.dark_text_color.isEmpty ? ThemePalette.color(t.background_color, fallback: .white) : ThemePalette.color(t.dark_text_color)
-            let on = ThemePalette.color("60616C")
-            let off = ThemePalette.color("3F3F46")
+            let on = t.dark_toggle_on_color.isEmpty ? fg : ThemePalette.color(t.dark_toggle_on_color)
+            let off = t.dark_toggle_off_color.isEmpty ? fg.opacity(0.35) : ThemePalette.color(t.dark_toggle_off_color)
             let link = t.dark_login_link_color.isEmpty ? ThemePalette.color(t.login_link_color, fallback: Color(red: 0.27, green: 0.5, blue: 0.76)) : ThemePalette.color(t.dark_login_link_color)
             return Palette(bg: bg, fg: fg, on: on, off: off, link: link, dark: true)
         }

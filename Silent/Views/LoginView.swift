@@ -66,48 +66,18 @@ struct LoginView: View {
                                 .foregroundColor(p.link)
                         } else {
                             HStack(spacing: 8) {
-                                chip("Войти", on: tab == "login", p: p) { tab = "login" }
-                                chip("Регистрация", on: tab == "register", p: p) { tab = "register" }
+                                chip("Войти", on: tab == "login", p: p) { returnToLogin() }
+                                chip("Регистрация", on: tab == "register", p: p) {
+                                    tab = "register"
+                                    vm.authError = nil
+                                }
                             }
-                            if vm.regNeedMail {
-                                Text("Подтвердите email — мы отправили письмо. После этого войдите.")
-                                    .font(AppFont.text(12))
-                                    .foregroundColor(p.fg.opacity(0.7))
-                            }
-                            field("Email", text: $email, p: p)
-                            passwordField(p: p)
-                            if tab == "register" {
-                                field(theme?.register_referral_or_promo_label ?? "Промокод или реферальный код", text: $code, p: p)
-                                Text(theme?.register_referral_or_promo_hint ?? "")
-                                    .font(AppFont.text(11))
-                                    .foregroundColor(p.fg.opacity(0.45))
+                            .disabled(vm.authLoading)
+                            if let address = vm.registrationEmail {
+                                registrationConfirmation(address, p: p)
                             } else {
-                                Toggle(isOn: $remember) {
-                                    Text(theme?.login_remember_me_label ?? "Запомнить меня")
-                                        .font(AppFont.text(13))
-                                        .foregroundColor(p.fg)
-                                }
-                                .tint(p.switchOn)
-                                .onChange(of: remember) { enabled in
-                                    if !enabled {
-                                        LocalStore.rememberedEmail = ""
-                                        LocalStore.rememberedPassword = ""
-                                    }
-                                }
-                                Button(theme?.login_forgot_password_label ?? "Забыли пароль?") { forgot = true }
-                                    .font(AppFont.text(13, weight: .medium))
-                                    .foregroundColor(p.link)
+                                credentialsForm(p: p)
                             }
-                            primaryButton(tab == "login" ? "Войти" : "Создать аккаунт", p: p) {
-                                Task {
-                                    if tab == "login" {
-                                        await vm.login(email: email, password: password, remember: remember)
-                                    } else {
-                                        await vm.register(email: email, password: password, code: code, remember: remember)
-                                    }
-                                }
-                            }
-                            .disabled(email.isEmpty || password.count < 8 && tab == "register" || password.isEmpty)
                         }
                         if let authError = vm.authError {
                             Text(authError).font(.footnote).foregroundColor(.red)
@@ -133,6 +103,75 @@ struct LoginView: View {
     private var displayName: String {
         let raw = vm.theme?.app_name.nilIfEmpty ?? "Silent VPN"
         return (raw.caseInsensitiveCompare("Silent") == .orderedSame ? "Silent VPN" : raw).uppercased()
+    }
+
+    private func returnToLogin() {
+        tab = "login"
+        vm.dismissRegistrationConfirmation()
+    }
+
+    private func registrationConfirmation(_ address: String, p: Palette) -> some View {
+        VStack(spacing: 6) {
+            Text("Подтвердите email")
+                .font(.headline)
+                .foregroundStyle(p.fg)
+                .accessibilityAddTraits(.isHeader)
+            Text("Ссылка отправлена на \(address)")
+                .font(.subheadline)
+                .foregroundStyle(p.fg.opacity(0.72))
+            Text("Откройте ссылку из письма в браузере или приложении почты.")
+                .font(.footnote)
+                .foregroundStyle(p.fg.opacity(0.65))
+            Button("Войти", action: returnToLogin)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(p.fg)
+                .frame(minHeight: 44)
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 24)
+    }
+
+    @ViewBuilder
+    private func credentialsForm(p: Palette) -> some View {
+        let theme = vm.theme
+        let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        field("Email", text: $email, p: p)
+            .keyboardType(.emailAddress)
+            .textContentType(.emailAddress)
+        passwordField(p: p)
+        if tab == "register" {
+            field(theme?.register_referral_or_promo_label ?? "Промокод или реферальный код", text: $code, p: p)
+            Text(theme?.register_referral_or_promo_hint ?? "Необязательно")
+                .font(AppFont.text(11))
+                .foregroundColor(p.fg.opacity(0.65))
+        } else {
+            Toggle(isOn: $remember) {
+                Text(theme?.login_remember_me_label ?? "Запомнить меня")
+                    .font(AppFont.text(13))
+                    .foregroundColor(p.fg)
+            }
+            .tint(p.switchOn)
+            .onChange(of: remember) { enabled in
+                if !enabled {
+                    LocalStore.rememberedEmail = ""
+                    LocalStore.rememberedPassword = ""
+                }
+            }
+            Button(theme?.login_forgot_password_label ?? "Забыли пароль?") { forgot = true }
+                .font(AppFont.text(13, weight: .medium))
+                .foregroundColor(p.link)
+        }
+        primaryButton(tab == "login" ? "Войти" : "Зарегистрироваться", p: p) {
+            Task {
+                if tab == "login" {
+                    await vm.login(email: address, password: password, remember: remember)
+                } else {
+                    await vm.register(email: address, password: password, code: code, remember: remember)
+                }
+            }
+        }
+        .disabled(address.isEmpty || password.isEmpty || (tab == "register" && password.count < 8))
     }
 
     private func chip(_ title: String, on: Bool, p: Palette, action: @escaping () -> Void) -> some View {

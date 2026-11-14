@@ -5,8 +5,6 @@ static const char *kStubError = "Native engine is not linked";
 int wdtt_engine_linked(void) { return 0; }
 
 char *wdtt_last_error(void) { return strdup(kStubError); }
-long long wdtt_start_epoch(void) { return 0; }
-void wdtt_interrupt_start(void) {}
 
 int wdtt_start(
     const char *serverIP,
@@ -16,20 +14,15 @@ int wdtt_start(
     const char *deviceID,
     int workers,
     int mtu,
-    const char *workDir,
-    long long epoch
+    const char *workDir
 ) {
     (void)serverIP; (void)serverPort; (void)hashesCSV; (void)password;
-    (void)deviceID; (void)workers; (void)mtu; (void)workDir; (void)epoch;
+    (void)deviceID; (void)workers; (void)mtu; (void)workDir;
     return 1;
 }
 
 char *wdtt_assigned_address(void) { return 0; }
-void wdtt_probe(void) {}
-void wdtt_reset_direct(void) {}
-long long wdtt_handshake_stamp(void) { return 0; }
-long long wdtt_received_bytes(void) { return 0; }
-void wdtt_expand_workers(void) {}
+int wdtt_has_handshake(void) { return 0; }
 
 void wdtt_stop(void) {}
 

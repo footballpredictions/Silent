@@ -12,9 +12,8 @@ import (
 // relayWireGuardConfig is the identity issued by WDTT GETCONF, not the API's
 // device registration keys. The server installs this peer on its interface.
 type relayWireGuardConfig struct {
-	address   string
-	uapi      string
-	publicKey string
+	address string
+	uapi    string
 }
 
 func parseRelayWireGuardConfig(raw, localPort string) (relayWireGuardConfig, error) {
@@ -53,9 +52,8 @@ func parseRelayWireGuardConfig(raw, localPort string) (relayWireGuardConfig, err
 		return relayWireGuardConfig{}, errors.New("WDTT выдал неверный ключ сервера")
 	}
 	return relayWireGuardConfig{
-		address:   prefix.String(),
-		uapi:      fmt.Sprintf("private_key=%s\nlisten_port=0\nreplace_peers=true\npublic_key=%s\nendpoint=127.0.0.1:%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n", privateHex, publicHex, localPort),
-		publicKey: publicHex,
+		address: prefix.String(),
+		uapi:    fmt.Sprintf("private_key=%s\nlisten_port=0\nreplace_peers=true\npublic_key=%s\nendpoint=127.0.0.1:%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n", privateHex, publicHex, localPort),
 	}, nil
 }
 

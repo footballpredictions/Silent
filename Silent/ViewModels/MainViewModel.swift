@@ -29,7 +29,7 @@ final class MainViewModel: ObservableObject {
     @Published private(set) var bootstrapReconnecting = false
     @Published private(set) var bootstrapFailed = false
     @Published private(set) var connectionLog: [VPNLogEntry] = []
-    @Published var regNeedMail = false
+    @Published private(set) var registrationEmail: String?
     @Published var forgotSent = false
     @Published var darkMode = LocalStore.appearanceDark
 
@@ -404,7 +404,7 @@ final class MainViewModel: ObservableObject {
         authLoading = true
         authLoadingTitle = "Создание аккаунта…"
         authError = nil
-        regNeedMail = false
+        registrationEmail = nil
         defer { authLoading = false }
         do {
             await logoutTask?.value
@@ -418,11 +418,16 @@ final class MainViewModel: ObservableObject {
                 try await loadAccount()
                 Task { await loadAppearanceAndServers() }
             } else {
-                regNeedMail = true
+                registrationEmail = email
             }
         } catch {
             authError = error.localizedDescription
         }
+    }
+
+    func dismissRegistrationConfirmation() {
+        registrationEmail = nil
+        authError = nil
     }
 
     func forgot(email: String) async {
@@ -578,7 +583,7 @@ final class MainViewModel: ObservableObject {
         } else {
             dns = cfg.wg_dns.split { $0 == "," || $0 == " " }.map { String($0) }.filter { !$0.isEmpty }
         }
-        let workers = bootstrapDuration == nil ? max(3, min(cfg.stream_count, 63)) : 3
+        let workers = max(9, min(cfg.stream_count, 27))
         return TunnelConfig(
             deviceId: bootstrapDuration == nil ? cfg.device_id : "boot:\(api.deviceFingerprint)",
             serverIP: cfg.server_ip,

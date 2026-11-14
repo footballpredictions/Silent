@@ -84,7 +84,7 @@ struct MainView: View {
                     .foregroundColor(vm.vpnState == .connected ? p.success : p.fg.opacity(0.65))
                     .shadow(color: vm.vpnState == .connected ? p.successGlow : .clear, radius: 4)
                 BigToggle(
-                    isOn: vm.vpnState == .connected || vm.vpnState == .connecting || vm.vpnState == .reconnecting,
+                    isOn: vm.vpnState == .connected,
                     isLoading: vm.vpnState != .connected && vm.vpnState != .disconnected,
                     isDisabled: !vm.canLogout || vm.vpnState == .connecting || vm.vpnState == .disconnecting,
                     onColor: p.on, offColor: p.off, bg: p.bg,
@@ -298,7 +298,7 @@ struct BigToggle: View {
         }
         .buttonStyle(VpnToggleButtonStyle(reduceMotion: reduceMotion))
         .disabled(isDisabled)
-        .accessibilityLabel(isOn ? "Отключить VPN" : "Подключить VPN")
+        .accessibilityLabel(isOn || (isLoading && !isDisabled) ? "Отключить VPN" : "Подключить VPN")
         .accessibilityValue(status)
     }
 
@@ -308,7 +308,7 @@ struct BigToggle: View {
         let rotation = reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 2.2) / 2.2 * 360
         let color = isOn ? onColor : offColor
         return ZStack {
-            if isOn && !isLoading {
+            if isOn {
                 Capsule()
                     .fill(onColor.opacity(0.20))
                     .frame(width: 132, height: 66)

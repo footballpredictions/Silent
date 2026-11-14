@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import Network
 import NetworkExtension
 
 @_cdecl("silent_relay_event")
@@ -9,7 +8,7 @@ func silent_relay_event(_ message: UnsafePointer<CChar>?, _ level: Int32) {
     autoreleasepool {
         let severity: VPNLogLevel = level == 2 ? .error : (level == 1 ? .success : .info)
         let text = String(cString: message)
-        VPNLog.write(text, level: severity, source: "WDTT", key: text.hasPrefix("Статистика ·") ? "stats" : nil)
+        VPNLog.write(text, level: severity, source: "WDTT", key: text.hasPrefix("Активных каналов:") ? "stats" : nil)
     }
 }
 
@@ -45,333 +44,187 @@ func silent_packet_out(_ data: UnsafePointer<UInt8>?, _ len: Int32) {
 }
 
 class PacketTunnelProvider: NEPacketTunnelProvider {
-    private let stateQueue = DispatchQueue(label: "silent.tunnel.state")
-    private let engineQueue = DispatchQueue(label: "silent.tunnel.engine", qos: .userInitiated)
-    private var generation = 0
-    private var monitor: NWPathMonitor?
-    private var timer: DispatchSourceTimer?
-    private var path: String?
+    private var reading = false
     private var activeConfig: TunnelConfig?
-    private var startup: ((Error?) -> Void)?
-    private var handshake: (until: TimeInterval, done: (Bool) -> Void)?
-    private var recovery: TunnelRecovery?
-    private var expiry: Date?
-    private var routingChanged = false
     private var policyRefresh: Task<Void, Never>?
-    private var policyGeneration = 0
     private var receivedPolicy: String?
+    private var handshakeCheck: Task<Void, Never>?
+    private var bootstrapExpiry: Task<Void, Never>?
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-        stateQueue.async {
-            guard let config = AppIdentity.readTunnelConfig(), wdtt_engine_linked() != 0 else {
-                let text = "Не удалось прочитать настройки VPN или запустить сетевой модуль"
-                self.writeError(text)
-                completionHandler(self.tunnelError(text))
-                return
-            }
-            self.generation += 1
-            self.startup = completionHandler
-            TunnelBridge.setProvider(self)
-            wdtt_set_output(silent_packet_out)
-            wdtt_set_journal(silent_relay_event)
-            self.startMonitoring()
-            VPNLog.write(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
-            self.startEngine(config, previousAddress: nil) { result in
-                switch result {
-                case .success(let config):
-                    self.activeConfig = config
-                    self.recovery = TunnelRecovery(path: self.path, received: wdtt_received_bytes(), now: self.uptime)
-                    let limit = config.paymentRouting == true ? 300 : 120
-                    if let duration = config.bootstrapDuration, (1...limit).contains(duration) {
-                        self.expiry = Date().addingTimeInterval(TimeInterval(duration))
-                    }
-                    self.finishStartup(nil)
-                    wdtt_expand_workers()
-                    self.startPolicyRefresh()
-                case .failure(let error):
-                    self.writeError(error.localizedDescription)
-                    self.stopMonitoring()
-                    TunnelBridge.setProvider(nil)
-                    self.engineQueue.async { wdtt_stop() }
-                    self.finishStartup(error)
-                }
-            }
+        TunnelBridge.setProvider(self)
+        guard var config = loadConfig() else {
+            let text = "Не удалось прочитать настройки VPN"
+            writeError(text)
+            completionHandler(tunnelError(text))
+            return
         }
-    }
+        VPNLog.write(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
+        if wdtt_engine_linked() == 0 {
+            let text = "Туннель не собран. На Mac запустите scripts/build-libwdtt.sh и заново сделайте Archive."
+            writeError(text)
+            completionHandler(tunnelError(text))
+            return
+        }
 
-    private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
-
-    private func startEngine(
-        _ config: TunnelConfig, previousAddress: String?, completion: @escaping (Result<TunnelConfig, Error>) -> Void
-    ) {
-        let token = generation
-        let epoch = wdtt_start_epoch()
         let work = AppIdentity.workURL?.path ?? NSTemporaryDirectory()
-        engineQueue.async {
-            try? FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
-            let code = config.hashes.joined(separator: ",").withCString { hashes in
-                config.password.withCString { password in
-                    config.deviceId.withCString { deviceId in
-                        config.serverIP.withCString { ip in
-                            work.withCString { dir in
-                                wdtt_start(ip, Int32(config.serverPort), hashes, password, deviceId,
-                                           Int32(config.workers), Int32(config.mtu), dir, epoch)
-                            }
+        try? FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
+        wdtt_set_output(silent_packet_out)
+        wdtt_set_journal(silent_relay_event)
+        let code = config.hashes.joined(separator: ",").withCString { hashes in
+            config.password.withCString { password in
+                config.deviceId.withCString { deviceId in
+                    config.serverIP.withCString { ip in
+                        work.withCString { dir in
+                            wdtt_start(ip, Int32(config.serverPort), hashes, password, deviceId, Int32(config.workers), Int32(config.mtu), dir)
                         }
                     }
                 }
             }
-            let result: Result<String, Error>
-            if code != 0 {
-                var message = "Не удалось запустить сетевой модуль (код \(code))"
-                if code == 6, let error = wdtt_last_error() {
-                    message = String(cString: error)
-                    free(error)
-                }
-                result = .failure(self.tunnelError(message))
-            } else if let address = wdtt_assigned_address() {
-                result = .success(String(cString: address))
-                free(address)
+        }
+        if code != 0 {
+            let raw: String
+            if let error = wdtt_last_error() {
+                raw = String(cString: error)
+                free(error)
             } else {
-                result = .failure(self.tunnelError("Сервер не выдал адрес VPN"))
+                raw = "Не удалось запустить сетевой модуль"
             }
-            self.stateQueue.async {
-                guard token == self.generation else { return }
-                switch result {
-                case .failure(let error): completion(.failure(error))
-                case .success(let address):
-                    var configured = config
-                    configured.address = address
-                    self.prepareEngine(configured, previousAddress: previousAddress, completion: completion)
-                }
-            }
-        }
-    }
-
-    private func prepareEngine(
-        _ config: TunnelConfig, previousAddress: String?, completion: @escaping (Result<TunnelConfig, Error>) -> Void
-    ) {
-        guard applyRussianPolicy(config.russian) else {
-            completion(.failure(tunnelError("Не удалось применить правила российских сервисов")))
+            let reason = code == 6 ? ": \(raw)" : ""
+            VPNLog.write("Сетевой модуль вернул ошибку \(code)\(reason)", level: .error)
+            wdtt_stop()
+            writeError(raw)
+            completionHandler(tunnelError(raw))
             return
         }
-        VPNLog.write("Сервер выдал конфигурацию WireGuard", level: .success)
-        let waitForHandshake = {
-            self.handshake = (self.uptime + 15, { ready in
-                if ready {
-                    VPNLog.write("Рукопожатие WireGuard подтверждено", level: .success)
-                    completion(.success(config))
-                } else {
-                    completion(.failure(self.tunnelError("Сервер не ответил на рукопожатие VPN")))
-                }
-            })
-        }
-        if previousAddress == config.address {
-            waitForHandshake()
-            return
-        }
-        let token = generation
-        setTunnelNetworkSettings(makeSettings(config)) { error in
-            self.stateQueue.async {
-                guard token == self.generation else { return }
-                if let error {
-                    completion(.failure(error))
-                } else {
-                    if previousAddress == nil { self.readLoop(token: token) }
-                    waitForHandshake()
-                }
-            }
-        }
-    }
 
-    private func finishStartup(_ error: Error?) {
-        let callback = startup
-        startup = nil
-        callback?(error)
-    }
-
-    private func startMonitoring() {
-        let monitor = NWPathMonitor()
-        self.monitor = monitor
-        monitor.pathUpdateHandler = { [weak self] path in self?.networkChanged(path) }
-        monitor.start(queue: stateQueue)
-        let timer = DispatchSource.makeTimerSource(queue: stateQueue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(500), leeway: .milliseconds(100))
-        timer.setEventHandler { [weak self] in self?.tick() }
-        self.timer = timer
-        timer.resume()
-    }
-
-    private func stopMonitoring() {
-        monitor?.cancel()
-        monitor = nil
-        timer?.cancel()
-        timer = nil
-        path = nil
-        handshake = nil
-        recovery = nil
-        expiry = nil
-        activeConfig = nil
-        routingChanged = false
-        policyRefresh?.cancel()
-        policyRefresh = nil
-        policyGeneration += 1
-        receivedPolicy = nil
-        reasserting = false
-    }
-
-    private func networkChanged(_ current: Network.NWPath) {
-        let transport = current.usesInterfaceType(.wifi) ? "Wi-Fi" :
-            current.usesInterfaceType(.cellular) ? "мобильная сеть" : "сеть"
-        let interfaces = current.availableInterfaces.map(\.name).joined(separator: ",")
-        let gateways = current.gateways.map { String(describing: $0) }.joined(separator: ",")
-        let next = current.status == .satisfied ?
-            "\(transport)|\(interfaces)|\(gateways)|\(current.supportsIPv4)|\(current.supportsIPv6)" : nil
-        guard next != path else { return }
-        path = next
-        guard recovery != nil else { return }
-        wdtt_reset_direct()
-        recovery?.updatePath(next, received: next == nil ? 0 : wdtt_received_bytes(), now: uptime)
-        reasserting = true
-        VPNLog.write(next == nil ? "Сеть потеряна · ожидание" : "Сеть изменилась · \(transport)")
-    }
-
-    override func wake() {
-        stateQueue.async {
-            guard self.recovery != nil else { return }
-            VPNLog.write("Пробуждение iOS · проверка WireGuard")
-            self.recovery?.verify(now: self.uptime, received: wdtt_received_bytes())
-            self.tick()
-        }
-    }
-
-    private func tick() {
-        if let expiry, expiry <= Date() {
-            generation += 1
-            wdtt_interrupt_start()
-            stopMonitoring()
-            TunnelBridge.setProvider(nil)
-            engineQueue.async { wdtt_stop() }
-            let text = "Время временного VPN истекло"
+        guard let address = wdtt_assigned_address() else {
+            wdtt_stop()
+            let text = "Сервер не выдал адрес VPN"
             writeError(text)
-            cancelTunnelWithError(tunnelError(text))
+            completionHandler(tunnelError(text))
             return
         }
-        if let handshake {
-            let ready = wdtt_handshake_stamp() != 0
-            if ready || uptime >= handshake.until {
-                self.handshake = nil
-                handshake.done(ready)
+        config.address = String(cString: address)
+        free(address)
+        VPNLog.write("Сервер выдал конфигурацию WireGuard", level: .success)
+        guard applyRussianPolicy(config.russian) else {
+            wdtt_stop()
+            let text = "Не удалось применить правила российских сервисов"
+            writeError(text)
+            completionHandler(tunnelError(text))
+            return
+        }
+        activeConfig = config
+        let settings = makeSettings(config)
+        setTunnelNetworkSettings(settings) { [weak self] error in
+            if let error {
+                wdtt_stop()
+                self?.writeError(error.localizedDescription)
+                completionHandler(error)
+                return
             }
-            return
-        }
-        guard !routingChanged, recovery?.hasNetwork == true,
-              let action = recovery?.tick(now: uptime, received: wdtt_received_bytes()) else { return }
-        switch action {
-        case .probe: wdtt_probe()
-        case .restart: restartTransport()
-        case .recovered:
-            if reasserting {
-                reasserting = false
-                VPNLog.write("WireGuard отвечает в текущей сети", level: .success)
+            self?.reading = true
+            self?.readLoop()
+            VPNLog.write("Настройки маршрутизации применены. Ожидание WireGuard")
+            guard let self else { completionHandler(CancellationError()); return }
+            self.handshakeCheck = Task { [weak self] in
+                for _ in 0..<60 {
+                    guard !Task.isCancelled else { completionHandler(CancellationError()); return }
+                    if wdtt_has_handshake() != 0 {
+                        VPNLog.write("Рукопожатие WireGuard подтверждено", level: .success)
+                        self?.startPolicyRefresh()
+                        self?.scheduleBootstrapExpiry(config.bootstrapDuration, payment: config.paymentRouting == true)
+                        completionHandler(nil)
+                        return
+                    }
+                    do { try await Task.sleep(nanoseconds: 250_000_000) }
+                    catch { completionHandler(error); return }
+                }
+                guard !Task.isCancelled, let self else { completionHandler(CancellationError()); return }
+                self.reading = false
+                self.activeConfig = nil
+                wdtt_stop()
+                let text = "Сервер не ответил на рукопожатие VPN. Попробуйте другой сервер."
+                self.writeError(text)
+                completionHandler(self.tunnelError(text))
             }
         }
     }
 
-    private func restartTransport() {
-        guard let config = activeConfig else { return }
-        reasserting = true
-        policyRefresh?.cancel()
-        policyGeneration += 1
-        receivedPolicy = nil
-        VPNLog.write("Восстановление транспорта WDTT")
-        startEngine(config, previousAddress: config.address) { result in
-            let ready: Bool
-            switch result {
-            case .success(let updated):
-                self.activeConfig = updated
-                ready = true
-            case .failure(let error):
-                VPNLog.write("Повтор восстановления · \(error.localizedDescription)", level: .error)
-                ready = false
-                self.engineQueue.async { wdtt_stop() }
-            }
-            if self.recovery?.restartFinished(success: ready,
-                                              received: wdtt_received_bytes(), now: self.uptime) == true {
-                self.reasserting = false
-                wdtt_expand_workers()
-                self.startPolicyRefresh()
-                VPNLog.write("Транспорт WDTT восстановлен", level: .success)
-            }
+    private func scheduleBootstrapExpiry(_ duration: Int?, payment: Bool) {
+        bootstrapExpiry?.cancel()
+        guard let duration, (1...(payment ? 300 : 120)).contains(duration) else { return }
+        bootstrapExpiry = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000_000) }
+            catch { return }
+            guard let self, !Task.isCancelled else { return }
+            let text = "Время временного VPN истекло"
+            self.writeError(text)
+            self.cancelTunnelWithError(self.tunnelError(text))
         }
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-        stateQueue.async {
-            VPNLog.write("Остановка расширения iOS: \(reason.rawValue)", level: reason == .userInitiated ? .info : .error)
-            if reason != .userInitiated, reason != .none,
-               AppIdentity.errorURL.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true {
-                self.writeError("iOS завершила VPN (код остановки \(reason.rawValue))")
+        VPNLog.write("Остановка расширения iOS: \(reason.rawValue)", level: reason == .userInitiated ? .info : .error)
+        if reason != .userInitiated, reason != .none,
+           AppIdentity.errorURL.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true {
+            writeError("iOS завершила VPN (код остановки \(reason.rawValue))")
+        }
+        reading = false
+        handshakeCheck?.cancel()
+        handshakeCheck = nil
+        bootstrapExpiry?.cancel()
+        bootstrapExpiry = nil
+        policyRefresh?.cancel()
+        policyRefresh = nil
+        receivedPolicy = nil
+        activeConfig = nil
+        TunnelBridge.setProvider(nil)
+        wdtt_stop()
+        completionHandler()
+    }
+
+    private func readLoop() {
+        guard reading else { return }
+        packetFlow.readPackets { [weak self] packets, _ in
+            guard let self, self.reading else { return }
+            for packet in packets {
+                packet.withUnsafeBytes { raw in
+                    guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+                    wdtt_input(base, Int32(packet.count))
+                }
             }
-            self.generation += 1
-            self.stopMonitoring()
-            TunnelBridge.setProvider(nil)
-            wdtt_interrupt_start()
-            self.finishStartup(CancellationError())
-            self.engineQueue.async {
-                wdtt_stop()
-                completionHandler()
-            }
+            self.readLoop()
         }
     }
 
-    private func readLoop(token: Int) {
-        packetFlow.readPackets { [weak self] packets, _ in
-            guard let self else { return }
-            self.stateQueue.async {
-                guard token == self.generation else { return }
-                for packet in packets {
-                    packet.withUnsafeBytes { raw in
-                        guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-                        wdtt_input(base, Int32(packet.count))
-                    }
-                }
-                self.readLoop(token: token)
-            }
-        }
+    private func loadConfig() -> TunnelConfig? {
+        AppIdentity.readTunnelConfig()
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        stateQueue.async {
-            if messageData == Data("policy-received".utf8) {
-                completionHandler?(self.receivedPolicy.map { Data($0.utf8) })
-                return
-            }
-            guard messageData == Data("site-routing".utf8), !self.reasserting, !self.routingChanged,
-                  var config = AppIdentity.readTunnelConfig(),
-                  let previous = self.activeConfig, previous.bootstrapDuration == nil,
-                  config.deviceId == previous.deviceId else {
-                completionHandler?(nil)
-                return
-            }
-            config.address = previous.address
-            guard self.applyRussianPolicy(config.russian) else { completionHandler?(nil); return }
-            let token = self.generation
-            self.routingChanged = true
-            self.setTunnelNetworkSettings(self.makeSettings(config)) { error in
-                self.stateQueue.async {
-                    guard token == self.generation else { completionHandler?(nil); return }
-                    self.routingChanged = false
-                    if error == nil {
-                        self.activeConfig = config
-                        self.receivedPolicy = nil
-                        self.startPolicyRefresh()
-                    } else {
-                        _ = self.applyRussianPolicy(previous.russian)
-                    }
-                    completionHandler?(error == nil ? Data("ok".utf8) : nil)
+        if messageData == Data("policy-received".utf8) {
+            completionHandler?(receivedPolicy.map { Data($0.utf8) })
+            return
+        }
+        guard messageData == Data("site-routing".utf8), var config = loadConfig() else {
+            completionHandler?(nil)
+            return
+        }
+        let previous = activeConfig
+        guard let address = previous?.address else { completionHandler?(nil); return }
+        config.address = address
+        guard applyRussianPolicy(config.russian) else { completionHandler?(nil); return }
+        setTunnelNetworkSettings(makeSettings(config)) { [weak self] error in
+            if error == nil { self?.activeConfig = config; self?.startPolicyRefresh() }
+            else {
+                _ = self?.applyRussianPolicy(previous?.russian)
+                if let previous, let url = AppIdentity.configURL {
+                    try? JSONEncoder().encode(previous).write(to: url, options: .atomic)
                 }
             }
+            completionHandler?(error == nil ? Data("ok".utf8) : nil)
         }
     }
 
@@ -385,25 +238,18 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func startPolicyRefresh() {
         policyRefresh?.cancel()
-        policyGeneration += 1
+        receivedPolicy = nil
         guard activeConfig?.russian?.enabled == true else { return }
-        let token = policyGeneration
         policyRefresh = Task { [weak self] in
             while !Task.isCancelled {
-                let policy = await RussianServices.refresh()
-                if let policy, !Task.isCancelled, let self {
-                    self.stateQueue.async {
-                        guard token == self.policyGeneration, !self.reasserting, !self.routingChanged,
-                              self.activeConfig?.russian?.enabled == true else { return }
-                        if policy.revision != self.activeConfig?.russian?.revision {
-                            guard self.applyRussianPolicy(policy) else { return }
-                            self.activeConfig?.russian = policy
-                        }
+                if let policy = await RussianServices.refresh(), !Task.isCancelled,
+                   let self, self.reading, self.activeConfig?.russian?.enabled == true {
+                    if policy.revision == self.activeConfig?.russian?.revision || self.applyRussianPolicy(policy) {
+                        self.activeConfig?.russian = policy
                         self.receivedPolicy = policy.revision
                     }
                 }
-                do { try await Task.sleep(nanoseconds: policy == nil ? 30_000_000_000 : 300_000_000_000) }
-                catch { return }
+                do { try await Task.sleep(nanoseconds: 300_000_000_000) } catch { return }
             }
         }
     }

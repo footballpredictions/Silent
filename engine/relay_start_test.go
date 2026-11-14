@@ -38,13 +38,3 @@ func TestIOSRelayDoesNotRetryAfterCancellation(t *testing.T) {
 		t.Fatalf("got %d attempts, %v", calls, err)
 	}
 }
-
-func TestIOSWorkerPlan(t *testing.T) {
-	for _, tt := range []struct {
-		requested, hashes, groups int
-	}{{3, 1, 1}, {63, 1, 9}, {63, 2, 18}, {63, 3, 21}, {108, 4, 21}, {10, 4, 3}} {
-		if got := iosWorkerGroupCount(tt.requested, tt.hashes); got != tt.groups {
-			t.Errorf("%d workers, %d hashes: got %d groups, want %d", tt.requested, tt.hashes, got, tt.groups)
-		}
-	}
-}

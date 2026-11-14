@@ -6,19 +6,8 @@ import (
 	"time"
 )
 
-const (
-	iosWorkerGroupSize   = 3
-	iosMaxWorkers        = 63
-	iosMaxWorkersPerHash = 27
-)
-
-func iosWorkerGroupCount(requested, hashes int) int {
-	capacity := min(iosMaxWorkers, iosMaxWorkersPerHash*min(hashes, 4))
-	return min(capacity, max(iosWorkerGroupSize, requested)) / iosWorkerGroupSize
-}
-
-// Bootstrap one group at a time. Only fill the remaining worker slots after
-// GETCONF and WireGuard have succeeded.
+// An iOS extension can sustain only one group. Give a second hash its own
+// attempt after the first group stops; never keep two groups running together.
 func tryIOSRelayHashes[T any](ctx context.Context, hashes []string, start func(context.Context, string, time.Duration) (T, error)) (T, error) {
 	var zero T
 	last := errors.New("нет доступных хешей ретрансляторов")

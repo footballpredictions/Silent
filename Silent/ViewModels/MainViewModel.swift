@@ -30,6 +30,8 @@ final class MainViewModel: ObservableObject {
     @Published private(set) var bootstrapFailed = false
     @Published private(set) var connectionLog: [VPNLogEntry] = []
     @Published private(set) var registrationEmail: String?
+    @Published private(set) var verificationNotice: String?
+    @Published private(set) var verificationResending = false
     @Published var forgotSent = false
     @Published var darkMode = LocalStore.appearanceDark
 
@@ -118,6 +120,7 @@ final class MainViewModel: ObservableObject {
 
     init() {
         theme = api.cachedTheme()
+        vpn.onSceneDiscard = { [weak self] in self?.onSceneDiscard() }
         vpnObserver = vpn.$state.removeDuplicates().sink { [weak self] state in
             self?.onVPNStateChanged(state)
         }
@@ -142,6 +145,15 @@ final class MainViewModel: ObservableObject {
             launchStage = nil
             await loadAppearanceAndServers()
         }
+    }
+
+    private func onSceneDiscard() {
+        canRecoverTunnel = false
+        tunnelRecovery?.cancel()
+        paymentTask?.cancel()
+        savedMainForPayment = nil
+        KeychainHelper.delete(paymentRestoreKey)
+        logConnection("Приложение закрыто из списка недавних · отключение VPN")
     }
 
     private func onVPNStateChanged(_ state: VpnState) {
@@ -220,8 +232,8 @@ final class MainViewModel: ObservableObject {
         }
     }
 
-    private func logConnection(_ text: String, level: VPNLogLevel = .info) {
-        connectionLog.append(VPNLogEntry(date: Date(), level: level, source: "Приложение", message: text))
+    private func logConnection(_ text: String, level: VPNLogLevel = .info, key: String? = nil) {
+        connectionLog.append(VPNLogEntry(date: Date(), level: level, source: "Приложение", message: text, key: key))
         if connectionLog.count > 200 { connectionLog.removeFirst() }
     }
 
@@ -239,6 +251,7 @@ final class MainViewModel: ObservableObject {
         if launchStage != nil { launchStage = .configuration }
         defer { bootstrapStarting = false }
         var stage = "Не удалось получить настройки временного VPN"
+        let discardCount = vpn.sceneDiscardCount
         do {
             if let local = BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
                                                          password: bootstrapPassword, cell: bootstrapCell) {
@@ -250,6 +263,7 @@ final class MainViewModel: ObservableObject {
                 } catch {
                     await vpn.disconnect()
                     try Task.checkCancellation()
+                    guard discardCount == vpn.sceneDiscardCount else { throw CancellationError() }
                     guard vpn.state == .disconnected else { throw error }
                     logConnection("Временный VPN: сота не подтвердила подключение. Пробуем получить настройки через HTTPS", level: .error)
                 }
@@ -274,10 +288,12 @@ final class MainViewModel: ObservableObject {
                 config = saved.config
             }
             stage = "Не удалось запустить временный VPN"
+            guard discardCount == vpn.sceneDiscardCount else { throw CancellationError() }
             try await connectBootstrap(config)
         } catch {
             await vpn.disconnect()
             bootstrapActive = false
+            if error is CancellationError { return }
             bootstrapFailed = true
             let message = "\(stage). \(error.localizedDescription)"
             authError = message
@@ -400,6 +416,9 @@ final class MainViewModel: ObservableObject {
             }
             try await loadAccount()
             Task { await loadAppearanceAndServers() }
+        } catch APIError.http(403, let detail) where detail == "Подтвердите email перед входом" {
+            registrationEmail = email
+            verificationNotice = nil
         } catch {
             authError = error.localizedDescription
             logConnection("Вход не завершён")
@@ -412,6 +431,7 @@ final class MainViewModel: ObservableObject {
         authLoadingTitle = "Создание аккаунта…"
         authError = nil
         registrationEmail = nil
+        verificationNotice = nil
         defer { authLoading = false }
         do {
             await logoutTask?.value
@@ -434,7 +454,24 @@ final class MainViewModel: ObservableObject {
 
     func dismissRegistrationConfirmation() {
         registrationEmail = nil
+        verificationNotice = nil
         authError = nil
+    }
+
+    func resendVerification(password: String) async {
+        guard let address = registrationEmail, !verificationResending, !password.isEmpty else { return }
+        verificationResending = true
+        authError = nil
+        verificationNotice = nil
+        defer { verificationResending = false }
+        do {
+            let sent = try await api.resendVerification(email: address, password: password)
+            guard registrationEmail == address else { return }
+            verificationNotice = sent ? "Почтовый сервер принял письмо. Проверьте «Входящие» и «Спам»." :
+                "Email уже подтверждён. Можно войти."
+        } catch {
+            if registrationEmail == address { authError = error.localizedDescription }
+        }
     }
 
     func forgot(email: String) async {
@@ -520,6 +557,7 @@ final class MainViewModel: ObservableObject {
         logConnection("\(title) · запрос настроек VPN")
         var sessionStarted = false
         var stage = "Не удалось получить настройки VPN"
+        let discardCount = vpn.sceneDiscardCount
         do {
             try Task.checkCancellation()
             let cfg: VpnConfig
@@ -531,8 +569,9 @@ final class MainViewModel: ObservableObject {
                 cfg = try await fetchMainConfig(preferred)
             }
             try Task.checkCancellation()
+            guard discardCount == vpn.sceneDiscardCount else { throw CancellationError() }
             if let profile { UserDefaults.standard.set(cfg.device_id, forKey: "vpn-session-\(profile.id)") }
-            logConnection("Конфигурация готова · \(elapsedConnectionTime(since: started))")
+            logConnection("Конфигурация готова · \(elapsedConnectionTime(since: started))", key: "config-ready")
             if let confirmed = cfg.selected_server?.lowercased(), confirmed != selectedServer,
                servers.contains(where: { $0.key == confirmed }) {
                 serverSelectionVersion += 1
@@ -566,10 +605,10 @@ final class MainViewModel: ObservableObject {
             vpnState = .connected
             connectedAt = Date()
             canRecoverTunnel = true
-            logConnection("VPN подключён · \(elapsedConnectionTime(since: started))", level: .success)
+            logConnection("VPN подключён · \(elapsedConnectionTime(since: started))", level: .success, key: "vpn-ready")
             Task { await refreshSessions() }
         } catch {
-            if cachedServerConfig(preferred) != nil, !sessionStarted {
+            if !(error is CancellationError), cachedServerConfig(preferred) != nil, !sessionStarted {
                 // Refresh a stale endpoint or relay hash on the next attempt.
                 serverConfigCache?.remove(server: preferred)
                 persistServerConfigCache()
@@ -577,6 +616,7 @@ final class MainViewModel: ObservableObject {
             await vpn.disconnect()
             vpnState = vpn.state
             connectedAt = nil
+            if error is CancellationError { return }
             errorMessage = "\(stage). \(error.localizedDescription)"
             logConnection("\(stage). \(error.localizedDescription)", level: .error)
             if sessionStarted { try? await api.disconnect() }
@@ -584,12 +624,14 @@ final class MainViewModel: ObservableObject {
     }
 
     private func fetchMainConfig(_ slot: String) async throws -> VpnConfig {
+        let discardCount = vpn.sceneDiscardCount
         do {
             return try await requestMainConfig(slot)
         } catch APIError.network {
             logConnection("Публичный API недоступен · запрос конфига через временный VPN")
             var lastError: Error = APIError.network
             for cell in BootstrapLaunch.cellHosts.indices {
+                guard discardCount == vpn.sceneDiscardCount else { throw CancellationError() }
                 guard let route = BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
                                                                  password: bootstrapPassword, cell: cell) else { break }
                 do {
@@ -806,10 +848,12 @@ final class MainViewModel: ObservableObject {
         let stored = KeychainHelper.get(paymentRestoreKey).flatMap { Data(base64Encoded: $0) }
         let snapshot = stored.flatMap { try? JSONDecoder().decode(PaymentMainSnapshot.self, from: $0) }
         let config = savedMainForPayment ?? (snapshot?.account == account ? snapshot?.config : nil)
+        let discardCount = vpn.sceneDiscardCount
         savedMainForPayment = nil
         KeychainHelper.delete(paymentRestoreKey)
         if AppIdentity.readTunnelConfig()?.paymentRouting == true { await vpn.disconnect() }
-        if account != nil, let config, config.bootstrapDuration == nil, vpn.state == .disconnected {
+        if account != nil, let config, config.bootstrapDuration == nil, vpn.state == .disconnected,
+           discardCount == vpn.sceneDiscardCount {
             vpnState = .connecting
             do {
                 try await vpn.connect(config)

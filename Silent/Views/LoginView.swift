@@ -69,10 +69,10 @@ struct LoginView: View {
                                 chip("Войти", on: tab == "login", p: p) { returnToLogin() }
                                 chip("Регистрация", on: tab == "register", p: p) {
                                     tab = "register"
-                                    vm.authError = nil
+                                    vm.dismissRegistrationConfirmation()
                                 }
                             }
-                            .disabled(vm.authLoading)
+                            .disabled(vm.authLoading || vm.verificationResending)
                             if let address = vm.registrationEmail {
                                 registrationConfirmation(address, p: p)
                             } else {
@@ -116,16 +116,36 @@ struct LoginView: View {
                 .font(.headline)
                 .foregroundStyle(p.fg)
                 .accessibilityAddTraits(.isHeader)
-            Text("Ссылка отправлена на \(address)")
+            Text("Адрес для подтверждения — \(address)")
                 .font(.subheadline)
                 .foregroundStyle(p.fg.opacity(0.72))
             Text("Откройте ссылку из письма в браузере или приложении почты.")
                 .font(.footnote)
                 .foregroundStyle(p.fg.opacity(0.65))
+            if let notice = vm.verificationNotice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(p.success)
+                    .shadow(color: p.successGlow, radius: 4)
+            }
+            Button {
+                Task { await vm.resendVerification(password: password) }
+            } label: {
+                if vm.verificationResending {
+                    ProgressView().tint(p.fg)
+                } else {
+                    Text("Отправить письмо ещё раз")
+                }
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(p.link)
+            .frame(minHeight: 44)
+            .disabled(vm.verificationResending || password.isEmpty)
             Button("Войти", action: returnToLogin)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(p.fg)
                 .frame(minHeight: 44)
+                .disabled(vm.verificationResending)
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)

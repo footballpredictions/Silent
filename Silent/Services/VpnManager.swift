@@ -1,12 +1,17 @@
 import Foundation
 import Combine
 import NetworkExtension
+import UIKit
 
 @MainActor
 final class VpnManager: ObservableObject {
     static let shared = VpnManager()
 
     @Published var state: VpnState = .disconnected
+    private(set) var sceneDiscardCount = 0
+    private var waitForActiveScene = false
+    private var pendingSceneStop: Task<Void, Never>?
+    var onSceneDiscard: (() -> Void)?
     private var observer: NSObjectProtocol?
 
     private init() {
@@ -36,6 +41,11 @@ final class VpnManager: ObservableObject {
     }
 
     func connect(_ config: TunnelConfig, timeout: TimeInterval = 50) async throws {
+        let discardCount = sceneDiscardCount
+        await pendingSceneStop?.value
+        guard discardCount == sceneDiscardCount,
+              !waitForActiveScene || UIApplication.shared.applicationState == .active else { throw CancellationError() }
+        waitForActiveScene = false
         guard let url = AppIdentity.configURL else {
             throw APIError.server("Приложение не может передать настройки расширению VPN")
         }
@@ -61,6 +71,8 @@ final class VpnManager: ObservableObject {
         mgr.isEnabled = true
         try await mgr.saveToPreferences()
         try await mgr.loadFromPreferences()
+        try Task.checkCancellation()
+        guard discardCount == sceneDiscardCount else { throw CancellationError() }
         state = .connecting
         do {
             try Task.checkCancellation()
@@ -70,6 +82,23 @@ final class VpnManager: ObservableObject {
             mgr.connection.stopVPNTunnel()
             state = Self.map(mgr.connection.status)
             throw error
+        }
+    }
+
+    func stopAfterSceneDiscard() {
+        sceneDiscardCount += 1
+        waitForActiveScene = true
+        onSceneDiscard?()
+        // iOS may terminate the UI process immediately after this callback.
+        if let connection = manager?.connection,
+           connection.status != .disconnected && connection.status != .invalid {
+            connection.stopVPNTunnel()
+        }
+        pendingSceneStop?.cancel()
+        pendingSceneStop = Task { [weak self] in
+            guard let self, let mgr = try? await self.load(), !Task.isCancelled,
+                  mgr.connection.status != .disconnected && mgr.connection.status != .invalid else { return }
+            await self.disconnect()
         }
     }
 

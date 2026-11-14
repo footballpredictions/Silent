@@ -210,6 +210,33 @@ class APIService: ObservableObject {
         _ = try await requestData("api/auth/forgot-password", method: "POST", body: Req(email: email), auth: false)
     }
 
+    func resendVerification(email: String, password: String) async throws -> Bool {
+        struct Reply: Decodable { let status: String }
+        let tunnelActive = await VpnManager.shared.isApiTunnelActive()
+        let bases = (tunnelActive ? [PublicApiFailover.tunnelAPI] : []) + PublicApiFailover.paymentPublicBases
+        let body = LoginRequest(email: email, password: password, device: nil)
+        for base in bases {
+            let data: Data
+            do {
+                try Task.checkCancellation()
+                data = try await requestOnce("api/auth/resend-verification", method: "POST", body: body,
+                                             auth: false, base: base, allowRefresh: false, verifyTLS: true,
+                                             timeout: 30, preserveServerError: true)
+            } catch is URLError {
+                try Task.checkCancellation()
+                continue
+            } catch APIError.http(let code, _) where [502, 504].contains(code) {
+                continue
+            }
+            let reply = try JSONDecoder().decode(Reply.self, from: data)
+            guard reply.status == "accepted" || reply.status == "verified" else {
+                throw APIError.server("Сервер не подтвердил отправку письма.")
+            }
+            return reply.status == "accepted"
+        }
+        throw APIError.network
+    }
+
     func getProfile() async throws -> UserProfile {
         try await request(PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint))
     }

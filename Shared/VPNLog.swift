@@ -21,11 +21,36 @@ struct VPNLogRow: Identifiable {
     var count: Int
     var line: String { count == 1 ? entry.line : "\(entry.line) (×\(count))" }
 
+    private struct Event: Hashable {
+        let source: String
+        let level: VPNLogLevel
+        let name: String
+    }
+
+    private static let relayStage = try! NSRegularExpression(pattern: #"^(Воркер|Группа) №[0-9]+ · "#)
+    private static let workerState = try! NSRegularExpression(pattern: #"^Воркер №[0-9]+ (активен|отключён) · "#)
+
+    private static func displayEntry(_ entry: VPNLogEntry) -> VPNLogEntry {
+        guard entry.source == "WDTT", entry.key == nil else { return entry }
+        let message = entry.message
+        let range = NSRange(location: 0, length: message.utf16.count)
+        let stage = relayStage.stringByReplacingMatches(in: message, range: range, withTemplate: "")
+        let state = workerState.stringByReplacingMatches(in: message, range: range, withTemplate: "Воркер $1 · ")
+        var key = stage
+        var display = stage
+        if state != message {
+            key = String(state.prefix(while: { $0 != "·" }))
+            display = state
+        }
+        return VPNLogEntry(id: entry.id, date: entry.date, level: entry.level, source: entry.source, message: display, key: key)
+    }
+
     static func grouped(_ entries: [VPNLogEntry]) -> [Self] {
         var rows: [Self] = []
-        var indexes: [String: Int] = [:]
-        for entry in entries.sorted(by: { $0.date < $1.date }) {
-            let key = "\(entry.source)|\(entry.level.rawValue)|\(entry.key ?? entry.message)"
+        var indexes: [Event: Int] = [:]
+        for rawEntry in entries.sorted(by: { $0.date < $1.date }) {
+            let entry = displayEntry(rawEntry)
+            let key = Event(source: entry.source, level: entry.level, name: entry.key ?? entry.message)
             if let index = indexes[key] {
                 rows[index].entry = entry
                 rows[index].count += 1

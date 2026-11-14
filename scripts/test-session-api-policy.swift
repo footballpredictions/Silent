@@ -98,6 +98,21 @@ struct SessionsApiPolicyTest {
             _ = try BootstrapHTTPResponse.parse(partial, complete: true)
             preconditionFailure("Truncated response was accepted")
         } catch let error as URLError { precondition(error.code == .badServerResponse) }
-        print("Sessions API policy: PASS")
+        func relay(_ offset: Double, _ message: String, level: VPNLogLevel = .info, source: String = "WDTT") -> VPNLogEntry {
+            VPNLogEntry(date: now.addingTimeInterval(offset), level: level, source: source, message: message)
+        }
+        let log = VPNLogRow.grouped([
+            relay(0, "Воркер №1 · DTLS установлен"),
+            relay(1, "Воркер №2 активен · активных каналов: 2"),
+            relay(2, "Воркер №2 · DTLS установлен"),
+            relay(3, "Воркер №3 активен · активных каналов: 3"),
+            relay(4, "Воркер №1 отключён · активных каналов: 2"),
+            relay(5, "Воркер №4 · DTLS установлен", level: .error),
+            relay(6, "DTLS установлен", source: "Приложение"),
+        ])
+        precondition(log.map(\.count) == [2, 2, 1, 1, 1])
+        precondition(log[0].entry.message == "DTLS установлен" && log[0].line.hasSuffix("(×2)"))
+        precondition(log[1].entry.message == "Воркер активен · активных каналов: 3")
+        print("Sessions API policy and VPN journal: PASS")
     }
 }

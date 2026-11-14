@@ -107,7 +107,7 @@ private struct VPNLogPanel: View {
                                     .font(.caption2.weight(.bold).monospacedDigit())
                                     .foregroundStyle(Color(red: 0.48, green: 0.72, blue: 1))
                                     .padding(.horizontal, 6)
-                                    .frame(minWidth: 24, minHeight: 22)
+                                    .frame(minWidth: 24, minHeight: 24)
                                     .background(Color(red: 0.12, green: 0.24, blue: 0.39), in: Capsule())
                                     .accessibilityLabel("Повторов: \(row.count)")
                                 Text(row.entry.line)

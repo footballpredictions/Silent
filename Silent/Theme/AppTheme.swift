@@ -21,6 +21,14 @@ enum AppFont {
 }
 
 enum ThemePalette {
+    static func success(dark: Bool) -> Color {
+        color(dark ? "4ADE80" : "15803D")
+    }
+
+    static func successGlow(dark: Bool) -> Color {
+        color("22C55E").opacity(dark ? 0.42 : 0.20)
+    }
+
     static func color(_ hex: String, fallback: Color = .black) -> Color {
         var hexStr = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         if hexStr.count == 6 { hexStr += "FF" }
@@ -50,6 +58,8 @@ struct Palette {
     var off: Color
     var link: Color
     var dark: Bool
+    var success: Color { ThemePalette.success(dark: dark) }
+    var successGlow: Color { ThemePalette.successGlow(dark: dark) }
 
     static func resolve(theme: ThemeData?, dark: Bool) -> Palette {
         let t = theme ?? ThemeData()

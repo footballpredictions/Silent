@@ -81,7 +81,8 @@ struct MainView: View {
                 Text(statusText)
                     .font(AppFont.text(12, weight: .medium))
                     .tracking(1)
-                    .foregroundColor(vm.vpnState == .connected ? statusGreen : p.fg.opacity(0.65))
+                    .foregroundColor(vm.vpnState == .connected ? p.success : p.fg.opacity(0.65))
+                    .shadow(color: vm.vpnState == .connected ? p.successGlow : .clear, radius: 4)
                 BigToggle(
                     isOn: vm.vpnState == .connected,
                     isLoading: vm.vpnState == .connecting || vm.vpnState == .disconnecting,
@@ -110,14 +111,12 @@ struct MainView: View {
         .background(p.bg.ignoresSafeArea())
     }
 
-    private var statusGreen: Color { Color(red: 0.09, green: 0.64, blue: 0.29) }
-
     @ViewBuilder
     private func accessFooter(_ p: Palette) -> some View {
         if let profile = vm.profile {
             let subscription = profile.subscription
             if profile.is_admin || (subscription.is_active && subscription.plan_type == "unlimited") {
-                accessStatus("Бессрочно", detail: "Полный доступ", color: statusGreen, palette: p)
+                accessStatus("Бессрочно", detail: "Полный доступ", color: p.success, glow: p.successGlow, palette: p)
             } else if subscription.is_active && subscription.plan_type == "test" {
                 accessStatus("Тестовый режим", detail: "Безлимит", color: .purple, palette: p)
             } else if subscription.is_active && subscription.plan_type == "trial" {
@@ -125,7 +124,7 @@ struct MainView: View {
             } else if subscription.is_active {
                 let detail = subscription.expires_at.map { "до \(formatDate($0))" }
                     ?? "Осталось \(subscription.days_left) дн."
-                accessStatus("Оплачено", detail: detail, color: statusGreen, palette: p)
+                accessStatus("Оплачено", detail: detail, color: p.success, glow: p.successGlow, palette: p)
             } else {
                 Button { vm.menuPage = .subscription } label: {
                     Text("Оформить подписку")
@@ -141,9 +140,9 @@ struct MainView: View {
         }
     }
 
-    private func accessStatus(_ title: String, detail: String, color: Color, palette p: Palette) -> some View {
+    private func accessStatus(_ title: String, detail: String, color: Color, glow: Color = .clear, palette p: Palette) -> some View {
         VStack(spacing: 3) {
-            Text(title).font(.footnote.weight(.semibold)).foregroundColor(color)
+            Text(title).font(.footnote.weight(.semibold)).foregroundColor(color).shadow(color: glow, radius: 4)
             Text(detail).font(.footnote).foregroundColor(p.fg.opacity(0.65))
         }
     }

@@ -29,9 +29,10 @@ struct LoginView: View {
                         if let deadline = vm.bootstrapDeadline {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 let seconds = max(0, Int(ceil(deadline.timeIntervalSince(context.date))))
-                                Label("Временный VPN для входа · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
-                                    .font(.footnote.monospacedDigit())
-                                    .foregroundColor(p.fg)
+                                Label("Временный интернет · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
+                                    .font(.footnote.weight(.medium).monospacedDigit())
+                                    .foregroundStyle(p.success)
+                                    .shadow(color: p.successGlow, radius: 4)
                             }
                         } else if vm.bootstrapStarting {
                             Text("Подключение временного VPN…")

@@ -56,7 +56,8 @@ private struct SubscriptionPage: View {
                     Button(theme?.payment_cancel_button_text ?? "Отмена") { vm.resetPayment() }
                         .font(.subheadline).foregroundColor(p.link)
                 case .success:
-                    Text(theme?.payment_success_title ?? "").font(.headline.weight(.semibold)).foregroundColor(p.fg)
+                    Text(theme?.payment_success_title ?? "").font(.headline.weight(.semibold))
+                        .foregroundStyle(p.success).shadow(color: p.successGlow, radius: 4)
                     Text(theme?.payment_success_text ?? "").font(.subheadline).foregroundColor(p.fg.opacity(0.55))
                     Button("Закрыть") { vm.resetPayment() }.font(.subheadline).foregroundColor(p.link)
                 case .failed:
@@ -73,7 +74,8 @@ private struct SubscriptionPage: View {
                     Text("Подписка и оплата обновляются автоматически при включённом VPN.")
                         .font(.footnote).foregroundColor(p.fg.opacity(0.65))
                     if (vm.profile?.subscription.is_active == true || vm.profile?.is_admin == true) && !vm.showSubscriptionShop {
-                        Text("Подписка активна").font(.headline.weight(.semibold)).foregroundColor(p.fg)
+                        Text("Подписка активна").font(.headline.weight(.semibold))
+                            .foregroundStyle(p.success).shadow(color: p.successGlow, radius: 4)
                         Text(activeText).font(.subheadline).foregroundColor(p.fg.opacity(0.5))
                         if vm.profile?.is_admin != true && !["unlimited", "test"].contains(vm.profile?.subscription.plan_type ?? "") {
                             Button(theme?.subscription_pay_early_label ?? "Оплатить заранее") {
@@ -186,7 +188,6 @@ private struct SubscriptionPage: View {
 
 private struct ExclusionsPage: View {
     @EnvironmentObject var vm: MainViewModel
-    @State private var pane = "sites"
 
     var body: some View {
         let p = vm.palette
@@ -204,11 +205,6 @@ private struct ExclusionsPage: View {
                     .font(.footnote).foregroundColor(p.fg.opacity(0.5))
             }
             VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                chip("Сайты", on: pane == "sites", p: p) { pane = "sites" }
-                chip("Приложения", on: pane == "apps", p: p) { pane = "apps" }
-            }
-            if pane == "sites" {
                 Text("Домен или IP идут \(vm.sitesWhitelist ? "через VPN" : "мимо VPN") (ozon.ru, 1.2.3.4, 10.0.0.0/8). Домены резолвятся в момент подключения.")
                     .font(.footnote).foregroundColor(p.fg.opacity(0.5))
                 HStack(spacing: 8) {
@@ -250,13 +246,6 @@ private struct ExclusionsPage: View {
                         }
                     }
                 }
-            } else {
-                Text("ЧС и БС приложений на Android выбирают, какие программы идут мимо VPN.")
-                    .font(.subheadline).foregroundColor(p.fg.opacity(0.55))
-                Text("На iPhone система не даёт обычному VPN выбирать чужие приложения: в туннель входит весь трафик. Список сайтов выше работает.")
-                    .font(.subheadline).foregroundColor(p.fg.opacity(0.55))
-                    .padding(.top, 4)
-            }
             }.disabled(vm.russianDirect || vm.russianBusy).opacity(vm.russianDirect ? 0.35 : 1)
             Spacer()
         }

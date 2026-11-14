@@ -4,6 +4,8 @@ import UIKit
 struct SilentBrandHeader: View {
     let title: String
     let color: Color
+    var progress: Double? = nil
+    var stageLabel = ""
 
     var body: some View {
         VStack(spacing: 12) {
@@ -17,6 +19,18 @@ struct SilentBrandHeader: View {
                 .font(.headline.weight(.bold))
                 .tracking(3)
                 .foregroundColor(color)
+                .padding(.bottom, progress == nil ? 0 : 31)
+                .overlay(alignment: .bottom) {
+                    if let progress {
+                        Capsule().fill(color.opacity(0.15))
+                            .overlay {
+                                Capsule().fill(color)
+                                    .scaleEffect(x: progress, y: 1, anchor: .leading)
+                            }
+                            .frame(height: 3)
+                            .accessibilityLabel(stageLabel)
+                    }
+                }
         }
         .frame(maxWidth: .infinity)
     }
@@ -29,20 +43,11 @@ struct LaunchSplash: View {
     @State private var progress = 0.03
 
     var body: some View {
-        VStack(spacing: 28) {
-            SilentBrandHeader(title: "SILENT VPN", color: palette.fg)
-            ZStack(alignment: .leading) {
-                Capsule().fill(palette.fg.opacity(0.15))
-                Capsule().fill(palette.fg)
-                    .scaleEffect(x: progress, y: 1, anchor: .leading)
-            }
-            .frame(width: 208, height: 3)
-            .accessibilityLabel(stage.title)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.bg.ignoresSafeArea())
-        .onAppear { updateProgress(stage) }
-        .onChange(of: stage) { updateProgress($0) }
+        SilentBrandHeader(title: "SILENT VPN", color: palette.fg, progress: progress, stageLabel: stage.title)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(palette.bg.ignoresSafeArea())
+            .onAppear { updateProgress(stage) }
+            .onChange(of: stage) { updateProgress($0) }
     }
 
     private func updateProgress(_ stage: ConnectionStage) {
@@ -98,6 +103,7 @@ private struct VPNLogPanel: View {
                         ForEach(entries) { entry in
                             Text(entry.line)
                                 .foregroundStyle(color(for: entry.level))
+                                .shadow(color: entry.level == .success ? ThemePalette.successGlow(dark: true) : .clear, radius: 4)
                                 .textSelection(.enabled)
                                 .id(entry.id)
                         }
@@ -148,7 +154,7 @@ private struct VPNLogPanel: View {
     private func color(for level: VPNLogLevel) -> Color {
         switch level {
         case .info: return Color(white: 0.90)
-        case .success: return Color(red: 0.20, green: 0.83, blue: 0.60)
+        case .success: return ThemePalette.success(dark: true)
         case .error: return Color(red: 1, green: 0.48, blue: 0.48)
         }
     }

@@ -64,8 +64,8 @@ class APIService: ObservableObject {
             try Task.checkCancellation()
             do {
                 return try await requestOnce(path, method: method, body: body, auth: auth, base: base,
-                                             allowRefresh: allowRefresh, accessOverride: accessOverride,
-                                             timeout: tunnelOnly ? 5 : nil, refreshOnSameBase: tunnelOnly)
+                                             allowRefresh: allowRefresh, timeout: tunnelOnly ? 5 : nil,
+                                             accessOverride: accessOverride, refreshOnSameBase: tunnelOnly)
             } catch let e as APIError {
                 switch e {
                 case .network, .invalidURL:

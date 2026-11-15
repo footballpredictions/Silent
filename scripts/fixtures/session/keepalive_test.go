@@ -180,10 +180,37 @@ func TestTURNFailureJournalContainsCodeButNoServerSecrets(t *testing.T) {
 }
 
 type testTURNConnection struct {
-	calls   atomic.Int32
-	rebind  bool
-	noReply bool
-	ready   chan int32
+	calls     atomic.Int32
+	refreshes atomic.Int32
+	rebind    bool
+	noReply   bool
+	ready     chan int32
+}
+
+func (c *testTURNConnection) Refresh() error { c.refreshes.Add(1); return nil }
+
+func TestActualSessionWakeRefreshesTURNNotJustSTUN(t *testing.T) {
+	connection := &testTURNConnection{ready: make(chan int32, 8)}
+	ctx, cancel, done := launchBinding(context.Background(), connection)
+	defer cancel()
+	<-connection.ready
+	iosPathEvents.mu.Lock()
+	iosPathEvents.lastProbe = time.Time{}
+	iosPathEvents.mu.Unlock()
+	iosPathEvents.notify(false)
+	deadline := time.After(time.Second)
+	for connection.refreshes.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("session wake only checked STUN; expired TURN data path was not renewed")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if ctx.Err() != nil {
+		t.Fatal("successful renewal restarted the session")
+	}
+	cancel()
+	<-done
 }
 
 func (c *testTURNConnection) SendBindingRequest() (net.Addr, error) {

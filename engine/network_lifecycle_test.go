@@ -8,6 +8,67 @@ import (
 	"time"
 )
 
+func TestWakeRenewsExistingTURNAndRetriesOneTransientFailure(t *testing.T) {
+	for _, failures := range []int{0, 1, 2} {
+		ctx, cancel := context.WithCancel(context.Background())
+		events := &iosNetworkEvents{}
+		probes, renewals := make(chan struct{}, 8), make(chan struct{}, 8)
+		ticks, done := make(chan time.Time, 1), make(chan struct{})
+		go func() {
+			defer close(done)
+			count := 0
+			runIOSBindingLoop(ctx, 1, func() (net.Addr, error) {
+				probes <- struct{}{}
+				return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}, nil
+			}, cancel, ticks, events, nil, func() error {
+				count++
+				renewals <- struct{}{}
+				if count <= failures {
+					return errors.New("fixture renewal failure")
+				}
+				return nil
+			})
+		}()
+		<-probes
+		ticks <- time.Now()
+		<-probes
+		if len(renewals) != 0 {
+			t.Fatal("ordinary STUN poll needlessly renewed all TURN state")
+		}
+		events.notify(false)
+		<-probes
+		for n := 0; n < 1+min(failures, 1); n++ {
+			select {
+			case <-renewals:
+			case <-time.After(time.Second):
+				t.Fatal("wake failed to renew TURN")
+			}
+		}
+		if failures == 2 {
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("unrenewable channel remained registered")
+			}
+			if ctx.Err() == nil {
+				t.Fatal("unusable allocation was not retired")
+			}
+		} else {
+			ticks <- time.Now()
+			select {
+			case <-probes:
+			case <-time.After(time.Second):
+				t.Fatal("valid channel was restarted instead of renewed")
+			}
+			if ctx.Err() != nil {
+				t.Fatal("valid allocation was cancelled")
+			}
+		}
+		cancel()
+		<-done
+	}
+}
+
 func TestWakeDoesNotLeaveAnUnreachableLTEAllocationActive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -23,7 +84,7 @@ func TestWakeDoesNotLeaveAnUnreachableLTEAllocationActive(t *testing.T) {
 				return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}, nil
 			}
 			return nil, errors.New("LTE binding no longer answers")
-		}, cancel, nil, events, nil)
+		}, cancel, nil, events, nil, nil)
 	}()
 	<-ready
 	events.notify(false)
@@ -57,7 +118,7 @@ func TestWakeKeepsTransientSTUNFailureAndLiveDTLSTraffic(t *testing.T) {
 					return nil, errors.New("one missed STUN response")
 				}
 				return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}, nil
-			}, cancel, nil, events, activity)
+			}, cancel, nil, events, activity, nil)
 		}()
 		<-checked
 		events.notify(false)
@@ -93,7 +154,7 @@ func TestReboundNATCannotRemainRegisteredAsTheOldAllocation(t *testing.T) {
 			calls++
 			ready <- struct{}{}
 			return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000 + calls}, nil
-		}, cancel, ticks, &iosNetworkEvents{}, nil)
+		}, cancel, ticks, &iosNetworkEvents{}, nil, nil)
 	}()
 	<-ready
 	ticks <- time.Now()
@@ -118,7 +179,7 @@ func TestWakePreservesHealthyMappingsAndNetworkChangeInvalidatesOldSockets(t *te
 		runIOSBindingLoop(ctx, 1, func() (net.Addr, error) {
 			ready <- struct{}{}
 			return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}, nil
-		}, cancel, nil, events, nil)
+		}, cancel, nil, events, nil, nil)
 	}()
 	<-ready
 	events.notify(false)
@@ -153,7 +214,7 @@ func TestNewSessionDoesNotInheritAnOldNetworkChange(t *testing.T) {
 		runIOSBindingLoop(ctx, 1, func() (net.Addr, error) {
 			ready <- struct{}{}
 			return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}, nil
-		}, cancel, ticks, events, nil)
+		}, cancel, ticks, events, nil, nil)
 	}()
 	<-ready
 	ticks <- time.Now()

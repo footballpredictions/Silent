@@ -26,7 +26,9 @@ def prepare(source, target, unpatched=False):
     path = target / 'internal/client/allocation.go'
     if not unpatched:
         path.write_text(patch(path.read_text(encoding='utf-8')), encoding='utf-8')
+        shutil.copyfile(Path(__file__).parent / 'fixtures/turn/resume.go', target / 'internal/client/ios_resume.go')
     shutil.copyfile(Path(__file__).parent / 'fixtures/turn/refresh_test.go', target / 'internal/client/ios_refresh_test.go')
+    shutil.copyfile(Path(__file__).parent / 'fixtures/turn/wake_test.go', target / 'ios_wake_test.go')
 
 
 if __name__ == '__main__':

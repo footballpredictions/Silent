@@ -16,7 +16,8 @@ def verify(app, build, revision):
             raise ValueError(f'{name}: wrong source revision')
         binary = (directory / metadata['CFBundleExecutable']).read_bytes()
         if name == 'tunnel':
-            for marker in [revision, 'TURN: канал не отвечает на повторную проверку', 'TURN: нет ответа на две проверки']:
+            for marker in [revision, 'TURN: канал не отвечает на повторную проверку', 'TURN: нет ответа на две проверки',
+                           'TURN: разрешение и канал продлены после сна']:
                 if marker.encode() not in binary:
                     raise ValueError('tunnel: native engine does not match the release')
             if 'соединение с ретранслятором прервалось'.encode() in binary:

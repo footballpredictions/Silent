@@ -70,10 +70,10 @@ func launchWriter(parent context.Context, dtlsConn keepaliveConn, packets <-chan
 import ("context"; "net"; "sync"; "time")
 type bindingQuality struct{}
 func (*bindingQuality) observe(time.Duration,error,time.Time) {}
-func runTestIOSBindingChecks(ctx context.Context, id int, probe func()(net.Addr,error), cancel context.CancelFunc, activity *iosSessionActivity) {
+func runTestIOSBindingChecks(ctx context.Context, id int, probe func()(net.Addr,error), cancel context.CancelFunc, activity *iosSessionActivity, resume func() error) {
     timer := time.NewTicker(5*time.Millisecond)
     defer timer.Stop()
-    runIOSBindingLoop(ctx,id,probe,cancel,timer.C,&iosNetworkEvents{},activity)
+    runIOSBindingLoop(ctx,id,probe,cancel,timer.C,&iosPathEvents,activity,resume)
 }
 func launchBinding(parent context.Context, tc *testTURNConnection) (context.Context,context.CancelFunc,<-chan struct{}) {
     sessCtx,sessCancel := context.WithCancel(parent)
@@ -81,6 +81,8 @@ func launchBinding(parent context.Context, tc *testTURNConnection) (context.Cont
     _ = sessionID
     activity := &iosSessionActivity{}
     _ = activity
+    relay := tc
+    _ = relay
     var quality *bindingQuality
     var sessionWg sync.WaitGroup
     sessionWg.Add(1)

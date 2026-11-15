@@ -116,6 +116,10 @@ func relayJournalEvent(line string) (message string, level int) {
 		return prefix + "сеть: обновляем UDP-сокет после смены интерфейса", 0
 	case event == "TURN: канал не отвечает на повторную проверку после потери сети":
 		return prefix + "TURN: нет ответа на две проверки · обновляем недоступный канал", 2
+	case event == "TURN: сервер не подтвердил продление канала после сна":
+		return prefix + event, 2
+	case event == "TURN: разрешение и канал продлены после сна":
+		return prefix + event, 1
 	case strings.HasPrefix(event, "TURN: продление allocation не подтверждено, канал закрывается"):
 		return prefix + relayTURNFailure(event, "TURN: ошибка продления канала"), 2
 	case strings.HasPrefix(event, "TURN: продление permission не подтверждено, канал закрывается"):

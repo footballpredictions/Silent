@@ -65,8 +65,11 @@ def adapt(source):
     replace_once(context_setup, "")
     marker = "\tturnConn, endpoint, err := dialUDPTURN(ctx, creds.TurnURLs, sessionID, tp)\n"
     replace_once(marker, context_setup + "\tactivity := &iosSessionActivity{}\n" + marker)
-    replace_once("\tstopTransport := context.AfterFunc(ctx, func() { _ = turnConn.Close() })",
-                 "\tstopTransport := context.AfterFunc(sessCtx, func() { _ = turnConn.Close() })")
+    replace_once("\tdefer turnConn.Close()\n\tstopTransport := context.AfterFunc(ctx, func() { _ = turnConn.Close() })",
+                 "\ttransport := newIOSTURNTransport(turnConn)\n\tdefer transport.close()\n"
+                 "\tstopTransport := context.AfterFunc(sessCtx, transport.close)")
+    replace_once("\tdefer relay.Close()\n",
+                 "\tif !transport.attach(relay) { return false, sessCtx.Err() }\n\tdefer transport.close()\n")
     replace_once("\tdefer tc.Close()\n", "\tdefer tc.Close()\n"
                  "\tstopTransactions := context.AfterFunc(sessCtx, tc.Close)\n\tdefer stopTransactions()\n")
     replace_once("\td.Register(slot)\n\tdefer d.Unregister(slot)\n",
@@ -85,7 +88,7 @@ def adapt(source):
 \t\t\taddress, probeErr := tc.SendBindingRequest()
 \t\t\tif quality != nil { quality.observe(time.Since(started), probeErr, time.Now()) }
 \t\t\treturn address, probeErr
-\t\t}, sessCancel, activity)
+\t\t}, sessCancel, activity, func() error { return refreshIOSTURNRelay(relay) })
 \t}()
 ''' + source[end:]
     replace_once("\t\tLoggerFactory:          &NullLoggerFactory{},",

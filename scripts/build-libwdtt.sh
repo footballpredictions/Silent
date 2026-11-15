@@ -46,7 +46,7 @@ python3 "$ROOT/scripts/test-saved-login-probe.py" "$TMP/silent-saved-login-probe
 rm "$TMP/silent-saved-login-probe"
 cp -R "$SRC/." "$TMP/"
 cp "$EXPORT" "$ROOT/engine/wg_config.go" "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_journal.go" "$ROOT/engine/turn_lifecycle.go" "$TMP/"
-cp "$ROOT/engine/network_lifecycle.go" "$TMP/"
+cp "$ROOT/engine/network_lifecycle.go" "$ROOT/engine/turn_transport.go" "$TMP/"
 cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"
 sed '1s/!android || !arm/(!android || !arm) \&\& !ios/' "$SRC/platform_limits_default.go" > "$TMP/platform_limits_default.go"
 # The shared client targets large Android traffic bursts. Keep the per-worker
@@ -63,7 +63,9 @@ echo "Качаю WireGuard…"
 env -u GOOS -u GOARCH go get golang.zx2c4.com/wireguard@v0.0.0-20261006164505-2631ce99a06f gvisor.dev/gvisor@v0.0.0-20250503011706-39ed1f5ac29c
 TURN_SOURCE="$(env -u GOOS -u GOARCH go mod download -json github.com/pion/turn/v5 | python3 -c 'import json,sys; print(json.load(sys.stdin)["Dir"])')"
 python3 "$ROOT/scripts/adapt-ios-turn.py" "$TURN_SOURCE" "$TMP/pion-turn"
+python3 "$ROOT/scripts/test-ios-turn-cleanup.py" "$TMP/session.go" "$TMP/pion-turn"
 env -u GOOS -u GOARCH go -C "$TMP/pion-turn" test ./internal/client -run TestIOSRefresh -count=1
+env -u GOOS -u GOARCH go -C "$TMP/pion-turn" test -race . -run 'TestIOS(Wake|Cancel)' -count=1
 env -u GOOS -u GOARCH go mod edit -replace=github.com/pion/turn/v5=./pion-turn
 
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"

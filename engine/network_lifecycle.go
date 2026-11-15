@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"sync"
@@ -54,6 +55,13 @@ func (e *iosNetworkEvents) notify(interfaceChanged bool) bool {
 
 var iosPathEvents iosNetworkEvents
 
+func refreshIOSTURNRelay(relay interface{}) error {
+	if resumable, ok := relay.(interface{ Refresh() error }); ok {
+		return resumable.Refresh()
+	}
+	return errors.New("TURN: библиотека не поддерживает продление после сна")
+}
+
 // Successful DTLS receives are independent evidence that the data path works,
 // even when the TURN server temporarily misses a separate STUN request.
 type iosSessionActivity struct {
@@ -68,14 +76,14 @@ func (a *iosSessionActivity) markReady()    { a.ready.Store(true) }
 // 10s per worker were redundant; keep the NAT identity check at a lower rate,
 // and run it immediately on wake. A physical interface change invalidates the
 // UDP socket itself, not the WireGuard device or iOS VPN profile.
-func runIOSBindingChecks(ctx context.Context, id int, probe func() (net.Addr, error), cancel context.CancelFunc, activity *iosSessionActivity) {
+func runIOSBindingChecks(ctx context.Context, id int, probe func() (net.Addr, error), cancel context.CancelFunc, activity *iosSessionActivity, resume func() error) {
 	ticker := time.NewTicker(time.Duration(30+id%7) * time.Second)
 	defer ticker.Stop()
-	runIOSBindingLoop(ctx, id, probe, cancel, ticker.C, &iosPathEvents, activity)
+	runIOSBindingLoop(ctx, id, probe, cancel, ticker.C, &iosPathEvents, activity, resume)
 }
 
 func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, error), cancel context.CancelFunc,
-	ticks <-chan time.Time, events *iosNetworkEvents, activity *iosSessionActivity) {
+	ticks <-chan time.Time, events *iosNetworkEvents, activity *iosSessionActivity, resume func() error) {
 	snapshot := events.snapshot()
 	var mapped string
 	var previousReceive uint64
@@ -159,6 +167,24 @@ func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, erro
 			}
 			if !verify() {
 				return
+			}
+			if resume != nil {
+				// STUN can succeed while the server's permission/channel has
+				// expired during suspension. Renew those in place, rather than
+				// counting this worker as healthy based only on its mapped IP.
+				err := resume()
+				if err != nil && ctx.Err() == nil {
+					err = resume()
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				if err != nil {
+					log.Printf("[ВОРКЕР #%d] TURN: сервер не подтвердил продление канала после сна", id)
+					cancel()
+					return
+				}
+				log.Printf("[ВОРКЕР #%d] TURN: разрешение и канал продлены после сна", id)
 			}
 		}
 	}

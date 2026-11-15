@@ -70,10 +70,10 @@ final class VpnManager: ObservableObject {
         proto.providerBundleIdentifier = AppIdentity.tunnelBundleId
         proto.serverAddress = config.serverIP
         proto.disconnectOnSleep = false
-        // Use the same routing mode as the working main tunnel. Full Internet
-        // routes are installed by the provider; scoping every route here can
-        // leave the app's new sockets on an unusable path after the handoff.
-        proto.enforceRoutes = false
+        // Payment uses the same routing mode as the working main tunnel; its
+        // full Internet routes are installed by the provider. Keep the existing
+        // registration/Mail routing policy separate from the payment handoff.
+        proto.enforceRoutes = config.registrationRouting == true
         mgr.protocolConfiguration = proto
         mgr.localizedDescription = "Silent VPN"
         mgr.isEnabled = true

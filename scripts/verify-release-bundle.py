@@ -21,7 +21,9 @@ def verify(app, build, revision):
                     raise ValueError('tunnel: native engine does not match the release')
             if 'соединение с ретранслятором прервалось'.encode() in binary:
                 raise ValueError('tunnel: obsolete native journal found')
-        if '(Запуск воркеров )[0-9]+[–-][0-9]+'.encode() not in binary:
+        # Only the app renders grouped rows. The extension merely writes raw
+        # events, so its optimizer correctly strips the unused grouping code.
+        if name == 'app' and '(Запуск воркеров )[0-9]+[–-][0-9]+'.encode() not in binary:
             raise ValueError(f'{name}: current journal grouping is missing')
         result[name] = hashlib.sha256(binary).hexdigest()
     return {'build': str(build), 'revision': revision, 'sha256': result}

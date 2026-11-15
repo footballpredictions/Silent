@@ -46,7 +46,8 @@ METHOD
         }
         guard PolicyHTTP.requests.first == "http://10.66.66.1:8000/api/vpn/routing-policy" else { exit(1) }
         let cached = try Data(contentsOf:url)
-        precondition(try JSONDecoder().decode(RussianRoutingPolicy.self,from:cached).valid)
+        let decoded = try JSONDecoder().decode(RussianRoutingPolicy.self,from:cached)
+        precondition(decoded.valid)
         PolicyHTTP.requests = []
         PolicyHTTP.gatewayOnly = false
         guard await RussianServices.OFFLINE != nil else { exit(1) }

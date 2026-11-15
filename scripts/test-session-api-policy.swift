@@ -57,6 +57,21 @@ struct SessionsApiPolicyTest {
         precondition(BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "", cell: 0) == nil)
         let payment = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport", cell: 1, payment: true)
         precondition(payment?.paymentRouting == true && payment?.bootstrapDuration == 300 && local?.paymentRouting == nil)
+        precondition(payment?.dns == ["77.88.8.8", "77.88.8.1"], "Payment DNS should match Android")
+        precondition(PaymentConnectivity.accepts(Data("HTTP/1.1 200 OK\r\n".utf8)))
+        precondition(PaymentConnectivity.accepts(Data("HTTP/1.1 302 Found\r\n".utf8)))
+        precondition(!PaymentConnectivity.accepts(Data("HTTP/1.1 403 Forbidden\r\n".utf8)))
+        precondition(!PaymentConnectivity.accepts(Data("invalid response".utf8)))
+        let probeStarted = Date()
+        let available = await PaymentConnectivity.anyReachable(["stalled-tls", "working-address"]) { address in
+            if address == "working-address" { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            return false
+        }
+        precondition(available && Date().timeIntervalSince(probeStarted) < 2,
+                     "One stalled TLS address must not hide another working YooMoney address")
+        let unavailable = await PaymentConnectivity.anyReachable(["bad-a", "bad-b"]) { _ in false }
+        precondition(!unavailable)
         guard let mail = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport",
                                                        cell: 0, registrationRouting: true) else {
             preconditionFailure("Email confirmation needs a temporary Internet route")

@@ -5,6 +5,7 @@ enum BootstrapLaunch {
     // Same public overlay nodes as Android.
     static let cellHosts = ["87.58.213.193", "78.17.74.27"]
     static let paymentHosts = cellHosts + ["89.37.192.241", PublicApiFailover.hiveIP]
+    static let paymentDNS = ["77.88.8.8", "77.88.8.1"]
 
     static func callHash(_ input: String) -> String? {
         let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -31,7 +32,7 @@ enum BootstrapLaunch {
         guard !password.isEmpty, let hash = callHash(hash), hosts.indices.contains(cell) else { return nil }
         return TunnelConfig(deviceId: "boot:\(fingerprint)", serverIP: hosts[cell], serverPort: 56000,
                             password: password, hashes: [hash], workers: 3, address: "",
-                            dns: payment || registrationRouting ? RegistrationTunnelRoute.internetDNS : [], mtu: 1200,
+                            dns: payment ? paymentDNS : (registrationRouting ? RegistrationTunnelRoute.internetDNS : []), mtu: 1200,
                             excludeCIDRs: [], bootstrapDuration: payment ? 300 : duration,
                             paymentRouting: payment ? true : nil, registrationRouting: registrationRouting ? true : nil)
     }

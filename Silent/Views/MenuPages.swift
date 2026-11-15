@@ -45,11 +45,6 @@ private struct SubscriptionPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 switch vm.payment {
-                case .preparing:
-                    ProgressView("Проверяем доступность ЮMoney…")
-                        .foregroundStyle(p.fg)
-                    Button(theme?.payment_cancel_button_text ?? "Отмена") { vm.resetPayment() }
-                        .font(.subheadline).foregroundColor(p.link)
                 case .waiting:
                     waitingForPayment(p)
                 case .success:
@@ -67,8 +62,8 @@ private struct SubscriptionPage: View {
                     Text(theme?.payment_timeout_text ?? "").font(.subheadline).foregroundColor(p.fg.opacity(0.55))
                     Button(theme?.payment_retry_button_text ?? "Попробовать снова") { vm.resetPayment() }
                         .font(.subheadline).foregroundColor(p.link)
-                case .idle:
-                    Text("Подписка и оплата обновляются автоматически при включённом VPN.")
+                case .idle, .preparing:
+                    Text("Для оплаты временный интернет включится автоматически.")
                         .font(.footnote).foregroundColor(p.fg.opacity(0.65))
                     if (vm.profile?.subscription.is_active == true || vm.profile?.is_admin == true) && !vm.showSubscriptionShop {
                         Text("Подписка активна").font(.headline.weight(.semibold))

@@ -855,8 +855,7 @@ final class MainViewModel: ObservableObject {
 
     private func preparePaymentRoute(_ planId: String) async throws -> (base: String, preview: PaymentPreview) {
         let current = vpn.state
-        logConnection("Оплата · проверка HTTPS ЮMoney по текущему маршруту")
-        if await PaymentRoute.check(), vpn.state == current {
+        if current == .connected, await PaymentRoute.check(), vpn.state == current {
             let bases = current == .connected ? [PublicApiFailover.tunnelAPI] : PublicApiFailover.paymentPublicBases
             if let route = try await selectPaymentAPI(planId, bases: bases), vpn.state == current {
                 logConnection("Оплата · ЮMoney и API доступны", level: .success)
@@ -900,7 +899,7 @@ final class MainViewModel: ObservableObject {
             logConnection("Оплата · ЮMoney доступна через маршрут №\(picked + 1)", level: .success)
             return (PublicApiFailover.tunnelAPI, preview)
         }
-        throw APIError.server("Не удалось открыть ЮMoney и API оплаты по одному маршруту. Попробуйте другую сеть.")
+        throw APIError.server("Не удалось включить временный интернет для оплаты. Повторите.")
     }
 
     private func selectPaymentAPI(_ planId: String, bases: [String]) async throws -> (base: String, preview: PaymentPreview)? {
@@ -912,7 +911,8 @@ final class MainViewModel: ObservableObject {
             } catch let error as APIError {
                 switch error {
                 case .network, .invalidURL: break
-                case .http(404, _), .http(408, _), .http(502, _), .http(504, _): break
+                case .http(404, _), .http(408, _): break
+                case .http(let code, _) where (500...599).contains(code): break
                 default: throw error
                 }
             } catch is URLError {

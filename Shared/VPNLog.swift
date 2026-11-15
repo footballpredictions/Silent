@@ -31,6 +31,23 @@ struct VPNLogRow: Identifiable {
 
     private static let relayStage = try! NSRegularExpression(pattern: #"^(Воркер|Группа) №[0-9]+ · "#)
     private static let workerState = try! NSRegularExpression(pattern: #"^Воркер №[0-9]+ (активен|отключён) · "#)
+    private static let metric = try! NSRegularExpression(pattern: #"(?i)(?<![\p{L}\p{N}.])[0-9]+(?:[.,][0-9]+)?(?=\s*(?:%|(?:МБ|КБ|ГБ|мс|с|сек|Мбит/с)\b))"#)
+    private static let counter = try! NSRegularExpression(pattern: #"(?i)\b(активных(?: каналов)?|задач|воркеров|потоков|хешей)\s*[:=]\s*[0-9]+(?:/[0-9]+)?"#)
+    private static let stageID = try! NSRegularExpression(pattern: #"(\[(?:ГРУППА|ВОРКЕР|РЕТРАНСЛЯТОР) #)[0-9]+(\])"#)
+    private static let workerRange = try! NSRegularExpression(pattern: #"(Запуск воркеров )[0-9]+[–-][0-9]+"#)
+
+    private static func eventName(_ message: String) -> String {
+        if message.hasPrefix("[СТАТИСТИКА]") { return "stats" }
+        if message.hasPrefix("[РЕСУРСЫ]") { return "resources" }
+        // Normalize changing values only in the key. Keep the entire latest
+        // message on screen and in copied logs; distinct error codes stay apart.
+        var key = message
+        for (regex, replacement) in [(metric, "~"), (counter, "$1: ~"),
+                                      (stageID, "$1~$2"), (workerRange, "$1~")] {
+            key = regex.stringByReplacingMatches(in: key, range: NSRange(key.startIndex..., in: key), withTemplate: replacement)
+        }
+        return key
+    }
 
     private static func displayEntry(_ entry: VPNLogEntry) -> VPNLogEntry {
         guard entry.source == "WDTT", entry.key == nil else { return entry }
@@ -38,7 +55,7 @@ struct VPNLogRow: Identifiable {
         let range = NSRange(location: 0, length: message.utf16.count)
         let stage = relayStage.stringByReplacingMatches(in: message, range: range, withTemplate: "")
         let state = workerState.stringByReplacingMatches(in: message, range: range, withTemplate: "Воркер $1 · ")
-        var key = stage
+        var key = eventName(stage)
         var display = stage
         if state != message {
             key = String(state.prefix(while: { $0 != "·" }))
@@ -52,7 +69,7 @@ struct VPNLogRow: Identifiable {
         var indexes: [Event: Int] = [:]
         for rawEntry in entries.sorted(by: { $0.date < $1.date }) {
             let entry = displayEntry(rawEntry)
-            let key = Event(source: entry.source, level: entry.level, name: entry.key ?? entry.message)
+            let key = Event(source: entry.source, level: entry.level, name: entry.key ?? eventName(entry.message))
             if let index = indexes[key] {
                 rows[index].entry = entry
                 rows[index].count += 1

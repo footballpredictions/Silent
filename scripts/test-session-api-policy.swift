@@ -194,6 +194,25 @@ struct SessionsApiPolicyTest {
         precondition(log[1].entry.message == "Воркер активен · активных каналов: 3")
         precondition(log.last?.line.contains("[СТАТИСТИКА] Активных: 3 | Трафик: 0.04 МБ (×2)") == true)
         precondition(log.last?.line.contains("[WDTT] [СТАТИСТИКА]") == false)
+        let changingMetrics = VPNLogRow.grouped([
+            relay(0, "[РЕСУРСЫ] Go heap: 9.0 МБ · GC CPU: 0.1% · задач: 854"),
+            relay(1, "[СТАТИСТИКА] Активных: 29/63 | Трафик: 0.13 МБ"),
+            relay(2, "Получение конфигурации · 10%", source: "Приложение"),
+            relay(3, "[РЕСУРСЫ] Go heap: 23.8 МБ · GC CPU: 5.7% · задач: 931"),
+            relay(4, "Получение конфигурации · 95%", source: "Приложение"),
+            relay(5, "[СТАТИСТИКА] Активных: 63/63 | Трафик: 202.91 МБ"),
+        ])
+        precondition(changingMetrics.count == 3 && changingMetrics.allSatisfy { $0.count == 2 })
+        precondition(changingMetrics[0].entry.message.contains("5.7%") && changingMetrics[0].entry.message.contains("931"))
+        precondition(changingMetrics[1].entry.message.contains("95%"))
+        precondition(changingMetrics[2].entry.message.contains("202.91"))
+        let distinctErrors = VPNLogRow.grouped([
+            relay(0, "TURN: ошибка продления канала · код 437", level: .error),
+            relay(1, "TURN: ошибка продления канала · код 403", level: .error),
+            relay(2, "Сетевой модуль вернул ошибку 6", level: .error, source: "Туннель"),
+            relay(3, "Сетевой модуль вернул ошибку 12", level: .error, source: "Туннель"),
+        ])
+        precondition(distinctErrors.count == 4, "Distinct failure codes must not disappear in metric grouping")
         print("Sessions API policy and VPN journal: PASS")
     }
 }

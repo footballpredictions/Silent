@@ -19,6 +19,54 @@ type testKeepaliveConn struct {
 	writes   chan struct{}
 }
 
+type interruptedWrite struct{ cancel context.CancelFunc }
+
+func (*interruptedWrite) SetWriteDeadline(time.Time) error { return nil }
+func (c *interruptedWrite) Write([]byte) (int, error) {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return 0, io.ErrClosedPipe
+}
+
+func TestIntentionalSessionCancellationDoesNotReportATransportFailure(t *testing.T) {
+	for _, writer := range []bool{true, false} {
+		for _, intentional := range []bool{true, false} {
+			var output bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&output)
+			parent, cancel := context.WithCancel(context.Background())
+			connection := &interruptedWrite{}
+			if intentional {
+				connection.cancel = cancel
+			}
+			var done <-chan struct{}
+			var stop context.CancelFunc
+			if writer {
+				packets := make(chan []byte, 1)
+				packets <- []byte{1, 2}
+				_, stop, done = launchWriter(parent, connection, packets)
+			} else {
+				_, stop, done = launchKeepalive(parent, connection, false)
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("interrupted session did not finish")
+			}
+			stop()
+			cancel()
+			log.SetOutput(previous)
+			if intentional && output.Len() != 0 {
+				t.Errorf("intentional cancel reported a red failure (writer=%v): %s", writer, output.String())
+			}
+			if !intentional && output.Len() == 0 {
+				t.Errorf("real transport failure was hidden (writer=%v)", writer)
+			}
+		}
+	}
+}
+
 func (c *testKeepaliveConn) SetWriteDeadline(time.Time) error { return nil }
 func (c *testKeepaliveConn) Write(packet []byte) (int, error) {
 	if (len(packet) == 1 && c.failPing) || (len(packet) > 1 && c.failConf) {

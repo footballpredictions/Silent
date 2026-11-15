@@ -15,6 +15,9 @@ source = Path(sys.argv[1]).read_text(encoding="utf-8")
 start = source.index("\tgo func() {", source.index("// DTLS Keepalive + periodic GETCONF"))
 end = source.index("\n\t// Writer: dispatcher", start)
 loop = source[start:end]
+writer_start = source.index("\tgo func() {", source.index("// Writer: dispatcher"))
+writer_end = source.index("\n\t// Reader: DTLS", writer_start)
+writer_loop = source[writer_start:writer_end]
 binding_start = source.index("\tgo func() {", source.index("// Keepalive goroutine (TURN binding request)"))
 binding_end = source.index("\n\t// Relay ↔ Pipe proxy", binding_start)
 binding_loop = source[binding_start:binding_end].replace("10 * time.Second", "5 * time.Millisecond")
@@ -42,6 +45,18 @@ func launchKeepalive(parent context.Context, dtlsConn keepaliveConn, getConfig b
 }
 '''
     (target / "keepalive.go").write_text(prefix + loop + suffix, encoding="utf-8")
+    writer_prefix = '''package main
+import ("context"; "log"; "sync"; "time")
+const sessionReadTimeout = 30*time.Minute
+func putPktBuf([]byte) {}
+func launchWriter(parent context.Context, dtlsConn keepaliveConn, packets <-chan []byte) (context.Context, context.CancelFunc, <-chan struct{}) {
+    sessCtx, sessCancel := context.WithCancel(parent)
+    sessionID := 1
+    slot := struct{SendCh <-chan []byte}{packets}
+    var proxyWg sync.WaitGroup
+    proxyWg.Add(1)
+'''
+    (target / "writer.go").write_text(writer_prefix + writer_loop + suffix, encoding="utf-8")
     binding_prefix = '''package main
 import ("context"; "net"; "sync"; "time")
 type bindingQuality struct{}

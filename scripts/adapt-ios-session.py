@@ -38,9 +38,15 @@ def adapt(source):
         if tail.count(old) != 1:
             raise ValueError("Shared WDTT keepalive write changed")
         tail = tail.replace(old, old.replace("\t\t\t\t\treturn\n",
+            "\t\t\t\t\tif sessCtx.Err() != nil { return }\n"
             f'\t\t\t\t\tlog.Printf("[ВОРКЕР #%d] {label}: запись не прошла, канал закрывается", sessionID)\n'
             "\t\t\t\t\treturn\n"), 1)
     source = head + marker + tail
+    # Closing a session closes its pipe while a dispatcher write may be in
+    # flight. That cancellation is not a new transport failure (Reader already
+    # makes the same distinction in the shared client).
+    replace_once("\t\t\t\tif writeErr != nil {\n",
+                 "\t\t\t\tif writeErr != nil {\n\t\t\t\t\tif sessCtx.Err() != nil { return }\n")
 
     # Pion reports failed allocation/permission renewal through its logger, not
     # ReadFrom/WriteTo. Keep that lifecycle signal instead of discarding it.

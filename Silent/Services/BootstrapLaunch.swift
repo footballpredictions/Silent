@@ -2,7 +2,8 @@ import Foundation
 
 enum BootstrapLaunch {
     static let duration = 120
-    // Same public overlay nodes as Android. The login route is limited to the API gateway.
+    static let internetDNS = ["1.1.1.1", "9.9.9.9"]
+    // Same public overlay nodes as Android.
     static let cellHosts = ["87.58.213.193", "78.17.74.27"]
     static let paymentHosts = cellHosts + ["89.37.192.241", PublicApiFailover.hiveIP]
 
@@ -25,12 +26,14 @@ enum BootstrapLaunch {
         return candidate
     }
 
-    static func configuration(hash: String, fingerprint: String, password: String, cell: Int, payment: Bool = false) -> TunnelConfig? {
+    static func configuration(hash: String, fingerprint: String, password: String, cell: Int,
+                              payment: Bool = false, registrationRouting: Bool = false) -> TunnelConfig? {
         let hosts = payment ? paymentHosts : cellHosts
         guard !password.isEmpty, let hash = callHash(hash), hosts.indices.contains(cell) else { return nil }
         return TunnelConfig(deviceId: "boot:\(fingerprint)", serverIP: hosts[cell], serverPort: 56000,
                             password: password, hashes: [hash], workers: 3, address: "",
-                            dns: payment ? ["1.1.1.1", "9.9.9.9"] : [], mtu: 1200,
-                            excludeCIDRs: [], bootstrapDuration: payment ? 300 : duration, paymentRouting: payment ? true : nil)
+                            dns: payment || registrationRouting ? internetDNS : [], mtu: 1200,
+                            excludeCIDRs: [], bootstrapDuration: payment ? 300 : duration,
+                            paymentRouting: payment ? true : nil, registrationRouting: registrationRouting ? true : nil)
     }
 }

@@ -59,7 +59,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             completionHandler(tunnelError(text))
             return
         }
-        VPNLog.write(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
+        if config.registrationRouting == true {
+            VPNLog.write("Запуск временного VPN для почты")
+        } else {
+            VPNLog.write(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
+        }
         if wdtt_engine_linked() == 0 {
             let text = "Туннель не собран. На Mac запустите scripts/build-libwdtt.sh и заново сделайте Archive."
             writeError(text)
@@ -258,7 +262,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: config.serverIP)
         let parsed = parseAddress(config.address)
         let ipv4 = NEIPv4Settings(addresses: [parsed.ip], subnetMasks: [parsed.mask])
-        if config.bootstrapDuration != nil && config.paymentRouting != true {
+        if config.bootstrapDuration != nil && !config.bootstrapRoutesInternet {
             ipv4.includedRoutes = [NEIPv4Route(destinationAddress: "10.66.66.1", subnetMask: "255.255.255.255")]
             settings.ipv4Settings = ipv4
             settings.mtu = NSNumber(value: config.mtu)

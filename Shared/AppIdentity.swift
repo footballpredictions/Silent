@@ -35,4 +35,7 @@ struct TunnelConfig: Codable {
     var russian: RussianRoutingPolicy? = nil
     var bootstrapDuration: Int? = nil
     var paymentRouting: Bool? = nil
+    var registrationRouting: Bool? = nil
+
+    var bootstrapRoutesInternet: Bool { paymentRouting == true || registrationRouting == true }
 }

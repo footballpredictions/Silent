@@ -34,7 +34,8 @@ struct LoginView: View {
                         } else if let deadline = vm.bootstrapDeadline {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 let seconds = max(0, Int(ceil(deadline.timeIntervalSince(context.date))))
-                                Label("Временный интернет · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
+                                let title = vm.registrationEmail == nil ? "Временный интернет" : "Интернет для почты"
+                                Label("\(title) · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
                                     .font(.footnote.weight(.medium).monospacedDigit())
                                     .foregroundStyle(p.success)
                                     .shadow(color: p.successGlow, radius: 4)
@@ -82,12 +83,14 @@ struct LoginView: View {
                         if let authError = vm.authError {
                             Text(authError).font(.footnote).foregroundColor(.red)
                         }
-                        if vm.bootstrapFailed && !vm.bootstrapStarting {
-                            Button("Повторить временный VPN") { Task { await vm.retryBootstrap() } }
+                        if !vm.bootstrapStarting && (vm.bootstrapFailed || (vm.registrationEmail != nil && vm.bootstrapDeadline == nil)) {
+                            Button(vm.registrationEmail == nil ? "Повторить временный VPN" : "Включить интернет для почты") {
+                                Task { await vm.retryBootstrap() }
+                            }
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(p.link)
                                 .frame(minHeight: 44, alignment: .leading)
-                                .disabled(vm.authLoading)
+                                .disabled(vm.authLoading || vm.verificationResending)
                         }
                     }
                     .frame(maxWidth: 440)
@@ -119,7 +122,9 @@ struct LoginView: View {
             Text("Адрес для подтверждения — \(address)")
                 .font(.subheadline)
                 .foregroundStyle(p.fg.opacity(0.72))
-            Text("Откройте ссылку из письма в браузере или приложении почты.")
+            Text(vm.bootstrapStarting
+                 ? "Подключаем временный интернет для «Почты»…"
+                 : "Откройте «Почту» на iPhone и нажмите ссылку из письма.")
                 .font(.footnote)
                 .foregroundStyle(p.fg.opacity(0.65))
             if let notice = vm.verificationNotice {
@@ -140,12 +145,12 @@ struct LoginView: View {
             .font(.subheadline.weight(.medium))
             .foregroundStyle(p.link)
             .frame(minHeight: 44)
-            .disabled(vm.verificationResending || password.isEmpty)
+            .disabled(vm.authLoading || vm.bootstrapStarting || vm.verificationResending || password.isEmpty)
             Button("Войти", action: returnToLogin)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(p.fg)
                 .frame(minHeight: 44)
-                .disabled(vm.verificationResending)
+                .disabled(vm.authLoading || vm.bootstrapStarting || vm.verificationResending)
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)

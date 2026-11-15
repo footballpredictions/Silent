@@ -54,6 +54,16 @@ struct SessionsApiPolicyTest {
         precondition(BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "", cell: 0) == nil)
         let payment = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport", cell: 1, payment: true)
         precondition(payment?.paymentRouting == true && payment?.bootstrapDuration == 300 && local?.paymentRouting == nil)
+        guard let mail = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport",
+                                                       cell: 0, registrationRouting: true) else {
+            preconditionFailure("Email confirmation needs a temporary Internet route")
+        }
+        precondition(mail.bootstrapRoutesInternet && mail.bootstrapDuration == BootstrapLaunch.duration)
+        precondition(mail.dns == ["1.1.1.1", "9.9.9.9"] && mail.paymentRouting == nil)
+        precondition(local?.bootstrapRoutesInternet == false && retry?.bootstrapRoutesInternet == false &&
+                     payment?.bootstrapRoutesInternet == true)
+        let restoredMail = try JSONDecoder().decode(TunnelConfig.self, from: JSONEncoder().encode(mail))
+        precondition(restoredMail.bootstrapRoutesInternet && restoredMail.paymentRouting == nil)
         var attempts: [Int] = []
         var stops = 0
         let picked = try await PaymentRoute.choose([1, 2, 3], start: { attempts.append($0) }, probe: {

@@ -168,8 +168,10 @@ final class MainViewModel: ObservableObject {
             if state == .disconnected, !bootstrapStarting {
                 bootstrapActive = false
                 bootstrapDeadline = nil
-                authError = vpn.readError()
-                logConnection(authError ?? "Временный VPN отключён")
+                bootstrapFailed = true
+                let reason = vpn.readError()
+                if registrationEmail == nil { authError = reason }
+                logConnection(reason ?? "Временный VPN отключён")
             }
             return
         }
@@ -242,8 +244,9 @@ final class MainViewModel: ObservableObject {
         VPNLog.clear()
     }
 
-    private func startBootstrap() async {
-        guard !bootstrapHash.isEmpty, !loggedIn, !authLoading, !bootstrapActive, !bootstrapAttempted else { return }
+    private func startBootstrap(registrationRouting: Bool = false) async {
+        guard !bootstrapHash.isEmpty, !loggedIn, (!authLoading || registrationRouting),
+              !bootstrapActive, !bootstrapAttempted else { return }
         bootstrapAttempted = true
         bootstrapActive = true
         bootstrapStarting = true
@@ -253,9 +256,12 @@ final class MainViewModel: ObservableObject {
         var stage = "Не удалось получить настройки временного VPN"
         let discardCount = vpn.sceneDiscardCount
         do {
-            if let local = BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
-                                                         password: bootstrapPassword, cell: bootstrapCell) {
-                logConnection("Временный VPN: запуск через Соту \(bootstrapCell + 1) без запроса HTTPS")
+            let cells = registrationRouting ? [bootstrapCell, (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count] : [bootstrapCell]
+            for cell in cells {
+                guard let local = BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
+                                                                 password: bootstrapPassword, cell: cell,
+                                                                 registrationRouting: registrationRouting) else { break }
+                logConnection("Временный VPN: запуск через Соту \(cell + 1) без запроса HTTPS")
                 stage = "Не удалось запустить временный VPN"
                 do {
                     try await connectBootstrap(local)
@@ -265,12 +271,12 @@ final class MainViewModel: ObservableObject {
                     try Task.checkCancellation()
                     guard discardCount == vpn.sceneDiscardCount else { throw CancellationError() }
                     guard vpn.state == .disconnected else { throw error }
-                    logConnection("Временный VPN: сота не подтвердила подключение. Пробуем получить настройки через HTTPS", level: .error)
+                    logConnection("Временный VPN: Сота \(cell + 1) не подтвердила подключение", level: .error)
                 }
             }
 
             stage = "Не удалось получить настройки временного VPN"
-            let config: TunnelConfig
+            var config: TunnelConfig
             do {
                 let fresh = try await api.bootstrapConfig(hash: bootstrapHash) { [weak self] message in
                     self?.logConnection("Временный VPN: \(message)")
@@ -289,6 +295,9 @@ final class MainViewModel: ObservableObject {
             }
             stage = "Не удалось запустить временный VPN"
             guard discardCount == vpn.sceneDiscardCount else { throw CancellationError() }
+            config.registrationRouting = registrationRouting ? true : nil
+            config.paymentRouting = nil
+            if registrationRouting { config.dns = BootstrapLaunch.internetDNS }
             try await connectBootstrap(config)
         } catch {
             await vpn.disconnect()
@@ -304,7 +313,7 @@ final class MainViewModel: ObservableObject {
     private func connectBootstrap(_ config: TunnelConfig) async throws {
         if launchStage != nil { launchStage = .tunnel }
         try await vpn.connect(config)
-        let deadline = Date().addingTimeInterval(TimeInterval(BootstrapLaunch.duration))
+        let deadline = Date().addingTimeInterval(TimeInterval(config.bootstrapDuration ?? BootstrapLaunch.duration))
         if launchStage != nil { launchStage = .data }
         try await api.checkTunnelGateway()
         guard vpn.state == .connected else { throw APIError.network }
@@ -312,7 +321,9 @@ final class MainViewModel: ObservableObject {
         if let data = try? JSONEncoder().encode(BootstrapCache(savedAt: Date(), config: config)) {
             KeychainHelper.set(data.base64EncodedString(), key: bootstrapCacheKey)
         }
-        logConnection("Временный VPN готов: шлюз ответил", level: .success)
+        logConnection(config.registrationRouting == true
+                      ? "Временный VPN для почты · маршрут включён"
+                      : "Временный VPN готов: шлюз ответил", level: .success)
     }
 
     private func stopBootstrap() async {
@@ -330,7 +341,22 @@ final class MainViewModel: ObservableObject {
         bootstrapAttempted = false
         bootstrapCell = (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count
         authError = nil
-        await startBootstrap()
+        await startBootstrap(registrationRouting: registrationEmail != nil)
+    }
+
+    private func showEmailConfirmation(_ address: String) async {
+        registrationEmail = address
+        verificationNotice = nil
+        let discardCount = vpn.sceneDiscardCount
+        await stopBootstrap()
+        guard discardCount == vpn.sceneDiscardCount else { return }
+        guard vpn.state == .disconnected else {
+            authError = "Дождитесь отключения предыдущего VPN и попробуйте снова."
+            bootstrapFailed = true
+            return
+        }
+        bootstrapAttempted = false
+        await startBootstrap(registrationRouting: true)
     }
 
     func toggleAppearance() {
@@ -417,8 +443,7 @@ final class MainViewModel: ObservableObject {
             try await loadAccount()
             Task { await loadAppearanceAndServers() }
         } catch APIError.http(403, let detail) where detail == "Подтвердите email перед входом" {
-            registrationEmail = email
-            verificationNotice = nil
+            await showEmailConfirmation(email)
         } catch {
             authError = error.localizedDescription
             logConnection("Вход не завершён")
@@ -445,7 +470,7 @@ final class MainViewModel: ObservableObject {
                 try await loadAccount()
                 Task { await loadAppearanceAndServers() }
             } else {
-                registrationEmail = email
+                await showEmailConfirmation(email)
             }
         } catch {
             authError = error.localizedDescription

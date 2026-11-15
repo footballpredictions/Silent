@@ -51,6 +51,7 @@ final class VpnManager: ObservableObject {
     }
 
     func connect(_ config: TunnelConfig, timeout: TimeInterval? = nil) async throws {
+        VPNLog.write(AppIdentity.buildDescription, source: "Приложение", key: "app-build")
         let discardCount = sceneDiscardCount
         await pendingSceneStop?.value
         guard discardCount == sceneDiscardCount,

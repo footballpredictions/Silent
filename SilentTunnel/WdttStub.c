@@ -3,6 +3,7 @@
 static const char *kStubError = "Native engine is not linked";
 
 int wdtt_engine_linked(void) { return 0; }
+char *wdtt_engine_revision(void) { return strdup("stub"); }
 
 char *wdtt_last_error(void) { return strdup(kStubError); }
 

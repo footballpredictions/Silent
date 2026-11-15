@@ -6,6 +6,12 @@ enum AppIdentity {
     static let configName = "tunnel-config.json"
     static let errorName = "tunnel-error.txt"
 
+    static var buildDescription: String {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let revision = Bundle.main.object(forInfoDictionaryKey: "SilentBuildRevision") as? String ?? "unknown"
+        return "Сборка \(build) · код \(revision.prefix(12))"
+    }
+
     static var groupURL: URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
     }

@@ -50,7 +50,7 @@ struct VPNLogRow: Identifiable {
     }
 
     private static func displayEntry(_ entry: VPNLogEntry) -> VPNLogEntry {
-        guard entry.source == "WDTT", entry.key == nil else { return entry }
+        guard entry.source == "WDTT" else { return entry }
         let message = entry.message
         let range = NSRange(location: 0, length: message.utf16.count)
         let stage = relayStage.stringByReplacingMatches(in: message, range: range, withTemplate: "")

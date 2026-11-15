@@ -32,13 +32,13 @@ func (e *iosNetworkEvents) snapshot() iosNetworkSnapshot {
 	return iosNetworkSnapshot{e.signal, e.generation, e.forced}
 }
 
-func (e *iosNetworkEvents) notify(interfaceChanged bool) {
+func (e *iosNetworkEvents) notify(interfaceChanged bool) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := time.Now()
 	elapsed := time.Duration(now.UnixNano() - e.lastProbe.UnixNano())
 	if !interfaceChanged && !e.lastProbe.IsZero() && elapsed >= 0 && elapsed < 2*time.Second {
-		return
+		return false
 	}
 	e.lastProbe = now
 	e.generation++
@@ -49,6 +49,7 @@ func (e *iosNetworkEvents) notify(interfaceChanged bool) {
 		close(e.signal)
 	}
 	e.signal = make(chan struct{})
+	return true
 }
 
 var iosPathEvents iosNetworkEvents

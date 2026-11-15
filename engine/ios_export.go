@@ -43,6 +43,11 @@ import (
 // iOS Network Extension: libclient слушает 127.0.0.1, WireGuard шлёт сюда,
 // пакеты utun ходят через wdtt_input / callback. Файл собирается только с -tags ios.
 
+var iosEngineRevision = "development"
+
+//export wdtt_engine_revision
+func wdtt_engine_revision() *C.char { return C.CString(iosEngineRevision) }
+
 var (
 	engineLifeMu       sync.Mutex
 	engineMu           sync.Mutex
@@ -77,7 +82,33 @@ func wdtt_cancel_start() {
 }
 
 //export wdtt_network_event
-func wdtt_network_event(interfaceChanged C.int) { iosPathEvents.notify(interfaceChanged != 0) }
+func wdtt_network_event(interfaceChanged C.int) {
+	if !iosPathEvents.notify(interfaceChanged != 0) {
+		return
+	}
+	engineMu.Lock()
+	dev := engineDev
+	engineMu.Unlock()
+	if dev == nil {
+		return
+	}
+	go func() {
+		engineLifeMu.Lock()
+		defer engineLifeMu.Unlock()
+		engineMu.Lock()
+		current := engineDev == dev
+		engineMu.Unlock()
+		if !current {
+			return
+		}
+		if err := dev.BindUpdate(); err != nil {
+			writeIOSJournal("WireGuard: не удалось обновить UDP-сокет после смены сети", 2)
+			return
+		}
+		dev.SendKeepalivesToPeersWithCurrentKeypair()
+		writeIOSJournal("WireGuard: UDP-сокет обновлён · устройство и ключи сохранены", 1)
+	}()
+}
 
 func setEngineErr(msg string) {
 	engineMu.Lock()
@@ -330,6 +361,7 @@ func wdtt_start(
 	flow := newFlowTUN(mtuN)
 	logger := device.NewLogger(device.LogLevelError, "[wg] ")
 	wgDev := device.NewDevice(flow, conn.NewStdNetBind(), logger)
+	wgDev.DisableSomeRoamingForBrokenMobileSemantics()
 	if err := wgDev.IpcSet(relay.config.uapi); err != nil {
 		wgDev.Close()
 		cancel()

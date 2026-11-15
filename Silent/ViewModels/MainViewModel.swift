@@ -121,6 +121,7 @@ final class MainViewModel: ObservableObject {
     }
 
     init() {
+        logConnection(AppIdentity.buildDescription, key: "app-build")
         theme = api.cachedTheme()
         if !api.isLoggedIn { launchStage = nil }
         vpn.onSceneDiscard = { [weak self] in self?.onSceneDiscard() }

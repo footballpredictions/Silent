@@ -59,6 +59,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private let pathQueue = DispatchQueue(label: "silent.tunnel.path")
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        let engineRevision: String
+        if let revision = wdtt_engine_revision() { engineRevision = String(cString: revision); free(revision) }
+        else { engineRevision = "unknown" }
+        VPNLog.write(AppIdentity.buildDescription + " · движок " + String(engineRevision.prefix(12)), source: "Версия VPN", key: "tunnel-build")
         reasserting = false
         TunnelBridge.setProvider(self)
         guard var config = loadConfig() else {

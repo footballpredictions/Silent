@@ -213,6 +213,16 @@ struct SessionsApiPolicyTest {
             relay(3, "Сетевой модуль вернул ошибку 12", level: .error, source: "Туннель"),
         ])
         precondition(distinctErrors.count == 4, "Distinct failure codes must not disappear in metric grouping")
+        let legacyDynamicKeys = VPNLogRow.grouped([
+            relay(0, "[РЕСУРСЫ] Go heap: 9.5 МБ · GC CPU: 2.1% · задач: 880", key: "resources-2.1"),
+            relay(1, "[РЕСУРСЫ] Go heap: 9.4 МБ · GC CPU: 4.2% · задач: 934", key: "resources-4.2"),
+            relay(2, "[ВОРКЕР #28] Конфиг получен", key: "worker-28"),
+            relay(3, "[ВОРКЕР #37] Конфиг получен", key: "worker-37"),
+            relay(4, "[ГРУППА #5] Запуск воркеров 37–45", key: "group-5"),
+            relay(5, "[ГРУППА #6] Запуск воркеров 46–54", key: "group-6"),
+        ])
+        precondition(legacyDynamicKeys.count == 3 && legacyDynamicKeys.allSatisfy { $0.count == 2 })
+        precondition(legacyDynamicKeys[0].entry.message.contains("4.2%"))
         print("Sessions API policy and VPN journal: PASS")
     }
 }

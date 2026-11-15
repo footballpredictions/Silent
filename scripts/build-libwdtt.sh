@@ -27,6 +27,7 @@ go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"
 go test "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_start_test.go" "$ROOT/engine/platform_limits_ios.go"
 go test "$ROOT/engine/relay_journal.go" "$ROOT/engine/relay_journal_test.go"
 go test -race "$ROOT/engine/network_lifecycle.go" "$ROOT/engine/network_lifecycle_test.go"
+python3 "$ROOT/scripts/test-wireguard-resume.py"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -76,7 +77,8 @@ export CGO_LDFLAGS="-isysroot ${SDK} -arch arm64 -miphoneos-version-min=16.0"
 mkdir -p "$OUT"
 echo "Собираю libwdtt.a …"
 # The temporary module also contains the iOS bridge and shared routing sources.
-go build -mod=mod -tags ios -ldflags '-s -w -checklinkname=0' -buildmode=c-archive -o "$OUT/libwdtt.a" .
+revision="$(git -C "$ROOT" rev-parse HEAD)"
+go build -mod=mod -tags ios -ldflags "-s -w -checklinkname=0 -X main.iosEngineRevision=$revision" -buildmode=c-archive -o "$OUT/libwdtt.a" .
 
 echo "Готово: $OUT/libwdtt.a"
 echo "Дальше в папке ios: xcodegen generate && open Silent.xcodeproj"

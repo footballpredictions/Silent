@@ -86,6 +86,7 @@ options = {
 PY
 
 team="$(/usr/libexec/PlistBuddy -c 'Print :teamID' "$work/ExportOptions.plist")"
+revision="$(git rev-parse HEAD)"
 app_profile="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$work/app.plist")"
 tunnel_profile="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$work/tunnel.plist")"
 mkdir "$work/private_keys"
@@ -109,7 +110,7 @@ xcodebuild -project Silent.xcodeproj -scheme Silent -configuration Release \
   -xcconfig "$work/bootstrap.xcconfig" \
   CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Distribution' DEVELOPMENT_TEAM="$team" \
   SILENT_APP_PROFILE="$app_profile" SILENT_TUNNEL_PROFILE="$tunnel_profile" \
-  CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" archive
+  CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" SILENT_BUILD_REVISION="$revision" archive
 
 app="$work/Silent.xcarchive/Products/Applications/Silent.app"
 test -d "$app/PlugIns/SilentTunnel.appex"
@@ -166,6 +167,9 @@ if not tunnel_info.get("CFBundleDisplayName"):
     sys.exit("Exported tunnel is missing its display name.")
 print("Exported iOS bundle metadata and VPN entitlements verified.")
 PY
+
+python3 scripts/test-release-bundle.py
+python3 scripts/verify-release-bundle.py "$exported_app" "$IOS_BUILD_NUMBER" "$revision"
 
 (
   cd "$work"

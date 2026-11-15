@@ -12,6 +12,17 @@ import (
 var relayLine = regexp.MustCompile(`\[(ВОРКЕР|СЕССИЯ|ГРУППА) #([0-9]{1,3})\] ([^\r\n]*)$`)
 var relayCount = regexp.MustCompile(`\[ДИСП\] Воркер #([0-9]{1,3}) (зарегистрирован \(всего|отключён \(осталось): ([0-9]{1,3})\)$`)
 var relayTraffic = regexp.MustCompile(`\[СТАТИСТИКА\] Активных: ([0-9]{1,3}) \| Трафик: ([0-9]{1,10}\.[0-9]{2}) МБ$`)
+var relayTURNCode = regexp.MustCompile(` · код ([3-6][0-9]{2})$`)
+
+func relayTURNFailure(event, message string) string {
+	if code := relayTURNCode.FindStringSubmatch(event); code != nil {
+		return message + " · код " + code[1]
+	}
+	if strings.HasSuffix(event, " · таймаут") {
+		return message + " · таймаут"
+	}
+	return message
+}
 
 func relayJournalEvent(line string) (message string, level int) {
 	line = strings.TrimSpace(line)
@@ -69,6 +80,14 @@ func relayJournalEvent(line string) (message string, level int) {
 		return prefix + "ошибка канала, повтор подключения", 2
 	case strings.HasPrefix(event, "Ошибка Reader:") || strings.HasPrefix(event, "Ошибка Writer:"):
 		return prefix + "соединение с ретранслятором прервалось", 2
+	case event == "Keepalive: запись не прошла, канал закрывается":
+		return prefix + "DTLS: ошибка keepalive, канал закрывается", 2
+	case event == "Access-check: запись не прошла, канал закрывается":
+		return prefix + "DTLS: ошибка проверки доступа, канал закрывается", 2
+	case strings.HasPrefix(event, "TURN: продление allocation не подтверждено, канал закрывается"):
+		return prefix + relayTURNFailure(event, "TURN: ошибка продления канала"), 2
+	case strings.HasPrefix(event, "TURN: продление permission не подтверждено, канал закрывается"):
+		return prefix + relayTURNFailure(event, "TURN: ошибка продления разрешения"), 2
 	case event == "Все воркеры группы завершились.":
 		return prefix + "воркеры остановлены", 0
 	}

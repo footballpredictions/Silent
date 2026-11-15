@@ -1,0 +1,109 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log"
+	"strings"
+	"testing"
+	"time"
+)
+
+type testKeepaliveConn struct {
+	failPing bool
+	failConf bool
+	writes   chan struct{}
+}
+
+func (c *testKeepaliveConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *testKeepaliveConn) Write(packet []byte) (int, error) {
+	if (len(packet) == 1 && c.failPing) || (len(packet) > 1 && c.failConf) {
+		return 0, io.ErrClosedPipe
+	}
+	select {
+	case c.writes <- struct{}{}:
+	default:
+	}
+	return len(packet), nil
+}
+
+func TestFailedKeepaliveReleasesRegisteredWorker(t *testing.T) {
+	for _, kind := range []string{"ping", "access-check"} {
+		t.Run(kind, func(t *testing.T) {
+			connection := &testKeepaliveConn{failPing: kind == "ping", failConf: kind == "access-check"}
+			ctx, cancel, done := launchKeepalive(context.Background(), connection, true)
+			defer cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("failed keepalive did not finish")
+			}
+			if ctx.Err() == nil {
+				t.Fatal("dead DTLS socket left session alive: reader/writer wait and worker remains registered")
+			}
+		})
+	}
+}
+
+func TestHealthyIdleSessionStaysConnected(t *testing.T) {
+	connection := &testKeepaliveConn{writes: make(chan struct{}, 1)}
+	ctx, cancel, done := launchKeepalive(context.Background(), connection, false)
+	defer cancel()
+	select {
+	case <-connection.writes:
+	case <-time.After(time.Second):
+		t.Fatal("idle session did not send keepalive")
+	}
+	if ctx.Err() != nil {
+		t.Fatal("healthy idle session was disconnected")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("user stop did not release keepalive")
+	}
+}
+
+func TestTURNRenewalFailureReleasesSession(t *testing.T) {
+	for _, event := range []string{"Failed to refresh allocation: %s", "Failed to refresh permissions: %s"} {
+		t.Run(event, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sessionTURNLogger(ctx, cancel).Warnf(event, io.ErrClosedPipe)
+			if ctx.Err() == nil {
+				t.Fatal("TURN renewal failed but allocation remained registered as a working session")
+			}
+		})
+	}
+}
+
+func TestUnrelatedTURNWarningDoesNotDropHealthySession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionTURNLogger(ctx, cancel).Warnf("Unrelated transient warning: %s", io.EOF)
+	if ctx.Err() != nil {
+		t.Fatal("unrelated library warning dropped a healthy channel")
+	}
+}
+
+func TestTURNFailureJournalContainsCodeButNoServerSecrets(t *testing.T) {
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionTURNLogger(ctx, cancel).Warnf("Failed to refresh allocation: %s", errors.New("TURN refresh rejected (437)"))
+	if !strings.Contains(output.String(), "код 437") {
+		t.Fatal("renewal failure code was lost")
+	}
+	ctx, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	sessionTURNLogger(ctx, cancel2).Warnf("Failed to refresh allocation: %s", errors.New("timeout secret-token address=192.0.2.1"))
+	if strings.Contains(output.String(), "secret-token") || strings.Contains(output.String(), "192.0.2.1") {
+		t.Fatal("TURN diagnostics exposed original library error")
+	}
+}

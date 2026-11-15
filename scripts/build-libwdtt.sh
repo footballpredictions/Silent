@@ -43,31 +43,13 @@ xcrun swiftc -target "$(uname -m)-apple-macosx12.0" -parse-as-library "$ROOT/Sil
 python3 "$ROOT/scripts/test-saved-login-probe.py" "$TMP/silent-saved-login-probe"
 rm "$TMP/silent-saved-login-probe"
 cp -R "$SRC/." "$TMP/"
-cp "$EXPORT" "$ROOT/engine/wg_config.go" "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_journal.go" "$TMP/"
+cp "$EXPORT" "$ROOT/engine/wg_config.go" "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_journal.go" "$ROOT/engine/turn_lifecycle.go" "$TMP/"
 cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"
 sed '1s/!android || !arm/(!android || !arm) \&\& !ios/' "$SRC/platform_limits_default.go" > "$TMP/platform_limits_default.go"
 # The shared client targets large Android traffic bursts. Keep the per-worker
 # packet queue bounded independently in the smaller iOS extension process.
-sed -E 's/workerSendBuf[[:space:]]*=[[:space:]]*2048/workerSendBuf = 64/' "$SRC/session.go" > "$TMP/session.go"
-grep -Eq 'workerSendBuf[[:space:]]*=[[:space:]]*64' "$TMP/session.go"
-# A timed-out iOS attempt must release its DTLS reads before the next group starts.
-python3 - "$TMP/session.go" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-source = path.read_text(encoding="utf-8")
-old = (
-    "\tstopDTLS := context.AfterFunc(sessCtx, func() {\n"
-    "\t\t_ = dtlsConn.SetDeadline(time.Now())\n"
-    "\t})\n\tdefer stopDTLS()\n\n"
-)
-before_getconf = "\tif getConfig && configCh != nil {\n"
-if source.count(old) != 1 or source.count(before_getconf) != 1:
-    raise SystemExit("Shared WDTT DTLS cancellation changed. Review the iOS adapter.")
-cancel_read = "\tstopDTLS := context.AfterFunc(sessCtx, func() { _ = pipeB.Close() })\n\tdefer stopDTLS()\n\n"
-path.write_text(source.replace(old, "").replace(before_getconf, cancel_read + before_getconf), encoding="utf-8")
-PY
+python3 "$ROOT/scripts/adapt-ios-session.py" "$SRC/session.go" "$TMP/session.go"
+python3 "$ROOT/scripts/test-ios-session-lifecycle.py" "$TMP/session.go"
 # Shared domain policy and userspace DIRECT transport, same as Android.
 cp "$MONO/android/app/site-router/russian.go" "$TMP/russian.go"
 cp "$MONO/android/app/site-router/packet.go" "$TMP/russian_packet.go"
@@ -76,6 +58,10 @@ cd "$TMP"
 
 echo "Качаю WireGuard…"
 env -u GOOS -u GOARCH go get golang.zx2c4.com/wireguard@v0.0.0-20261006164505-2631ce99a06f gvisor.dev/gvisor@v0.0.0-20250503011706-39ed1f5ac29c
+TURN_SOURCE="$(env -u GOOS -u GOARCH go list -mod=mod -m -f '{{.Dir}}' github.com/pion/turn/v5)"
+python3 "$ROOT/scripts/adapt-ios-turn.py" "$TURN_SOURCE" "$TMP/pion-turn"
+env -u GOOS -u GOARCH go -C "$TMP/pion-turn" test ./internal/client -run TestIOSRefresh -count=1
+env -u GOOS -u GOARCH go mod edit -replace=github.com/pion/turn/v5=./pion-turn
 
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 export GOOS=ios

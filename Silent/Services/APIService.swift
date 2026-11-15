@@ -375,8 +375,13 @@ class APIService: ObservableObject {
     }
 
     func disconnect() async throws {
+        // This is a best-effort stop notification, not a route-discovery job.
+        // Once the local tunnel is gone, WDTT's offline report handles it.
+        guard await VpnManager.shared.isApiTunnelActive() else { return }
         struct Req: Encodable { let device_fingerprint: String }
-        _ = try await requestData("api/vpn/disconnect", method: "POST", body: Req(device_fingerprint: deviceFingerprint))
+        _ = try await requestOnce("api/vpn/disconnect", method: "POST", body: Req(device_fingerprint: deviceFingerprint),
+                                  auth: true, base: PublicApiFailover.tunnelAPI,
+                                  allowRefresh: false, verifyTLS: true, timeout: 2)
     }
 
     func logoutSession(access: String) async {

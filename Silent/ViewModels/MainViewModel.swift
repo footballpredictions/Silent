@@ -633,11 +633,14 @@ final class MainViewModel: ObservableObject {
             vpnState = .disconnecting
             russianListReceived = false
             logConnection("Отключение VPN")
+            // Report while the tunnel still provides the API route. Do not
+            // retain the action lock on public failover after local teardown,
+            // or let a detached old disconnect race a new connect.
+            canRecoverTunnel = false
+            try? await api.disconnect()
             await vpn.disconnect()
             vpnState = vpn.state
             connectedAt = nil
-            canRecoverTunnel = false
-            try? await api.disconnect()
             if vpnState == .disconnected { logConnection("VPN отключён") }
             return
         }

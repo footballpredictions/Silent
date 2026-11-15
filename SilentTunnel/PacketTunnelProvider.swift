@@ -265,7 +265,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         monitor.start(queue: pathQueue)
     }
 
-    private func physicalPathIdentity(_ path: NWPath) -> String? {
+    private func physicalPathIdentity(_ path: Network.NWPath) -> String? {
         let names = Set(path.availableInterfaces.filter {
             $0.type != .other && $0.type != .loopback && path.usesInterfaceType($0.type)
         }.map(\.name))

@@ -107,6 +107,34 @@ func wdtt_network_event(interfaceChanged C.int) {
 		}
 		dev.SendKeepalivesToPeersWithCurrentKeypair()
 		writeIOSJournal("WireGuard: UDP-сокет обновлён · устройство и ключи сохранены", 1)
+		// The server can expire transport keys while iOS is suspended. A new
+		// socket or a TURN renewal does not invalidate the client's old key.
+		// Re-negotiate only ephemeral WG state; keep identity, routes and TUN.
+		status, err := dev.IpcGet()
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(status, "\n") {
+			value, ok := strings.CutPrefix(line, "public_key=")
+			if !ok {
+				continue
+			}
+			var key device.NoisePublicKey
+			if key.FromHex(value) != nil {
+				continue
+			}
+			peer := dev.LookupPeer(key)
+			if peer == nil {
+				continue
+			}
+			peer.ExpireCurrentKeypairs()
+			if err := peer.SendHandshakeInitiation(false); err != nil {
+				writeIOSJournal("WireGuard: не удалось запросить новое рукопожатие после сна", 2)
+				continue
+			}
+			peer.SendKeepalive()
+			writeIOSJournal("WireGuard: запрос свежего рукопожатия после сна", 0)
+		}
 	}()
 }
 

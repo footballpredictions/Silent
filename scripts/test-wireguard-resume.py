@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix='silent-wg-resume-') as directory:
     target = Path(directory)
     (target / 'go.mod').write_text('module wireguard-resume\n\ngo 1.26\n\nrequire golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f\n')
     (target / 'bridge.go').write_text('''package main
-import("sync"; "golang.zx2c4.com/wireguard/device")
+import("sync"; "strings"; "golang.zx2c4.com/wireguard/device")
 var engineMu,engineLifeMu sync.Mutex
 var engineDev *device.Device
 type networkEvents struct{}

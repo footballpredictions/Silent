@@ -31,6 +31,14 @@ func (b *observedBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 }
 
 func TestWakeRestoresWireGuardUDPWithoutReplacingTheDevice(t *testing.T) {
+	testWireGuardWake(t, false)
+}
+
+func TestWakeRestoresDataWhenServerForgotTheOldTransportKeys(t *testing.T) {
+	testWireGuardWake(t, true)
+}
+
+func testWireGuardWake(t *testing.T, serverForgot bool) {
 	var keys [2][32]byte
 	var public [2][]byte
 	var devices [2]*device.Device
@@ -81,6 +89,14 @@ func TestWakeRestoresWireGuardUDPWithoutReplacingTheDevice(t *testing.T) {
 	send(0, 1)
 	send(1, 0)
 	before, _ := devices[0].IpcGet()
+	time.Sleep(50 * time.Millisecond) // A wake is beyond WG's handshake rate limit.
+	if serverForgot {
+		// The phone can retain its transport key while the server expires it
+		// during suspension. TURN/STUN renewal cannot repair this WG state.
+		var clientPublic device.NoisePublicKey
+		copy(clientPublic[:], public[0])
+		devices[1].LookupPeer(clientPublic).ZeroAndFlushAll()
+	}
 	opens := binds[0].opens.Load()
 	// Simulate the UDP socket being invalidated while the VPN device remains up.
 	if e := binds[0].Close(); e != nil {

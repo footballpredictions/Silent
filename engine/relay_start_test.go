@@ -8,27 +8,44 @@ import (
 	"time"
 )
 
+func TestIOSMainRampUsesAndroidSizedGroups(t *testing.T) {
+	groupSize, _, handshakeCap, writers, _, _ := platformLimits()
+	groups := planIOSWorkerGroups([]string{"a", "b", "c", "d"}, "a", 63, groupSize)
+	if len(groups) != 7 || groupSize != 9 {
+		t.Fatalf("63 workers need 7 groups of 9, got %d groups of %d", len(groups), groupSize)
+	}
+	if handshakeCap < groupSize || writers < 4 {
+		t.Fatalf("handshake=%d writers=%d constrain the worker ramp", handshakeCap, writers)
+	}
+	bootstrap := planIOSWorkerGroups([]string{"a"}, "a", 3, groupSize)
+	if len(bootstrap) != 1 || bootstrap[0].size != 3 {
+		t.Fatalf("bootstrap must stay at 3 workers: %+v", bootstrap)
+	}
+}
+
 func TestIOSWorkerPlanRespectsGlobalAndPerHashLimits(t *testing.T) {
+	groupSize, _, _, _, _, _ := platformLimits()
 	for _, tc := range []struct {
-		hashes    []string
-		requested int
-		want      int
+		hashes     []string
+		requested  int
+		want       int
+		wantHashes int
 	}{
-		{[]string{"a", "b", "c", "d"}, 108, 63},
-		{[]string{"a", "b"}, 63, 54},
-		{[]string{"a"}, 63, 27},
-		{[]string{"a"}, 3, 3},
-		{[]string{"a", "b"}, 7, 7},
+		{[]string{"a", "b", "c", "d"}, 108, 63, 4},
+		{[]string{"a", "b"}, 63, 54, 2},
+		{[]string{"a"}, 63, 27, 1},
+		{[]string{"a"}, 3, 3, 1},
+		{[]string{"a", "b"}, 7, 7, 1},
 	} {
 		first := tc.hashes[len(tc.hashes)-1]
-		groups := planIOSWorkerGroups(tc.hashes, first, tc.requested, 3)
+		groups := planIOSWorkerGroups(tc.hashes, first, tc.requested, groupSize)
 		if len(groups) == 0 || groups[0].hash != first {
 			t.Fatal("ramp must start with the relay that returned GETCONF")
 		}
 		total := 0
 		counts := map[string]int{}
 		for _, group := range groups {
-			if group.size < 1 || group.size > 3 || group.firstID != total+1 {
+			if group.size < 1 || group.size > groupSize || group.firstID != total+1 {
 				t.Fatalf("invalid group layout: %+v", group)
 			}
 			total += group.size
@@ -37,8 +54,8 @@ func TestIOSWorkerPlanRespectsGlobalAndPerHashLimits(t *testing.T) {
 				t.Fatalf("hash assigned over 27 workers: %v", counts)
 			}
 		}
-		if total != tc.want || len(counts) != len(tc.hashes) {
-			t.Fatalf("got %d workers across %d hashes, want %d across %d", total, len(counts), tc.want, len(tc.hashes))
+		if total != tc.want || len(counts) != tc.wantHashes {
+			t.Fatalf("got %d workers across %d hashes, want %d across %d", total, len(counts), tc.want, tc.wantHashes)
 		}
 	}
 }

@@ -24,7 +24,7 @@ if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
 fi
 
 go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"
-go test "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_start_test.go"
+go test "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_start_test.go" "$ROOT/engine/platform_limits_ios.go"
 go test "$ROOT/engine/relay_journal.go" "$ROOT/engine/relay_journal_test.go"
 
 TMP="$(mktemp -d)"
@@ -38,6 +38,10 @@ xcrun swiftc -parse-as-library "$ROOT/Silent/Services/PublicApiFailover.swift" \
   "$ROOT/scripts/test-session-api-policy.swift" -o "$TMP/silent-session-policy"
 "$TMP/silent-session-policy"
 rm "$TMP/silent-session-policy"
+xcrun swiftc -target "$(uname -m)-apple-macosx12.0" -parse-as-library "$ROOT/Silent/Services/SavedLoginProbe.swift" \
+  "$ROOT/scripts/test-saved-login-probe.swift" -o "$TMP/silent-saved-login-probe"
+python3 "$ROOT/scripts/test-saved-login-probe.py" "$TMP/silent-saved-login-probe"
+rm "$TMP/silent-saved-login-probe"
 cp -R "$SRC/." "$TMP/"
 cp "$EXPORT" "$ROOT/engine/wg_config.go" "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_journal.go" "$TMP/"
 cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"

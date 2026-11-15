@@ -415,21 +415,35 @@ final class MainViewModel: ObservableObject {
     }
 
     private func loadInitialData() async {
-        await restoreSavedAccount()
-        guard !loggedIn else { return }
+        let tunnelActive = await vpn.isApiTunnelActive()
+        await restoreSavedAccount(quickPublicAttempt: !tunnelActive)
+        guard !Task.isCancelled, !loggedIn else { return }
         if !api.isLoggedIn { launchStage = nil }
         await startBootstrap(reportFailure: false)
-        if bootstrapDeadline != nil { await restoreSavedAccount() }
+        guard !Task.isCancelled else { return }
+        // If bootstrap failed, retain the full public fallback for networks where
+        // a reserve API is reachable but TURN is not.
+        if bootstrapDeadline != nil || api.isLoggedIn { await restoreSavedAccount() }
     }
 
-    private func restoreSavedAccount() async {
+    private func restoreSavedAccount(quickPublicAttempt: Bool = false) async {
         guard api.isLoggedIn, !authLoading else { return }
         authLoading = true
         launchStage = .session
         defer { authLoading = false }
         do {
-            try await loadAccount()
+            if quickPublicAttempt {
+                guard let loaded = try await api.probeSavedProfile() else {
+                    logConnection("Быстрый вход напрямую не подтверждён · пробуем временный VPN")
+                    return
+                }
+                try await loadAccount(loadedProfile: loaded)
+            } else {
+                try await loadAccount()
+            }
             authError = nil
+        } catch is CancellationError {
+            return
         } catch APIError.unauthorized {
             api.logout()
             authError = nil
@@ -441,9 +455,11 @@ final class MainViewModel: ObservableObject {
         }
     }
 
-    private func loadAccount() async throws {
+    private func loadAccount(loadedProfile: UserProfile? = nil) async throws {
         authLoadingTitle = "Загрузка аккаунта…"
-        let loaded = try await api.getProfile()
+        let loaded: UserProfile
+        if let loadedProfile { loaded = loadedProfile }
+        else { loaded = try await api.getProfile() }
         profile = loaded
         selectedServer = UserDefaults.standard.string(forKey: "vpn-server-\(loaded.id)") ?? LocalStore.preferredServer
         rememberLoginSession()
@@ -459,6 +475,7 @@ final class MainViewModel: ObservableObject {
                 }
             }
         }
+        if bootstrapActive { logConnection("Вход выполнен · завершаем временный VPN") }
         await stopBootstrap()
         loggedIn = true
         bootstrapFailed = false

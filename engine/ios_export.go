@@ -214,7 +214,7 @@ func wdtt_start(
 	stopIOSEngine()
 	log.SetOutput(iosJournalWriter{})
 	setEngineErr("")
-	runtime.GOMAXPROCS(2)
+	runtime.GOMAXPROCS(min(4, runtime.NumCPU()))
 	debug.SetGCPercent(50)
 	debug.SetMemoryLimit(24 << 20)
 	socketBufSize = 256 << 10
@@ -233,13 +233,14 @@ func wdtt_start(
 	requested := int(workers)
 	if strings.HasPrefix(devID, "boot:") {
 		mode = "Временный"
-		requested = min(requested, workersPerGroup)
+		requested = min(requested, iosBootstrapWorkers)
 	}
 	requested = max(1, requested)
 	target := min(requested, iosMaxWorkers, min(4, len(hashes))*iosMaxWorkersPerHash)
 	writeIOSJournal(fmt.Sprintf("[%s] Хешей=%d, стартовых воркеров=%d, цель=%d (в конфиге: %d)",
 		mode, len(hashes), min(target, workersPerGroup), target, int(workers)), 0)
-	writeIOSJournal(fmt.Sprintf("[КЛИЕНТ] %s %s/%s CPU=%d", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU()), 0)
+	writeIOSJournal(fmt.Sprintf("[КЛИЕНТ] %s %s/%s CPU=%d, параллельно=%d, DTLS=%d, обработчиков=%d",
+		runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.GOMAXPROCS(0), cap(handshakeSem), dispatcherWriteLoops), 0)
 	if dir != "" {
 		_ = os.MkdirAll(dir, 0o700)
 		if os.Chdir(dir) == nil {

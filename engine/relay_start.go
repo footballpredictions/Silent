@@ -11,6 +11,7 @@ var errIOSRelayConfigTimeout = errors.New("Ретрансляторы не по�
 const (
 	iosMaxWorkers        = 63
 	iosMaxWorkersPerHash = 27
+	iosBootstrapWorkers  = 3
 )
 
 type iosWorkerGroup struct {

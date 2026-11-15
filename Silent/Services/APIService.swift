@@ -243,6 +243,18 @@ class APIService: ObservableObject {
         return try await request(PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint))
     }
 
+    /// Do not walk every public endpoint before bootstrap on an unreachable Wi-Fi network.
+    func probeSavedProfile() async throws -> UserProfile? {
+        guard let token = accessToken, !token.isEmpty else { return nil }
+        let path = PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint)
+        guard let url = URL(string: "\(PublicApiFailover.hiveHttps)/\(path)") else { return nil }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        guard let data = try await SavedLoginProbe.fetch(url: url, token: token, appVersion: version) else { return nil }
+        // A probe must never restore a profile after another action replaced the login.
+        guard accessToken == token else { throw CancellationError() }
+        return try? JSONDecoder().decode(UserProfile.self, from: data)
+    }
+
     func getTheme() async throws -> ThemeData {
         let data = try await requestData("api/vpn/theme", auth: false)
         defaults.set(data, forKey: "cached_theme_json")

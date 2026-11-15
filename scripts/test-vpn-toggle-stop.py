@@ -29,6 +29,7 @@ enum PublicApiFailover { static let tunnelAPI = "http://10.66.66.1:8000" }
     let deviceFingerprint = "fixture"
     var notifiedOnLiveTunnel = false
     var notifications = 0
+    var failNotification = false
     func requestData<T:Encodable>(_ path:String, method:String, body:T) async throws -> Data {
         notifications += 1
         notifiedOnLiveTunnel = VpnManager.shared.state == .connected
@@ -42,6 +43,7 @@ enum PublicApiFailover { static let tunnelAPI = "http://10.66.66.1:8000" }
         precondition(timeout <= 2 && !allowRefresh, "Stop must not enter public failover/token refresh")
         notifications += 1
         notifiedOnLiveTunnel = VpnManager.shared.state == .connected
+        if failNotification { throw URLError(.timedOut) }
         return Data()
     }
 '''
@@ -85,6 +87,18 @@ suffix = '''
         vm.vpnState = .connected
         await vm.toggleVPN()
         guard !vm.vpnActionInProgress, vm.vpnState == .disconnected, vm.api.notifications == 2 else { exit(1) }
+        // A notification error must still turn VPN off and release the action.
+        vm.vpn.state = .connected
+        vm.vpnState = .connected
+        vm.api.failNotification = true
+        await vm.toggleVPN()
+        guard !vm.vpnActionInProgress, vm.vpnState == .disconnected else { exit(1) }
+        let notified = vm.api.notifications
+        try await vm.api.disconnect()
+        guard vm.api.notifications == notified else {
+            print("FAIL: already stopped VPN attempted offline API notification")
+            exit(1)
+        }
         print("PASS: repeated manual stop releases the switch and never notifies through an offline route")
     }
 }

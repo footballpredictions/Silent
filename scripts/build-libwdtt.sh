@@ -26,6 +26,7 @@ fi
 go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"
 go test "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_start_test.go" "$ROOT/engine/platform_limits_ios.go"
 go test "$ROOT/engine/relay_journal.go" "$ROOT/engine/relay_journal_test.go"
+go test -race "$ROOT/engine/network_lifecycle.go" "$ROOT/engine/network_lifecycle_test.go"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -44,6 +45,7 @@ python3 "$ROOT/scripts/test-saved-login-probe.py" "$TMP/silent-saved-login-probe
 rm "$TMP/silent-saved-login-probe"
 cp -R "$SRC/." "$TMP/"
 cp "$EXPORT" "$ROOT/engine/wg_config.go" "$ROOT/engine/relay_start.go" "$ROOT/engine/relay_journal.go" "$ROOT/engine/turn_lifecycle.go" "$TMP/"
+cp "$ROOT/engine/network_lifecycle.go" "$TMP/"
 cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"
 sed '1s/!android || !arm/(!android || !arm) \&\& !ios/' "$SRC/platform_limits_default.go" > "$TMP/platform_limits_default.go"
 # The shared client targets large Android traffic bursts. Keep the per-worker

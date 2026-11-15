@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Network
 import NetworkExtension
 
 @_cdecl("silent_relay_event")
@@ -51,8 +52,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var handshakeCheck: Task<Void, Never>?
     private var bootstrapExpiry: Task<Void, Never>?
     private var bootstrapDeadline: Date?
+    private let engineQueue = DispatchQueue(label: "silent.tunnel.engine", qos: .userInitiated)
+    private var paymentSwitch: Task<Void, Never>?
+    private var paymentSwitchID: UUID?
+    private var pathMonitor: NWPathMonitor?
+    private let pathQueue = DispatchQueue(label: "silent.tunnel.path")
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        reasserting = false
         TunnelBridge.setProvider(self)
         guard var config = loadConfig() else {
             let text = "Не удалось прочитать настройки VPN"
@@ -85,6 +92,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         try? FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
         wdtt_set_output(silent_packet_out)
         wdtt_set_journal(silent_relay_event)
+        wdtt_set_start_timeout(config.paymentRouting == true ? 12 : 0)
         let code = config.hashes.joined(separator: ",").withCString { hashes in
             config.password.withCString { password in
                 config.deviceId.withCString { deviceId in
@@ -146,6 +154,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                     guard !Task.isCancelled else { completionHandler(CancellationError()); return }
                     if wdtt_has_handshake() != 0 {
                         VPNLog.write("Рукопожатие WireGuard подтверждено", level: .success)
+                        self?.startPathMonitor()
                         self?.startPolicyRefresh()
                         self?.scheduleBootstrapExpiry(config.bootstrapDuration, payment: config.paymentRouting == true)
                         completionHandler(nil)
@@ -189,6 +198,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             writeError("iOS завершила VPN (код остановки \(reason.rawValue))")
         }
         reading = false
+        pathMonitor?.cancel()
+        pathMonitor = nil
         handshakeCheck?.cancel()
         handshakeCheck = nil
         bootstrapExpiry?.cancel()
@@ -197,10 +208,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         policyRefresh?.cancel()
         policyRefresh = nil
         receivedPolicy = nil
+        paymentSwitch?.cancel()
+        paymentSwitch = nil
+        paymentSwitchID = nil
         activeConfig = nil
         TunnelBridge.setProvider(nil)
-        wdtt_stop()
-        completionHandler()
+        wdtt_cancel_start()
+        engineQueue.async { wdtt_stop(); completionHandler() }
     }
 
     private func readLoop() {
@@ -217,11 +231,75 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    override func sleep(completionHandler: @escaping () -> Void) {
+        VPNLog.write("Устройство переходит в сон", source: "Сеть")
+        completionHandler()
+    }
+
+    override func wake() {
+        guard reading else { return }
+        VPNLog.write("Устройство проснулось · проверяем привязку каналов к сети", source: "Сеть")
+        wdtt_network_event(0)
+    }
+
+    private func startPathMonitor() {
+        pathMonitor?.cancel()
+        let monitor = NWPathMonitor()
+        var previous: String?
+        var wasUnavailable = false
+        monitor.pathUpdateHandler = { [weak self, weak monitor] path in
+            guard let self, let monitor, self.pathMonitor === monitor, self.reading else { return }
+            guard path.status == .satisfied else { wasUnavailable = true; return }
+            guard let identity = self.physicalPathIdentity(path) else { return }
+            if let previous, previous != identity {
+                VPNLog.write("Физическая сеть изменилась · обновляем привязанные к ней UDP-сокеты", source: "Сеть")
+                wdtt_network_event(1)
+            } else if wasUnavailable {
+                VPNLog.write("Сеть вернулась · проверяем прежние каналы", source: "Сеть")
+                wdtt_network_event(0)
+            }
+            previous = identity
+            wasUnavailable = false
+        }
+        pathMonitor = monitor
+        monitor.start(queue: pathQueue)
+    }
+
+    private func physicalPathIdentity(_ path: NWPath) -> String? {
+        let names = Set(path.availableInterfaces.filter {
+            $0.type != .other && $0.type != .loopback && path.usesInterfaceType($0.type)
+        }.map(\.name))
+        guard !names.isEmpty else { return nil }
+        var first: UnsafeMutablePointer<ifaddrs>?
+        var values: [String] = []
+        if getifaddrs(&first) == 0 {
+            defer { if let first { freeifaddrs(first) } }
+            var current = first
+            while let entry = current {
+                defer { current = entry.pointee.ifa_next }
+                let name = String(cString: entry.pointee.ifa_name)
+                guard names.contains(name), let address = entry.pointee.ifa_addr,
+                      [AF_INET, AF_INET6].contains(Int32(address.pointee.sa_family)) else { continue }
+                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    values.append(name + ":" + String(cString: host))
+                }
+            }
+        }
+        // Addresses are compared only in memory, never written to the journal.
+        return names.sorted().joined(separator: ",") + "|" + values.sorted().joined(separator: ",")
+    }
+
     private func loadConfig() -> TunnelConfig? {
         AppIdentity.readTunnelConfig()
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        if let request = try? JSONDecoder().decode(PaymentExitSwitch.Request.self, from: messageData), request.valid {
+            switchPaymentExit(request.host, completionHandler: completionHandler)
+            return
+        }
         if messageData == RegistrationTunnelRoute.request {
             enableRegistrationInternet(completionHandler)
             return
@@ -248,6 +326,91 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             completionHandler?(error == nil ? Data("ok".utf8) : nil)
         }
+    }
+
+    private func switchPaymentExit(_ host: String, completionHandler: ((Data?) -> Void)?) {
+        guard reading, paymentSwitch == nil, var config = activeConfig, config.paymentRouting == true,
+              let deadline = bootstrapDeadline, deadline > Date() else {
+            completionHandler?(nil)
+            return
+        }
+        config.serverIP = host
+        let target = config
+        reasserting = true
+        let switchID = UUID()
+        paymentSwitchID = switchID
+        VPNLog.write("Оплата · меняем выход внутри временного VPN")
+        paymentSwitch = Task { [weak self] in
+            guard let self else { completionHandler?(nil); return }
+            defer {
+                if self.paymentSwitchID == switchID { self.paymentSwitch = nil; self.paymentSwitchID = nil }
+            }
+            do {
+                let updated: TunnelConfig = try await withCheckedThrowingContinuation { continuation in
+                    self.engineQueue.async {
+                        guard self.reading else { continuation.resume(throwing: CancellationError()); return }
+                        do { continuation.resume(returning: try self.startPaymentEngine(target)) }
+                        catch { continuation.resume(throwing: error) }
+                    }
+                }
+                try Task.checkCancellation()
+                guard self.reading, self.bootstrapDeadline == deadline, deadline > Date() else { throw CancellationError() }
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    self.setTunnelNetworkSettings(self.makeSettings(updated)) { error in
+                        if let error { continuation.resume(throwing: error) }
+                        else { continuation.resume() }
+                    }
+                }
+                for _ in 0..<60 {
+                    try Task.checkCancellation()
+                    guard self.reading, deadline > Date() else { throw CancellationError() }
+                    if wdtt_has_handshake() != 0 {
+                        self.activeConfig = updated
+                        if let url = AppIdentity.configURL { try JSONEncoder().encode(updated).write(to: url, options: .atomic) }
+                        self.reasserting = false
+                        VPNLog.write("Оплата · новый выход подтвердил WireGuard", level: .success)
+                        completionHandler?(try? JSONEncoder().encode(PaymentExitSwitch.Reply(success: true, error: nil)))
+                        return
+                    }
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                }
+                throw self.tunnelError("Новый выход не ответил на рукопожатие")
+            } catch {
+                // Keep the outer iOS tunnel and its original deadline alive so
+                // the app can try the next exit without another VPN profile start.
+                let message = Task.isCancelled ? "Переключение отменено" : error.localizedDescription
+                completionHandler?(try? JSONEncoder().encode(PaymentExitSwitch.Reply(success: false, error: message)))
+            }
+        }
+    }
+
+    private func startPaymentEngine(_ original: TunnelConfig) throws -> TunnelConfig {
+        var config = original
+        let work = AppIdentity.workURL?.path ?? NSTemporaryDirectory()
+        wdtt_set_start_timeout(12)
+        let code = config.hashes.joined(separator: ",").withCString { hashes in
+            config.password.withCString { password in
+                config.deviceId.withCString { deviceId in
+                    config.serverIP.withCString { ip in
+                        work.withCString { dir in
+                            wdtt_start(ip, Int32(config.serverPort), hashes, password, deviceId,
+                                       Int32(config.workers), Int32(config.mtu), dir)
+                        }
+                    }
+                }
+            }
+        }
+        guard code == 0 else {
+            let message: String
+            if let error = wdtt_last_error() { message = String(cString: error); free(error) }
+            else { message = "Не удалось подготовить новый выход" }
+            throw tunnelError(message)
+        }
+        guard let address = wdtt_assigned_address() else { throw tunnelError("Выход не выдал адрес VPN") }
+        config.address = String(cString: address)
+        free(address)
+        guard applyRussianPolicy(config.russian) else { throw tunnelError("Не удалось применить маршруты выхода") }
+        return config
     }
 
     private func enableRegistrationInternet(_ completionHandler: ((Data?) -> Void)?) {

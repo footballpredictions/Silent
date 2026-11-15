@@ -116,15 +116,14 @@ private struct SubscriptionPage: View {
             .padding(16)
         }
         .task { await vm.loadPlans() }
-        .onDisappear { vm.showSubscriptionShop = false }
+        .onDisappear { vm.showSubscriptionShop = false; vm.cancelRenewalPayment() }
         .alert(theme?.subscription_renewal_title ?? "Продление подписки", isPresented: Binding(
             get: { vm.renewalPreview != nil }, set: { if !$0 { vm.renewalPreview = nil } }
         )) {
             Button(theme?.subscription_renewal_confirm_label ?? "Перейти к оплате") {
-                if let plan = vm.renewalPlan { Task { await vm.buy(plan) } }
-                vm.renewalPreview = nil
+                vm.confirmRenewalPayment()
             }
-            Button("Отмена", role: .cancel) { vm.renewalPreview = nil }
+            Button("Отмена", role: .cancel) { vm.cancelRenewalPayment() }
         } message: { Text(vm.renewalPreview?.message ?? "") }
     }
 

@@ -75,6 +75,7 @@ final class MainViewModel: ObservableObject {
     private var paymentTunnelActive = false
     private var paymentCleanupActive = false
     private var savedMainForPayment: TunnelConfig?
+    private var preparedPaymentRoute: PaymentRouteReservation<(base: String, preview: PaymentPreview)>?
     private let paymentRestoreKey = "ios-payment-main-restore"
     private let vpn = VpnManager.shared
     private var siteRoutingUpdate: Task<Void, Never>?
@@ -155,6 +156,7 @@ final class MainViewModel: ObservableObject {
     }
 
     private func onSceneDiscard() {
+        preparedPaymentRoute = nil
         canRecoverTunnel = false
         tunnelRecovery?.cancel()
         paymentTask?.cancel()
@@ -810,7 +812,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func buy(_ planId: String) async {
-        guard busyPlan == nil, paymentTask == nil, !paymentTunnelActive, !paymentCleanupActive, !vpnActionInProgress,
+        guard busyPlan == nil, paymentTask == nil, !paymentCleanupActive, !vpnActionInProgress, payment != .waiting,
               vpnState == .connected || vpnState == .disconnected, let account = profile?.id else { return }
         busyPlan = planId
         paymentError = nil
@@ -828,7 +830,14 @@ final class MainViewModel: ObservableObject {
     private func openPayment(_ planId: String, account: String) async {
         defer { busyPlan = nil; paymentTask = nil }
         do {
-            let route = try await preparePaymentRoute(planId)
+            let route: (base: String, preview: PaymentPreview)
+            if let ready = preparedPaymentRoute?.reuse(account: account, plan: planId, connection: vpn.connectionIdentity) {
+                route = ready
+                logConnection("Оплата · используем готовый маршрут расчёта")
+            } else {
+                route = try await preparePaymentRoute(planId)
+            }
+            preparedPaymentRoute = nil
             let base = route.base
             try Task.checkCancellation()
             guard profile?.id == account else { throw CancellationError() }
@@ -863,14 +872,19 @@ final class MainViewModel: ObservableObject {
             }
         }
         try Task.checkCancellation()
-        let routes = BootstrapLaunch.paymentHosts.indices.compactMap { index in
+        let preferredExit = UserDefaults.standard.string(forKey: "payment-preferred-exit") ?? BootstrapLaunch.paymentHosts[1]
+        let orderedHosts = BootstrapLaunch.paymentHosts.indices.sorted {
+            (BootstrapLaunch.paymentHosts[$0] == preferredExit ? 0 : 1, $0) <
+            (BootstrapLaunch.paymentHosts[$1] == preferredExit ? 0 : 1, $1)
+        }
+        let routes = orderedHosts.compactMap { index in
             BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
                                           password: bootstrapPassword, cell: index, payment: true)
         }
         guard !routes.isEmpty else {
             throw APIError.server("Не удалось проверить доступ к ЮMoney и API оплаты. Попробуйте другую сеть.")
         }
-        if current == .connected {
+        if current == .connected, !paymentTunnelActive {
             guard let config = AppIdentity.readTunnelConfig(), config.bootstrapDuration == nil else { throw APIError.network }
             savedMainForPayment = config
             if let account = profile?.id, let data = try? JSONEncoder().encode(PaymentMainSnapshot(account: account, config: config)) {
@@ -878,14 +892,23 @@ final class MainViewModel: ObservableObject {
             }
         }
         paymentTunnelActive = true
-        await vpn.disconnect()
+        if AppIdentity.readTunnelConfig()?.paymentRouting != true { await vpn.disconnect() }
         var preview: PaymentPreview?
         let picked = try await PaymentRoute.choose(Array(routes.enumerated()), start: { entry in
             let (index, route) = entry
-            guard vpn.state == .disconnected else { throw APIError.network }
             logConnection("Оплата · проверка временного маршрута №\(index + 1)")
             do {
-                try await vpn.connect(route, timeout: 48)
+                if [.connected, .reconnecting].contains(vpn.state), AppIdentity.readTunnelConfig()?.paymentRouting == true {
+                    if vpn.state != .connected || AppIdentity.readTunnelConfig()?.serverIP != route.serverIP {
+                        if !(try await vpn.switchPaymentExit(to: route.serverIP)) {
+                            await vpn.disconnect()
+                            try await vpn.connect(route, timeout: 48)
+                        }
+                    }
+                } else {
+                    guard vpn.state == .disconnected else { throw APIError.network }
+                    try await vpn.connect(route, timeout: 48)
+                }
                 logConnection("Оплата · WireGuard готов · ожидаем доступ к шлюзу")
                 var gatewayError: Error = APIError.network
                 let ready = try await PaymentRoute.waitUntilReady(attempts: 6) {
@@ -922,10 +945,14 @@ final class MainViewModel: ObservableObject {
             return preview != nil && vpn.state == .connected
         }, stop: {
             logConnection("Оплата · маршрут не подтвердился", level: .error)
+            if [.connected, .reconnecting].contains(vpn.state), AppIdentity.readTunnelConfig()?.paymentRouting == true {
+                return true
+            }
             await vpn.disconnect()
             return vpn.state == .disconnected
         })
         if let picked, let preview {
+            UserDefaults.standard.set(routes[picked].serverIP, forKey: "payment-preferred-exit")
             logConnection("Оплата · ЮMoney доступна через маршрут №\(picked + 1)", level: .success)
             return (PublicApiFailover.tunnelAPI, preview)
         }
@@ -968,6 +995,7 @@ final class MainViewModel: ObservableObject {
     }
 
     private func finishPaymentTunnel(account: String?) async {
+        preparedPaymentRoute = nil
         guard paymentTunnelActive, !paymentCleanupActive else { return }
         paymentCleanupActive = true
         defer { paymentCleanupActive = false }
@@ -1015,8 +1043,11 @@ final class MainViewModel: ObservableObject {
             defer { paymentTask = nil }
             do {
                 let route = try await preparePaymentRoute(planId)
-                await releasePaymentTunnel()
                 try Task.checkCancellation()
+                if let account = profile?.id, let connection = vpn.connectionIdentity {
+                    preparedPaymentRoute = PaymentRouteReservation(account: account, plan: planId,
+                        connection: connection, expires: Date().addingTimeInterval(60), value: route)
+                }
                 renewalPlan = planId
                 renewalPreview = route.preview
                 payment = .idle
@@ -1030,6 +1061,21 @@ final class MainViewModel: ObservableObject {
         }
         paymentTask = task
         await task.value
+    }
+
+    func confirmRenewalPayment() {
+        guard let plan = renewalPlan else { return }
+        renewalPlan = nil
+        renewalPreview = nil
+        Task { await buy(plan) }
+    }
+
+    func cancelRenewalPayment() {
+        guard renewalPlan != nil else { return }
+        renewalPlan = nil
+        renewalPreview = nil
+        preparedPaymentRoute = nil
+        if paymentTask == nil { Task { await releasePaymentTunnel() } }
     }
 
     func startPoll(_ label: String) {

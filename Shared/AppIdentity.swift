@@ -26,6 +26,20 @@ enum VPNSceneOwnership {
     }
 }
 
+enum PaymentExitSwitch {
+    static let hosts = ["87.58.213.193", "78.17.74.27", "89.37.192.241", "89.125.188.100"]
+    struct Request: Codable {
+        let command: String
+        let host: String
+        init(host: String) { command = "payment-exit"; self.host = host }
+        var valid: Bool { command == "payment-exit" && PaymentExitSwitch.hosts.contains(host) }
+    }
+    struct Reply: Codable {
+        let success: Bool
+        let error: String?
+    }
+}
+
 enum RegistrationTunnelRoute {
     static let request = Data("registration-routing".utf8)
     static let internetDNS = ["1.1.1.1", "9.9.9.9"]

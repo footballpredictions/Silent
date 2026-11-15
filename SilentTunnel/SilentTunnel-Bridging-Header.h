@@ -15,6 +15,9 @@ int wdtt_start(
 );
 char *wdtt_assigned_address(void);
 int wdtt_has_handshake(void);
+void wdtt_set_start_timeout(int seconds);
+void wdtt_cancel_start(void);
+void wdtt_network_event(int interfaceChanged);
 void wdtt_expand_workers(void);
 int wdtt_set_russian_policy(const char *json);
 void wdtt_stop(void);

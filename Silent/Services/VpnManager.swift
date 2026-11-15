@@ -33,6 +33,12 @@ final class VpnManager: ObservableObject {
 
     private var manager: NETunnelProviderManager?
 
+    var connectionIdentity: String? {
+        guard state == .connected, let date = manager?.connection.connectedDate,
+              let config = AppIdentity.readTunnelConfig() else { return nil }
+        return "\(date.timeIntervalSinceReferenceDate)|\(config.serverIP)"
+    }
+
     func refresh() async {
         guard let mgr = try? await load() else { return }
         state = Self.map(mgr.connection.status)
@@ -202,6 +208,29 @@ final class VpnManager: ObservableObject {
             do { try await Task.sleep(nanoseconds: 250_000_000) } catch { break }
         }
         state = Self.map(connection.status)
+    }
+
+    func switchPaymentExit(to host: String) async throws -> Bool {
+        let mgr = try await load()
+        guard [.connected, .reasserting].contains(mgr.connection.status),
+              AppIdentity.readTunnelConfig()?.paymentRouting == true,
+              let session = mgr.connection as? NETunnelProviderSession else { throw APIError.network }
+        let request = PaymentExitSwitch.Request(host: host)
+        guard request.valid else { throw APIError.invalidURL }
+        let data = try JSONEncoder().encode(request)
+        let reply: PaymentExitSwitch.Reply? = try await withCheckedThrowingContinuation { continuation in
+            do {
+                try session.sendProviderMessage(data) { data in
+                    continuation.resume(returning: data.flatMap { try? JSONDecoder().decode(PaymentExitSwitch.Reply.self, from: $0) })
+                }
+            } catch { continuation.resume(throwing: error) }
+        }
+        state = Self.map(session.status)
+        guard let reply else { return false } // An extension from the previous installed build.
+        guard reply.success else { throw APIError.server(reply.error ?? "Не удалось переключить временный маршрут") }
+        // The provider may have just cleared reasserting before its reply.
+        state = .connected
+        return true
     }
 
     func updateSiteRouting(rules: [String], whitelist: Bool, russianEnabled: Bool) async throws {

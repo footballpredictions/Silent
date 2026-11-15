@@ -48,6 +48,28 @@ def adapt(source):
     replace_once(context_setup, "")
     marker = "\tturnConn, endpoint, err := dialUDPTURN(ctx, creds.TurnURLs, sessionID, tp)\n"
     replace_once(marker, context_setup + marker)
+    replace_once("\tstopTransport := context.AfterFunc(ctx, func() { _ = turnConn.Close() })",
+                 "\tstopTransport := context.AfterFunc(sessCtx, func() { _ = turnConn.Close() })")
+    replace_once("\tdefer tc.Close()\n", "\tdefer tc.Close()\n"
+                 "\tstopTransactions := context.AfterFunc(sessCtx, tc.Close)\n\tdefer stopTransactions()\n")
+    replace_once("\td.Register(slot)\n\tdefer d.Unregister(slot)\n",
+                 "\td.Register(slot)\n"
+                 "\tvar removeOnce sync.Once\n"
+                 "\tremoveSlot := func() { removeOnce.Do(func() { d.Unregister(slot) }) }\n"
+                 "\tstopSlot := context.AfterFunc(sessCtx, removeSlot)\n"
+                 "\tdefer stopSlot()\n\tdefer removeSlot()\n")
+    begin = source.index("\tgo func() {", source.index("// Keepalive goroutine (TURN binding request)"))
+    end = source.index("\n\t// Relay ↔ Pipe proxy", begin)
+    source = source[:begin] + '''\tgo func() {
+\t\tdefer sessionWg.Done()
+\t\trunIOSBindingChecks(sessCtx, sessionID, func() (net.Addr, error) {
+\t\t\tstarted := time.Now()
+\t\t\taddress, probeErr := tc.SendBindingRequest()
+\t\t\tif quality != nil { quality.observe(time.Since(started), probeErr, time.Now()) }
+\t\t\treturn address, probeErr
+\t\t}, sessCancel)
+\t}()
+''' + source[end:]
     replace_once("\t\tLoggerFactory:          &NullLoggerFactory{},",
                  "\t\tLoggerFactory:          &iosTURNLoggerFactory{ctx: sessCtx, cancel: sessCancel, sessionID: sessionID},")
     return source

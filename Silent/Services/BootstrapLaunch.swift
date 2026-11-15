@@ -4,7 +4,7 @@ enum BootstrapLaunch {
     static let duration = RegistrationTunnelRoute.duration
     // Same public overlay nodes as Android.
     static let cellHosts = ["87.58.213.193", "78.17.74.27"]
-    static let paymentHosts = cellHosts + ["89.37.192.241", PublicApiFailover.hiveIP]
+    static let paymentHosts = PaymentExitSwitch.hosts
     static let paymentDNS = ["77.88.8.8", "77.88.8.1"]
 
     static func callHash(_ input: String) -> String? {

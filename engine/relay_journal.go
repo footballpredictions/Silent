@@ -84,6 +84,10 @@ func relayJournalEvent(line string) (message string, level int) {
 		return prefix + "DTLS: ошибка keepalive, канал закрывается", 2
 	case event == "Access-check: запись не прошла, канал закрывается":
 		return prefix + "DTLS: ошибка проверки доступа, канал закрывается", 2
+	case event == "TURN: NAT изменился, старый канал недействителен":
+		return prefix + "сеть: NAT изменился, канал обновляется", 0
+	case event == "TURN: физическая сеть изменилась, нужен новый сокет":
+		return prefix + "сеть: обновляем UDP-сокет после смены интерфейса", 0
 	case strings.HasPrefix(event, "TURN: продление allocation не подтверждено, канал закрывается"):
 		return prefix + relayTURNFailure(event, "TURN: ошибка продления канала"), 2
 	case strings.HasPrefix(event, "TURN: продление permission не подтверждено, канал закрывается"):

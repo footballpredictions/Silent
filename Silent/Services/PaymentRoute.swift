@@ -1,5 +1,21 @@
 import Foundation
 
+/// A read-only calculation can hand its live route to the subsequent init call.
+/// Never share that route across accounts, plans, connections or expiry.
+struct PaymentRouteReservation<Value> {
+    let account: String
+    let plan: String
+    let connection: String
+    let expires: Date
+    let value: Value
+
+    func reuse(account: String, plan: String, connection: String?, now: Date = Date()) -> Value? {
+        guard self.account == account, self.plan == plan, self.connection == connection,
+              now < expires else { return nil }
+        return value
+    }
+}
+
 enum PaymentRoute {
     static let site = URL(string: "https://yoomoney.ru/")!
 

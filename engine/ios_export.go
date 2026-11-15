@@ -44,19 +44,40 @@ import (
 // пакеты utun ходят через wdtt_input / callback. Файл собирается только с -tags ios.
 
 var (
-	engineLifeMu  sync.Mutex
-	engineMu      sync.Mutex
-	engineCancel  context.CancelFunc
-	engineDone    <-chan struct{}
-	engineExpand  chan struct{}
-	engineDev     *device.Device
-	engineAddress string
-	engineTUN     *flowTUN
-	outputCb      C.packet_cb
-	journalCb     C.journal_cb
-	iosPause      int32
-	engineError   string
+	engineLifeMu       sync.Mutex
+	engineMu           sync.Mutex
+	engineCancel       context.CancelFunc
+	engineDone         <-chan struct{}
+	engineExpand       chan struct{}
+	engineDev          *device.Device
+	engineAddress      string
+	engineTUN          *flowTUN
+	outputCb           C.packet_cb
+	journalCb          C.journal_cb
+	iosPause           int32
+	engineError        string
+	engineStartTimeout time.Duration
 )
+
+//export wdtt_set_start_timeout
+func wdtt_set_start_timeout(seconds C.int) {
+	engineMu.Lock()
+	defer engineMu.Unlock()
+	engineStartTimeout = time.Duration(max(0, min(30, int(seconds)))) * time.Second
+}
+
+//export wdtt_cancel_start
+func wdtt_cancel_start() {
+	engineMu.Lock()
+	cancel := engineCancel
+	engineMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+//export wdtt_network_event
+func wdtt_network_event(interfaceChanged C.int) { iosPathEvents.notify(interfaceChanged != 0) }
 
 func setEngineErr(msg string) {
 	engineMu.Lock()
@@ -212,10 +233,14 @@ func wdtt_start(
 	engineLifeMu.Lock()
 	defer engineLifeMu.Unlock()
 	stopIOSEngine()
+	engineMu.Lock()
+	startupTimeout := engineStartTimeout
+	engineStartTimeout = 0
+	engineMu.Unlock()
 	log.SetOutput(iosJournalWriter{})
 	setEngineErr("")
 	runtime.GOMAXPROCS(min(4, runtime.NumCPU()))
-	debug.SetGCPercent(50)
+	debug.SetGCPercent(100)
 	debug.SetMemoryLimit(24 << 20)
 	socketBufSize = 256 << 10
 
@@ -269,8 +294,14 @@ func wdtt_start(
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	engineMu.Lock()
+	engineCancel = cancel
+	engineMu.Unlock()
 	var attempt int
 	relay, configErr := tryIOSRelayHashes(ctx, hashes, func(ctx context.Context, hash string, budget time.Duration) (iosRelay, error) {
+		if startupTimeout > 0 {
+			budget = min(budget, startupTimeout)
+		}
 		attempt++
 		writeIOSJournal(fmt.Sprintf("[РЕТРАНСЛЯТОР #%d] Запрос параметров VK · ожидание до %.0f с", attempt, budget.Seconds()), 0)
 		startedAt := time.Now()
@@ -442,6 +473,7 @@ func startIOSRelay(parent context.Context, peer *net.UDPAddr, groups []iosWorker
 func reportIOSWorkers(ctx context.Context, disp *Dispatcher, stats *Stats, target int) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	reports := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -452,6 +484,13 @@ func reportIOSWorkers(ctx context.Context, disp *Dispatcher, stats *Stats, targe
 			down := float64(stats.totalBytesDown.Load()) / mb
 			writeIOSJournal(fmt.Sprintf("[СТАТИСТИКА] Активных: %d/%d | Трафик: %.2f МБ (↑ %.2f · ↓ %.2f)",
 				len(*disp.workers.Load()), target, up+down, up, down), 0)
+			reports++
+			if reports%6 == 0 {
+				var memory runtime.MemStats
+				runtime.ReadMemStats(&memory)
+				writeIOSJournal(fmt.Sprintf("[РЕСУРСЫ] Go heap: %.1f МБ · GC CPU: %.1f%% · задач: %d",
+					float64(memory.HeapAlloc)/mb, memory.GCCPUFraction*100, runtime.NumGoroutine()), 0)
+			}
 		}
 	}
 }

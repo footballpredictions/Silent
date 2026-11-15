@@ -23,6 +23,9 @@ int wdtt_start(
 
 char *wdtt_assigned_address(void) { return 0; }
 int wdtt_has_handshake(void) { return 0; }
+void wdtt_set_start_timeout(int seconds) { (void)seconds; }
+void wdtt_cancel_start(void) {}
+void wdtt_network_event(int interfaceChanged) { (void)interfaceChanged; }
 void wdtt_expand_workers(void) {}
 
 void wdtt_stop(void) {}

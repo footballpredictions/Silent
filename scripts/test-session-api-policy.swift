@@ -57,6 +57,11 @@ struct SessionsApiPolicyTest {
         precondition(BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "", cell: 0) == nil)
         let payment = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport", cell: 1, payment: true)
         precondition(payment?.paymentRouting == true && payment?.bootstrapDuration == 300 && local?.paymentRouting == nil)
+        precondition(PaymentExitSwitch.Request(host: BootstrapLaunch.paymentHosts[1]).valid)
+        precondition(!PaymentExitSwitch.Request(host: "192.0.2.99").valid)
+        let badExit = Data("{\"command\":\"other-command\",\"host\":\"78.17.74.27\"}".utf8)
+        let decodedBadExit = try JSONDecoder().decode(PaymentExitSwitch.Request.self, from: badExit)
+        precondition(!decodedBadExit.valid)
         precondition(payment?.dns == ["77.88.8.8", "77.88.8.1"], "Payment DNS should match Android")
         precondition(PaymentConnectivity.accepts(Data("HTTP/1.1 200 OK\r\n".utf8)))
         precondition(PaymentConnectivity.accepts(Data("HTTP/1.1 302 Found\r\n".utf8)))
@@ -72,6 +77,15 @@ struct SessionsApiPolicyTest {
                      "One stalled TLS address must not hide another working YooMoney address")
         let unavailable = await PaymentConnectivity.anyReachable(["bad-a", "bad-b"]) { _ in false }
         precondition(!unavailable)
+        let reservation = PaymentRouteReservation(account: "account", plan: "monthly", connection: "live-exit",
+                                                   expires: Date().addingTimeInterval(60), value: "prepared-api")
+        precondition(reservation.reuse(account: "account", plan: "monthly", connection: "live-exit") == "prepared-api")
+        precondition(reservation.reuse(account: "other", plan: "monthly", connection: "live-exit") == nil)
+        precondition(reservation.reuse(account: "account", plan: "annual", connection: "live-exit") == nil)
+        precondition(reservation.reuse(account: "account", plan: "monthly", connection: nil) == nil)
+        precondition(reservation.reuse(account: "account", plan: "monthly", connection: "new-exit") == nil)
+        precondition(reservation.reuse(account: "account", plan: "monthly", connection: "live-exit",
+                                       now: Date().addingTimeInterval(61)) == nil)
         var readinessChecks = 0
         let routeReady = try await PaymentRoute.waitUntilReady(attempts: 3, delayNanoseconds: 0) {
             readinessChecks += 1

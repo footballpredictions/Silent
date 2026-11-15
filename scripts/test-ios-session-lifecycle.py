@@ -15,6 +15,10 @@ source = Path(sys.argv[1]).read_text(encoding="utf-8")
 start = source.index("\tgo func() {", source.index("// DTLS Keepalive + periodic GETCONF"))
 end = source.index("\n\t// Writer: dispatcher", start)
 loop = source[start:end]
+binding_start = source.index("\tgo func() {", source.index("// Keepalive goroutine (TURN binding request)"))
+binding_end = source.index("\n\t// Relay ↔ Pipe proxy", binding_start)
+binding_loop = source[binding_start:binding_end].replace("10 * time.Second", "5 * time.Millisecond")
+binding_loop = binding_loop.replace("runIOSBindingChecks(", "runTestIOSBindingChecks(")
 with tempfile.TemporaryDirectory(prefix="silent-session-") as directory:
     target = Path(directory)
     (target / "go.mod").write_text("module session-lifecycle\n\ngo 1.26\n\nrequire github.com/pion/logging v0.2.4\n", encoding="utf-8")
@@ -38,6 +42,37 @@ func launchKeepalive(parent context.Context, dtlsConn keepaliveConn, getConfig b
 }
 '''
     (target / "keepalive.go").write_text(prefix + loop + suffix, encoding="utf-8")
+    binding_prefix = '''package main
+import ("context"; "net"; "sync"; "time")
+type bindingQuality struct{}
+func (*bindingQuality) observe(time.Duration,error,time.Time) {}
+func runTestIOSBindingChecks(ctx context.Context, id int, probe func()(net.Addr,error), cancel context.CancelFunc) {
+    timer := time.NewTicker(5*time.Millisecond)
+    defer timer.Stop()
+    runIOSBindingLoop(ctx,id,probe,cancel,timer.C,&iosNetworkEvents{})
+}
+func launchBinding(parent context.Context, tc *testTURNConnection) (context.Context,context.CancelFunc,<-chan struct{}) {
+    sessCtx,sessCancel := context.WithCancel(parent)
+    sessionID := 1
+    _ = sessionID
+    var quality *bindingQuality
+    var sessionWg sync.WaitGroup
+    sessionWg.Add(1)
+'''
+    binding_suffix = '''
+    done := make(chan struct{})
+    go func(){sessionWg.Wait();close(done)}()
+    return sessCtx,sessCancel,done
+}
+'''
+    (target / "binding.go").write_text(binding_prefix + binding_loop + binding_suffix, encoding="utf-8")
+    registration = source[source.index("\td.Register(slot)"):source.index("\n\t// Proxy DTLS")]
+    imports = '"context"; "sync"' if 'sync.' in registration else '"context"'
+    wrapper = f'package main\nimport ({imports})\n'
+    wrapper += 'func holdRegistration(sessCtx context.Context,d *testDispatcher,slot *testWorkerSlot,ready chan struct{},hold <-chan struct{}) {\n'
+    wrapper += registration + '\nclose(ready)\n<-hold\n}\n'
+    (target / "registration.go").write_text(wrapper, encoding="utf-8")
+    shutil.copyfile(root / "engine/network_lifecycle.go", target / "network_lifecycle.go")
     logger_start = source.index("type NullLoggerFactory struct{}")
     logger_end = source.index("// connectedUDPConn", logger_start)
     factory = "&NullLoggerFactory{}"

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,5 +107,94 @@ func TestTURNFailureJournalContainsCodeButNoServerSecrets(t *testing.T) {
 	sessionTURNLogger(ctx, cancel2).Warnf("Failed to refresh allocation: %s", errors.New("timeout secret-token address=192.0.2.1"))
 	if strings.Contains(output.String(), "secret-token") || strings.Contains(output.String(), "192.0.2.1") {
 		t.Fatal("TURN diagnostics exposed original library error")
+	}
+}
+
+type testTURNConnection struct {
+	calls  atomic.Int32
+	rebind bool
+	ready  chan int32
+}
+
+func (c *testTURNConnection) SendBindingRequest() (net.Addr, error) {
+	n := c.calls.Add(1)
+	port := 1000
+	if c.rebind && n > 1 {
+		port = 2000
+	}
+	select {
+	case c.ready <- n:
+	default:
+	}
+	return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: port}, nil
+}
+
+func TestActualBindingLoopInvalidatesReboundNAT(t *testing.T) {
+	connection := &testTURNConnection{rebind: true, ready: make(chan int32, 2)}
+	ctx, cancel, done := launchBinding(context.Background(), connection)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("NAT changed but the actual session kept its expired TURN allocation")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("binding loop did not release cancelled session")
+	}
+}
+
+func TestActualBindingLoopKeepsStableNATAlive(t *testing.T) {
+	connection := &testTURNConnection{ready: make(chan int32, 4)}
+	ctx, cancel, done := launchBinding(context.Background(), connection)
+	defer cancel()
+	for i := 0; i < 3; i++ {
+		select {
+		case <-connection.ready:
+		case <-time.After(time.Second):
+			t.Fatal("binding probe stopped")
+		}
+	}
+	if ctx.Err() != nil {
+		t.Fatal("stable NAT mapping was disconnected")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("binding loop ignored user stop")
+	}
+}
+
+type testWorkerSlot struct{}
+type testDispatcher struct {
+	removed chan struct{}
+	calls   atomic.Int32
+}
+
+func (*testDispatcher) Register(*testWorkerSlot) {}
+func (d *testDispatcher) Unregister(*testWorkerSlot) {
+	if d.calls.Add(1) == 1 {
+		close(d.removed)
+	}
+}
+
+func TestCancelledWorkerStopsReceivingPacketsBeforeCleanupFinishes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := &testDispatcher{removed: make(chan struct{})}
+	ready, hold, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer func() { close(hold); <-done }()
+	go func() { defer close(done); holdRegistration(ctx, d, &testWorkerSlot{}, ready, hold) }()
+	<-ready
+	cancel()
+	select {
+	case <-d.removed:
+	case <-time.After(time.Second):
+		t.Fatal("dead worker stayed registered while TURN cleanup was blocked")
+	}
+	if d.calls.Load() != 1 {
+		t.Fatal("worker unregistered more than once")
 	}
 }

@@ -28,6 +28,7 @@ final class MainViewModel: ObservableObject {
     @Published var bootstrapStarting = false
     @Published private(set) var bootstrapReconnecting = false
     @Published private(set) var bootstrapFailed = false
+    @Published private(set) var bootstrapMailReady = false
     @Published private(set) var connectionLog: [VPNLogEntry] = []
     @Published private(set) var registrationEmail: String?
     @Published private(set) var verificationNotice: String?
@@ -86,7 +87,6 @@ final class MainViewModel: ObservableObject {
     private var connectedAt: Date?
     private var canRecoverTunnel = false
     private var tunnelRecovery: Task<Void, Never>?
-    private var profileLoading = false
     private var serverSelectionVersion = 0
     private var prefetchTask: Task<Void, Never>?
     private var serverConfigCache: ServerConfigCache?
@@ -120,6 +120,7 @@ final class MainViewModel: ObservableObject {
 
     init() {
         theme = api.cachedTheme()
+        if !api.isLoggedIn { launchStage = nil }
         vpn.onSceneDiscard = { [weak self] in self?.onSceneDiscard() }
         vpnObserver = vpn.$state.removeDuplicates().sink { [weak self] state in
             self?.onVPNStateChanged(state)
@@ -140,9 +141,11 @@ final class MainViewModel: ObservableObject {
                 await vpn.disconnect()
             }
             await loadInitialData()
-            launchStage = .complete
-            try? await Task.sleep(nanoseconds: 260_000_000)
-            launchStage = nil
+            if launchStage != nil {
+                launchStage = .complete
+                try? await Task.sleep(nanoseconds: 260_000_000)
+                launchStage = nil
+            }
             await loadAppearanceAndServers()
         }
     }
@@ -168,10 +171,9 @@ final class MainViewModel: ObservableObject {
             if state == .disconnected, !bootstrapStarting {
                 bootstrapActive = false
                 bootstrapDeadline = nil
+                bootstrapMailReady = false
                 bootstrapFailed = true
-                let reason = vpn.readError()
-                if registrationEmail == nil { authError = reason }
-                logConnection(reason ?? "Временный VPN отключён")
+                logConnection(vpn.readError() ?? "Временный VPN отключён")
             }
             return
         }
@@ -244,13 +246,14 @@ final class MainViewModel: ObservableObject {
         VPNLog.clear()
     }
 
-    private func startBootstrap(registrationRouting: Bool = false) async {
+    private func startBootstrap(registrationRouting: Bool = false, reportFailure: Bool = true) async {
         guard !bootstrapHash.isEmpty, !loggedIn, (!authLoading || registrationRouting),
               !bootstrapActive, !bootstrapAttempted else { return }
         bootstrapAttempted = true
         bootstrapActive = true
         bootstrapStarting = true
         bootstrapFailed = false
+        bootstrapMailReady = false
         if launchStage != nil { launchStage = .configuration }
         defer { bootstrapStarting = false }
         var stage = "Не удалось получить настройки временного VPN"
@@ -297,7 +300,7 @@ final class MainViewModel: ObservableObject {
             guard discardCount == vpn.sceneDiscardCount else { throw CancellationError() }
             config.registrationRouting = registrationRouting ? true : nil
             config.paymentRouting = nil
-            if registrationRouting { config.dns = BootstrapLaunch.internetDNS }
+            if registrationRouting { config.dns = RegistrationTunnelRoute.internetDNS }
             try await connectBootstrap(config)
         } catch {
             await vpn.disconnect()
@@ -305,7 +308,7 @@ final class MainViewModel: ObservableObject {
             if error is CancellationError { return }
             bootstrapFailed = true
             let message = "\(stage). \(error.localizedDescription)"
-            authError = message
+            if reportFailure { authError = message }
             logConnection(message, level: .error)
         }
     }
@@ -318,6 +321,7 @@ final class MainViewModel: ObservableObject {
         try await api.checkTunnelGateway()
         guard vpn.state == .connected else { throw APIError.network }
         bootstrapDeadline = deadline
+        bootstrapMailReady = config.registrationRouting == true
         if let data = try? JSONEncoder().encode(BootstrapCache(savedAt: Date(), config: config)) {
             KeychainHelper.set(data.base64EncodedString(), key: bootstrapCacheKey)
         }
@@ -331,30 +335,59 @@ final class MainViewModel: ObservableObject {
         bootstrapStarting = true
         await vpn.disconnect()
         bootstrapDeadline = nil
+        bootstrapMailReady = false
         bootstrapReconnecting = false
         bootstrapActive = false
         bootstrapStarting = false
     }
 
     func retryBootstrap() async {
-        guard !authLoading, !bootstrapStarting, !bootstrapActive, !loggedIn else { return }
-        bootstrapAttempted = false
-        bootstrapCell = (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count
+        guard !authLoading, !bootstrapStarting, !loggedIn else { return }
         authError = nil
-        await startBootstrap(registrationRouting: registrationEmail != nil)
+        if registrationEmail != nil {
+            if !bootstrapActive { bootstrapCell = (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count }
+            await prepareRegistrationInternet()
+        } else if !bootstrapActive {
+            bootstrapAttempted = false
+            bootstrapCell = (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count
+            await startBootstrap()
+        }
     }
 
     private func showEmailConfirmation(_ address: String) async {
         registrationEmail = address
         verificationNotice = nil
+        await prepareRegistrationInternet()
+    }
+
+    private func prepareRegistrationInternet() async {
+        guard registrationEmail != nil, !bootstrapStarting else { return }
         let discardCount = vpn.sceneDiscardCount
-        await stopBootstrap()
-        guard discardCount == vpn.sceneDiscardCount else { return }
-        guard vpn.state == .disconnected else {
-            authError = "Дождитесь отключения предыдущего VPN и попробуйте снова."
+        await vpn.refresh()
+        guard discardCount == vpn.sceneDiscardCount, registrationEmail != nil, !bootstrapStarting else { return }
+        if vpn.state != .disconnected {
+            guard bootstrapActive, vpn.state == .connected else {
+                bootstrapFailed = true
+                return
+            }
+            bootstrapStarting = true
+            let deadline = await vpn.enableRegistrationInternet()
+            if deadline == nil { await vpn.refresh() }
+            bootstrapStarting = false
+            guard discardCount == vpn.sceneDiscardCount else { return }
+            if let deadline, vpn.state == .connected {
+                bootstrapDeadline = deadline
+                bootstrapMailReady = true
+                bootstrapFailed = false
+                return
+            }
+            bootstrapMailReady = false
             bootstrapFailed = true
-            return
+            logConnection("Не удалось включить маршрут для почты", level: .error)
+            guard vpn.state == .disconnected else { return }
         }
+        bootstrapActive = false
+        bootstrapDeadline = nil
         bootstrapAttempted = false
         await startBootstrap(registrationRouting: true)
     }
@@ -365,27 +398,29 @@ final class MainViewModel: ObservableObject {
     }
 
     private func loadInitialData() async {
-        if api.isLoggedIn, !authLoading, !profileLoading {
-            profileLoading = true
-            authLoading = true
-            authLoadingTitle = "Загрузка аккаунта…"
-            launchStage = .session
-            do { try await loadAccount() }
-            catch { authError = "Не удалось загрузить аккаунт. \(error.localizedDescription)" }
-            profileLoading = false
-            authLoading = false
-        }
-        if !loggedIn {
-            await startBootstrap()
-            if api.isLoggedIn, bootstrapDeadline != nil {
-                launchStage = .session
-                do {
-                    try await loadAccount()
-                    authError = nil
-                } catch {
-                    authError = "Не удалось восстановить аккаунт. \(error.localizedDescription)"
-                }
-            }
+        await restoreSavedAccount()
+        guard !loggedIn else { return }
+        if !api.isLoggedIn { launchStage = nil }
+        await startBootstrap(reportFailure: false)
+        if bootstrapDeadline != nil { await restoreSavedAccount() }
+    }
+
+    private func restoreSavedAccount() async {
+        guard api.isLoggedIn, !authLoading else { return }
+        authLoading = true
+        launchStage = .session
+        defer { authLoading = false }
+        do {
+            try await loadAccount()
+            authError = nil
+        } catch APIError.unauthorized {
+            api.logout()
+            authError = nil
+        } catch APIError.http(401, _) {
+            api.logout()
+            authError = nil
+        } catch {
+            logConnection("Не удалось восстановить сохранённый вход · \(error.localizedDescription)", level: .error)
         }
     }
 
@@ -609,6 +644,8 @@ final class MainViewModel: ObservableObject {
             stage = "Не удалось запустить туннель"
             logConnection("Ожидание ответа сервера VPN")
             let tunnel = makeTunnel(cfg)
+            logConnection(dnsPreset == "custom" && DnsInput.sanitize(customDns) != nil
+                          ? "DNS: Свой DNS" : "DNS: Как на сервере")
             try await vpn.connect(tunnel)
             stage = "VPN не передаёт данные"
             logConnection("Проверка передачи данных через VPN")
@@ -710,7 +747,7 @@ final class MainViewModel: ObservableObject {
         } else {
             dns = cfg.wg_dns.split { $0 == "," || $0 == " " }.map { String($0) }.filter { !$0.isEmpty }
         }
-        let workers = max(9, min(cfg.stream_count, 27))
+        let workers = max(1, min(cfg.stream_count, 63))
         return TunnelConfig(
             deviceId: bootstrapDuration == nil ? cfg.device_id : "boot:\(api.deviceFingerprint)",
             serverIP: cfg.server_ip,

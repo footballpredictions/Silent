@@ -23,7 +23,7 @@ func relayJournalEvent(line string) (message string, level int) {
 		return fmt.Sprintf("Воркер №%s %s · активных каналов: %s", m[1], verb, m[3]), 0
 	}
 	if m := relayTraffic.FindStringSubmatch(line); m != nil {
-		return fmt.Sprintf("Активных каналов: %s · трафик: %s МБ", m[1], m[2]), 0
+		return fmt.Sprintf("[СТАТИСТИКА] Активных: %s | Трафик: %s МБ", m[1], m[2]), 0
 	}
 	if strings.Contains(line, "[FATAL] panic ") {
 		return "Внутренняя ошибка сетевого модуля", 2
@@ -33,7 +33,7 @@ func relayJournalEvent(line string) (message string, level int) {
 		return "", 0
 	}
 	id, _ := strconv.Atoi(m[2])
-	if id == 0 || id > 27 {
+	if id == 0 || id > 63 {
 		return "", 0
 	}
 	prefix := fmt.Sprintf("Воркер №%d · ", id)
@@ -42,17 +42,19 @@ func relayJournalEvent(line string) (message string, level int) {
 	}
 	switch event := m[3]; {
 	case strings.HasPrefix(event, "Креды OK, TURN:"):
-		return prefix + "VK выдал параметры TURN", 1
+		return "[VK] Параметры TURN получены", 1
 	case strings.HasPrefix(event, "TURN UDP ("):
-		return prefix + "подключение к TURN по UDP", 0
+		return "[TURN] Подключение по UDP", 0
 	case strings.HasPrefix(event, "Relay: "):
-		return prefix + "TURN выделил канал", 1
+		return "[TURN] Канал выделен", 1
 	case event == "[DTLS] Рукопожатие (Handshake)...":
-		return prefix + "рукопожатие DTLS", 0
+		return "[DTLS] Рукопожатие…", 0
 	case event == "[DTLS] Соединение установлено ✓":
-		return prefix + "DTLS установлен", 1
+		return "[DTLS] Соединение установлено ✓", 1
 	case event == "Конфиг получен" || event == "Конфиг уже был доставлен другим воркером":
-		return prefix + "GETCONF: настройки получены", 1
+		return fmt.Sprintf("[ВОРКЕР #%d] Конфиг получен", id), 1
+	case event == "[READY] Туннель готов к работе ✓":
+		return "[READY] Канал готов ✓", 1
 	case strings.HasPrefix(event, "Ошибка конфига:") || strings.HasPrefix(event, "Сервер ещё не выдал WireGuard-конфиг"):
 		return prefix + "GETCONF: настройки не получены", 2
 	case strings.HasPrefix(event, "[TURN] Квота relay"):

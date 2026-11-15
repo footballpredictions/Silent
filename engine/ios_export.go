@@ -226,6 +226,13 @@ func wdtt_start(
 		setEngineErr("не хватает peer, пароля или хешей")
 		return 2
 	}
+	mode := "Основной"
+	if strings.HasPrefix(devID, "boot:") {
+		mode = "Временный"
+	}
+	writeIOSJournal(fmt.Sprintf("[%s] Хешей=%d, потоков=%d (в конфиге: %d)",
+		mode, len(hashes), workersPerGroup, int(workers)), 0)
+	writeIOSJournal(fmt.Sprintf("[КЛИЕНТ] %s %s/%s CPU=%d", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU()), 0)
 	if dir != "" {
 		_ = os.MkdirAll(dir, 0o700)
 		if os.Chdir(dir) == nil {
@@ -244,6 +251,7 @@ func wdtt_start(
 		setEngineErr(err.Error())
 		return 3
 	}
+	writeIOSJournal("[WRAP] Ключ выведен из пароля, режим RTP AEAD активен", 1)
 
 	peerAddr := net.JoinHostPort(ip, fmt.Sprint(port))
 	peer, err := net.ResolveUDPAddr("udp", peerAddr)
@@ -256,10 +264,13 @@ func wdtt_start(
 	var attempt int
 	relay, configErr := tryIOSRelayHashes(ctx, hashes, func(ctx context.Context, hash string, budget time.Duration) (iosRelay, error) {
 		attempt++
-		writeIOSJournal(fmt.Sprintf("Ретранслятор №%d · запрос параметров VK · воркеров: %d", attempt, workersPerGroup), 0)
+		writeIOSJournal(fmt.Sprintf("[РЕТРАНСЛЯТОР #%d] Запрос параметров VK · ожидание до %.0f с", attempt, budget.Seconds()), 0)
+		startedAt := time.Now()
 		result, err := startIOSRelay(ctx, peer, hash, wrapKey, devID, pass, budget, attempt)
 		if err != nil && ctx.Err() == nil {
-			writeIOSJournal(fmt.Sprintf("Ретранслятор №%d · %s", attempt, err), 2)
+			writeIOSJournal(fmt.Sprintf("[РЕТРАНСЛЯТОР #%d] %s · %.1f с", attempt, err, time.Since(startedAt).Seconds()), 2)
+		} else if err == nil {
+			writeIOSJournal(fmt.Sprintf("[КОНФИГ] GETCONF принят · ретранслятор #%d · %.1f с", attempt, time.Since(startedAt).Seconds()), 1)
 		}
 		return result, err
 	})
@@ -302,7 +313,7 @@ func wdtt_start(
 	engineTUN = flow
 	engineMu.Unlock()
 
-	writeIOSJournal("Сетевой модуль WireGuard запущен", 1)
+	writeIOSJournal("WireGuard UP ✓ (GETCONF)", 1)
 	return 0
 }
 
@@ -359,7 +370,7 @@ func startIOSRelay(parent context.Context, peer *net.UDPAddr, hash string, wrapK
 			err = errors.New("Ретрансляторы завершились до получения конфигурации VPN")
 		}
 	case <-timer.C:
-		err = errors.New("Ретрансляторы не получили конфигурацию VPN вовремя")
+		err = errIOSRelayConfigTimeout
 	case <-parent.Done():
 		err = parent.Err()
 	}
@@ -410,6 +421,7 @@ func runIOSWorkers(
 	for i := range ids {
 		ids[i] = (groupID-1)*workersPerGroup + i + 1
 	}
+	writeIOSJournal(fmt.Sprintf("libclient запущен (n=%d)", len(ids)), 1)
 	WorkerGroup(ctx, groupID, 0, tp, peer, disp, localPort,
 		true, configCh, ids, &iosPause, deviceID, password, stats, nil, nil)
 }

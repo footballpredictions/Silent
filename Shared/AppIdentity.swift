@@ -20,6 +20,23 @@ enum AppIdentity {
     }
 }
 
+enum RegistrationTunnelRoute {
+    static let request = Data("registration-routing".utf8)
+    static let internetDNS = ["1.1.1.1", "9.9.9.9"]
+    static let duration = 120
+
+    static func enable(on active: TunnelConfig) -> TunnelConfig? {
+        guard let currentDuration = active.bootstrapDuration, (1...duration).contains(currentDuration),
+              active.paymentRouting != true,
+              active.deviceId.hasPrefix("boot:") else { return nil }
+        var config = active
+        config.registrationRouting = true
+        config.dns = internetDNS
+        config.bootstrapDuration = duration
+        return config
+    }
+}
+
 struct TunnelConfig: Codable {
     var deviceId: String
     var serverIP: String

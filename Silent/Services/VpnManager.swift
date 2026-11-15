@@ -40,7 +40,7 @@ final class VpnManager: ObservableObject {
         return mgr.connection.status == .connected
     }
 
-    func connect(_ config: TunnelConfig, timeout: TimeInterval = 50) async throws {
+    func connect(_ config: TunnelConfig, timeout: TimeInterval? = nil) async throws {
         let discardCount = sceneDiscardCount
         await pendingSceneStop?.value
         guard discardCount == sceneDiscardCount,
@@ -77,7 +77,8 @@ final class VpnManager: ObservableObject {
         do {
             try Task.checkCancellation()
             try mgr.connection.startVPNTunnel()
-            try await waitForConnection(mgr.connection, timeout: timeout)
+            let defaultTimeout: TimeInterval = config.hashes.count > 1 ? 58 : 50
+            try await waitForConnection(mgr.connection, timeout: timeout ?? defaultTimeout)
         } catch {
             mgr.connection.stopVPNTunnel()
             state = Self.map(mgr.connection.status)
@@ -129,6 +130,21 @@ final class VpnManager: ObservableObject {
                 }
             } catch { continuation.resume(returning: nil) }
         }
+    }
+
+    func enableRegistrationInternet() async -> Date? {
+        guard let mgr = try? await load(), mgr.connection.status == .connected,
+              let session = mgr.connection as? NETunnelProviderSession else { return nil }
+        let deadline: Date? = await withCheckedContinuation { continuation in
+            do {
+                try session.sendProviderMessage(RegistrationTunnelRoute.request) { data in
+                    let deadline = data.flatMap { try? JSONDecoder().decode(Date.self, from: $0) }
+                    continuation.resume(returning: deadline)
+                }
+            } catch { continuation.resume(returning: nil) }
+        }
+        guard session.status == .connected, let deadline, deadline > Date() else { return nil }
+        return deadline
     }
 
     func disconnect() async {

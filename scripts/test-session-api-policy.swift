@@ -64,6 +64,24 @@ struct SessionsApiPolicyTest {
                      payment?.bootstrapRoutesInternet == true)
         let restoredMail = try JSONDecoder().decode(TunnelConfig.self, from: JSONEncoder().encode(mail))
         precondition(restoredMail.bootstrapRoutesInternet && restoredMail.paymentRouting == nil)
+        if let local {
+            var running = local
+            running.address = "10.66.66.8/32"
+            guard let promoted = RegistrationTunnelRoute.enable(on: running) else {
+                preconditionFailure("The login tunnel should be able to add a route for Mail")
+            }
+            precondition(promoted.registrationRouting == true && promoted.bootstrapRoutesInternet)
+            precondition(promoted.address == running.address && promoted.deviceId == running.deviceId)
+            precondition(promoted.serverIP == running.serverIP && promoted.serverPort == running.serverPort)
+            precondition(promoted.workers == running.workers && promoted.hashes == running.hashes)
+            precondition(promoted.password == running.password && promoted.mtu == running.mtu)
+            precondition(promoted.dns == mail.dns && promoted.bootstrapDuration == mail.bootstrapDuration)
+            running.bootstrapDuration = nil
+            precondition(RegistrationTunnelRoute.enable(on: running) == nil)
+        } else {
+            preconditionFailure("Expected the login VPN configuration")
+        }
+        if let payment { precondition(RegistrationTunnelRoute.enable(on: payment) == nil) }
         var attempts: [Int] = []
         var stops = 0
         let picked = try await PaymentRoute.choose([1, 2, 3], start: { attempts.append($0) }, probe: {
@@ -108,8 +126,9 @@ struct SessionsApiPolicyTest {
             _ = try BootstrapHTTPResponse.parse(partial, complete: true)
             preconditionFailure("Truncated response was accepted")
         } catch let error as URLError { precondition(error.code == .badServerResponse) }
-        func relay(_ offset: Double, _ message: String, level: VPNLogLevel = .info, source: String = "WDTT") -> VPNLogEntry {
-            VPNLogEntry(date: now.addingTimeInterval(offset), level: level, source: source, message: message)
+        func relay(_ offset: Double, _ message: String, level: VPNLogLevel = .info,
+                   source: String = "WDTT", key: String? = nil) -> VPNLogEntry {
+            VPNLogEntry(date: now.addingTimeInterval(offset), level: level, source: source, message: message, key: key)
         }
         let log = VPNLogRow.grouped([
             relay(0, "Воркер №1 · DTLS установлен"),
@@ -119,10 +138,14 @@ struct SessionsApiPolicyTest {
             relay(4, "Воркер №1 отключён · активных каналов: 2"),
             relay(5, "Воркер №4 · DTLS установлен", level: .error),
             relay(6, "DTLS установлен", source: "Приложение"),
+            relay(0.5, "[СТАТИСТИКА] Активных: 1 | Трафик: 0.00 МБ", key: "stats"),
+            relay(7, "[СТАТИСТИКА] Активных: 3 | Трафик: 0.04 МБ", key: "stats"),
         ])
-        precondition(log.map(\.count) == [2, 2, 1, 1, 1])
+        precondition(log.map(\.count) == [2, 2, 1, 1, 1, 2])
         precondition(log[0].entry.message == "DTLS установлен" && log[0].line.hasSuffix("(×2)"))
         precondition(log[1].entry.message == "Воркер активен · активных каналов: 3")
+        precondition(log.last?.line.contains("[СТАТИСТИКА] Активных: 3 | Трафик: 0.04 МБ (×2)") == true)
+        precondition(log.last?.line.contains("[WDTT] [СТАТИСТИКА]") == false)
         print("Sessions API policy and VPN journal: PASS")
     }
 }

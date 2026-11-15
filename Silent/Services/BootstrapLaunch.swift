@@ -1,8 +1,7 @@
 import Foundation
 
 enum BootstrapLaunch {
-    static let duration = 120
-    static let internetDNS = ["1.1.1.1", "9.9.9.9"]
+    static let duration = RegistrationTunnelRoute.duration
     // Same public overlay nodes as Android.
     static let cellHosts = ["87.58.213.193", "78.17.74.27"]
     static let paymentHosts = cellHosts + ["89.37.192.241", PublicApiFailover.hiveIP]
@@ -32,7 +31,7 @@ enum BootstrapLaunch {
         guard !password.isEmpty, let hash = callHash(hash), hosts.indices.contains(cell) else { return nil }
         return TunnelConfig(deviceId: "boot:\(fingerprint)", serverIP: hosts[cell], serverPort: 56000,
                             password: password, hashes: [hash], workers: 3, address: "",
-                            dns: payment || registrationRouting ? internetDNS : [], mtu: 1200,
+                            dns: payment || registrationRouting ? RegistrationTunnelRoute.internetDNS : [], mtu: 1200,
                             excludeCIDRs: [], bootstrapDuration: payment ? 300 : duration,
                             paymentRouting: payment ? true : nil, registrationRouting: registrationRouting ? true : nil)
     }

@@ -46,6 +46,24 @@ sed '1s/!android || !arm/(!android || !arm) \&\& !ios/' "$SRC/platform_limits_de
 # packet queue bounded independently in the smaller iOS extension process.
 sed -E 's/(workerSendBuf[[:space:]]*=[[:space:]]*)2048/\1256/' "$SRC/session.go" > "$TMP/session.go"
 grep -Eq 'workerSendBuf[[:space:]]*=[[:space:]]*256' "$TMP/session.go"
+# A timed-out iOS attempt must release its DTLS reads before the next group starts.
+python3 - "$TMP/session.go" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = (
+    "\tstopDTLS := context.AfterFunc(sessCtx, func() {\n"
+    "\t\t_ = dtlsConn.SetDeadline(time.Now())\n"
+    "\t})\n\tdefer stopDTLS()\n\n"
+)
+before_getconf = "\tif getConfig && configCh != nil {\n"
+if source.count(old) != 1 or source.count(before_getconf) != 1:
+    raise SystemExit("Shared WDTT DTLS cancellation changed. Review the iOS adapter.")
+cancel_read = "\tstopDTLS := context.AfterFunc(sessCtx, func() { _ = pipeB.Close() })\n\tdefer stopDTLS()\n\n"
+path.write_text(source.replace(old, "").replace(before_getconf, cancel_read + before_getconf), encoding="utf-8")
+PY
 # Shared domain policy and userspace DIRECT transport, same as Android.
 cp "$MONO/android/app/site-router/russian.go" "$TMP/russian.go"
 cp "$MONO/android/app/site-router/packet.go" "$TMP/russian_packet.go"

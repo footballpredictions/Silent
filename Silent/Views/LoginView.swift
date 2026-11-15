@@ -31,19 +31,19 @@ struct LoginView: View {
                                 .font(AppFont.text(12, weight: .medium))
                                 .foregroundStyle(p.success)
                                 .shadow(color: p.successGlow, radius: 4)
+                        } else if vm.bootstrapStarting {
+                            Text(vm.registrationEmail == nil ? "Подключение временного VPN…" : "Настраиваем интернет для почты…")
+                                .font(.footnote)
+                                .foregroundColor(p.fg.opacity(0.7))
                         } else if let deadline = vm.bootstrapDeadline {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 let seconds = max(0, Int(ceil(deadline.timeIntervalSince(context.date))))
-                                let title = vm.registrationEmail == nil ? "Временный интернет" : "Интернет для почты"
+                                let title = vm.bootstrapMailReady ? "Интернет для почты" : "Временный интернет"
                                 Label("\(title) · \(seconds / 60):\(String(format: "%02d", seconds % 60))", systemImage: "timer")
                                     .font(.footnote.weight(.medium).monospacedDigit())
                                     .foregroundStyle(p.success)
                                     .shadow(color: p.successGlow, radius: 4)
                             }
-                        } else if vm.bootstrapStarting {
-                            Text("Подключение временного VPN…")
-                                .font(.footnote)
-                                .foregroundColor(p.fg.opacity(0.7))
                         }
 
                         if forgot {
@@ -73,7 +73,7 @@ struct LoginView: View {
                                     vm.dismissRegistrationConfirmation()
                                 }
                             }
-                            .disabled(vm.authLoading || vm.verificationResending)
+                            .disabled(vm.authLoading || vm.bootstrapStarting || vm.verificationResending)
                             if let address = vm.registrationEmail {
                                 registrationConfirmation(address, p: p)
                             } else {
@@ -83,7 +83,7 @@ struct LoginView: View {
                         if let authError = vm.authError {
                             Text(authError).font(.footnote).foregroundColor(.red)
                         }
-                        if !vm.bootstrapStarting && (vm.bootstrapFailed || (vm.registrationEmail != nil && vm.bootstrapDeadline == nil)) {
+                        if !vm.bootstrapStarting && (vm.bootstrapFailed || (vm.registrationEmail != nil && !vm.bootstrapMailReady)) {
                             Button(vm.registrationEmail == nil ? "Повторить временный VPN" : "Включить интернет для почты") {
                                 Task { await vm.retryBootstrap() }
                             }
@@ -122,9 +122,7 @@ struct LoginView: View {
             Text("Адрес для подтверждения — \(address)")
                 .font(.subheadline)
                 .foregroundStyle(p.fg.opacity(0.72))
-            Text(vm.bootstrapStarting
-                 ? "Подключаем временный интернет для «Почты»…"
-                 : "Откройте «Почту» на iPhone и нажмите ссылку из письма.")
+            Text("Откройте «Почту» на iPhone и нажмите ссылку из письма.")
                 .font(.footnote)
                 .foregroundStyle(p.fg.opacity(0.65))
             if let notice = vm.verificationNotice {

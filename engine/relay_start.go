@@ -6,23 +6,34 @@ import (
 	"time"
 )
 
-// An iOS extension can sustain only one group. Give a second hash its own
-// attempt after the first group stops; never keep two groups running together.
+var errIOSRelayConfigTimeout = errors.New("Ретрансляторы не получили конфигурацию VPN вовремя")
+
+// Keep one group in memory. With a fallback available, probe the first hash
+// briefly and give it a full retry only if the probe timed out and fallback failed.
 func tryIOSRelayHashes[T any](ctx context.Context, hashes []string, start func(context.Context, string, time.Duration) (T, error)) (T, error) {
 	var zero T
-	last := errors.New("нет доступных хешей ретрансляторов")
-	attempts := min(2, len(hashes))
-	budget := 30 * time.Second / time.Duration(max(1, attempts))
-	for _, hash := range hashes[:attempts] {
-		if ctx.Err() != nil {
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+	switch len(hashes) {
+	case 0:
+		return zero, errors.New("нет доступных хешей ретрансляторов")
+	case 1:
+		return start(ctx, hashes[0], 30*time.Second)
+	}
+	try := func(hash string, budget time.Duration) (T, error) {
+		if err := ctx.Err(); err != nil {
 			return zero, ctx.Err()
 		}
-		// The live worker group outlives the startup timer on success.
-		value, err := start(ctx, hash, budget)
-		if err == nil {
-			return value, nil
-		}
-		last = err
+		return start(ctx, hash, budget)
 	}
-	return zero, last
+	value, firstErr := try(hashes[0], 8*time.Second)
+	if firstErr == nil {
+		return value, nil
+	}
+	value, err := try(hashes[1], 15*time.Second)
+	if err != nil && errors.Is(firstErr, errIOSRelayConfigTimeout) {
+		return try(hashes[0], 15*time.Second)
+	}
+	return value, err
 }

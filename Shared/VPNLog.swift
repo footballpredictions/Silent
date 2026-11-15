@@ -11,7 +11,9 @@ struct VPNLogEntry: Identifiable, Codable {
     var key: String? = nil
 
     var line: String {
-        "\(date.formatted(date: .omitted, time: .standard)) [\(source)] \(message)"
+        let time = date.formatted(date: .omitted, time: .standard)
+        let label = source == "WDTT" && message.hasPrefix("[") ? message : "[\(source)] \(message)"
+        return "\(time) \(label)"
     }
 }
 
@@ -59,7 +61,7 @@ struct VPNLogRow: Identifiable {
                 rows.append(Self(id: entry.id, entry: entry, count: 1))
             }
         }
-        return rows
+        return rows.sorted { $0.entry.date < $1.entry.date }
     }
 }
 

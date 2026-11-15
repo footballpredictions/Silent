@@ -25,7 +25,7 @@ class APIService: ObservableObject {
         get { KeychainHelper.get("refresh_token") }
         set { if let v = newValue { KeychainHelper.set(v, key: "refresh_token") } else { KeychainHelper.delete("refresh_token") } }
     }
-    var isLoggedIn: Bool { accessToken != nil }
+    var isLoggedIn: Bool { accessToken?.isEmpty == false }
     var deviceFingerprint: String {
         if let fp = defaults.string(forKey: "device_fp") { return fp }
         let fp = UUID().uuidString
@@ -239,7 +239,8 @@ class APIService: ObservableObject {
     }
 
     func getProfile() async throws -> UserProfile {
-        try await request(PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint))
+        guard isLoggedIn else { throw APIError.unauthorized }
+        return try await request(PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint))
     }
 
     func getTheme() async throws -> ThemeData {

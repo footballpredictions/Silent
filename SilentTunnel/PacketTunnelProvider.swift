@@ -8,7 +8,7 @@ func silent_relay_event(_ message: UnsafePointer<CChar>?, _ level: Int32) {
     autoreleasepool {
         let severity: VPNLogLevel = level == 2 ? .error : (level == 1 ? .success : .info)
         let text = String(cString: message)
-        VPNLog.write(text, level: severity, source: "WDTT", key: text.hasPrefix("Активных каналов:") ? "stats" : nil)
+        VPNLog.write(text, level: severity, source: "WDTT", key: text.hasPrefix("[СТАТИСТИКА]") ? "stats" : nil)
     }
 }
 
@@ -50,6 +50,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var receivedPolicy: String?
     private var handshakeCheck: Task<Void, Never>?
     private var bootstrapExpiry: Task<Void, Never>?
+    private var bootstrapDeadline: Date?
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         TunnelBridge.setProvider(self)
@@ -63,6 +64,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             VPNLog.write("Запуск временного VPN для почты")
         } else {
             VPNLog.write(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
+        }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        var hardware = utsname()
+        let model = uname(&hardware) == 0
+            ? withUnsafeBytes(of: hardware.machine) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+            : "iPhone"
+        VPNLog.write("\(model) · iOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · ABI=arm64", source: "Устройство")
+        if config.bootstrapDuration == nil, UUID(uuidString: config.deviceId) != nil {
+            VPNLog.write("libclient device-id: \(config.deviceId.prefix(4))… (\(config.deviceId.count) симв.)", source: "WDTT")
         }
         if wdtt_engine_linked() == 0 {
             let text = "Туннель не собран. На Mac запустите scripts/build-libwdtt.sh и заново сделайте Archive."
@@ -111,7 +121,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         config.address = String(cString: address)
         free(address)
-        VPNLog.write("Сервер выдал конфигурацию WireGuard", level: .success)
         guard applyRussianPolicy(config.russian) else {
             wdtt_stop()
             let text = "Не удалось применить правила российских сервисов"
@@ -158,11 +167,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func scheduleBootstrapExpiry(_ duration: Int?, payment: Bool) {
         bootstrapExpiry?.cancel()
-        guard let duration, (1...(payment ? 300 : 120)).contains(duration) else { return }
+        bootstrapDeadline = nil
+        guard let duration, (1...(payment ? 300 : RegistrationTunnelRoute.duration)).contains(duration) else { return }
+        let deadline = Date().addingTimeInterval(TimeInterval(duration))
+        bootstrapDeadline = deadline
         bootstrapExpiry = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000_000) }
             catch { return }
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled, self.bootstrapDeadline == deadline else { return }
             let text = "Время временного VPN истекло"
             self.writeError(text)
             self.cancelTunnelWithError(self.tunnelError(text))
@@ -180,6 +192,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         handshakeCheck = nil
         bootstrapExpiry?.cancel()
         bootstrapExpiry = nil
+        bootstrapDeadline = nil
         policyRefresh?.cancel()
         policyRefresh = nil
         receivedPolicy = nil
@@ -208,6 +221,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        if messageData == RegistrationTunnelRoute.request {
+            enableRegistrationInternet(completionHandler)
+            return
+        }
         if messageData == Data("policy-received".utf8) {
             completionHandler?(receivedPolicy.map { Data($0.utf8) })
             return
@@ -229,6 +246,28 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
             completionHandler?(error == nil ? Data("ok".utf8) : nil)
+        }
+    }
+
+    private func enableRegistrationInternet(_ completionHandler: ((Data?) -> Void)?) {
+        guard reading, let active = activeConfig, let deadline = bootstrapDeadline, deadline > Date(),
+              let updated = RegistrationTunnelRoute.enable(on: active) else {
+            completionHandler?(nil)
+            return
+        }
+        if active.registrationRouting == true {
+            completionHandler?(try? JSONEncoder().encode(deadline))
+            return
+        }
+        setTunnelNetworkSettings(makeSettings(updated)) { [weak self] error in
+            guard let self, error == nil, self.reading, self.bootstrapDeadline == deadline else {
+                completionHandler?(nil)
+                return
+            }
+            self.activeConfig = updated
+            self.scheduleBootstrapExpiry(updated.bootstrapDuration, payment: false)
+            VPNLog.write("Маршрут для почты добавлен к временному VPN", level: .success)
+            completionHandler?(self.bootstrapDeadline.flatMap { try? JSONEncoder().encode($0) })
         }
     }
 

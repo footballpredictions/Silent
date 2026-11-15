@@ -19,9 +19,12 @@ def prepare(source, target, unpatched=False):
     if not (source / 'internal/client/allocation.go').is_file():
         raise ValueError("Pion TURN module was not downloaded; refusing to copy an unrelated directory")
     shutil.copytree(source, target)
+    # Go's module cache is read-only on macOS/Linux. Only the isolated copy is
+    # made writable, so the patch and regression fixture can be installed.
+    for item in [target, *target.rglob('*')]:
+        item.chmod(item.stat().st_mode | stat.S_IWRITE)
     path = target / 'internal/client/allocation.go'
     if not unpatched:
-        path.chmod(path.stat().st_mode | stat.S_IWRITE)
         path.write_text(patch(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).parent / 'fixtures/turn/refresh_test.go', target / 'internal/client/ios_refresh_test.go')
 

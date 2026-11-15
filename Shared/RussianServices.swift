@@ -36,8 +36,11 @@ enum RussianServices {
         }
         return nil
     }
-    static func refresh() async -> RussianRoutingPolicy? {
-        let bases = ["https://89-125-188-100.nip.io", "http://87.58.213.193:9100", "http://78.17.74.27:9100", "http://192.177.26.38:9100", "http://89.37.192.241:9100"]
+    static func refresh(tunnelActive: Bool = false) async -> RussianRoutingPolicy? {
+        // Whitelist LTE may block every public API address. Use the already
+        // established tunnel for this control request; never replace it with
+        // a temporary VPN just to update the policy.
+        let bases = (tunnelActive ? ["http://10.66.66.1:8000"] : []) + ["https://89-125-188-100.nip.io", "http://87.58.213.193:9100", "http://78.17.74.27:9100", "http://192.177.26.38:9100", "http://89.37.192.241:9100"]
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 2.5
         configuration.timeoutIntervalForResource = 3

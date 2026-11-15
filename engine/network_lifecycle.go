@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,20 +53,32 @@ func (e *iosNetworkEvents) notify(interfaceChanged bool) {
 
 var iosPathEvents iosNetworkEvents
 
+// Successful DTLS receives are independent evidence that the data path works,
+// even when the TURN server temporarily misses a separate STUN request.
+type iosSessionActivity struct {
+	received atomic.Uint64
+	ready    atomic.Bool
+}
+
+func (a *iosSessionActivity) markReceived() { a.received.Add(1) }
+func (a *iosSessionActivity) markReady()    { a.ready.Store(true) }
+
 // DTLS already sends a packet every 15s. Separate STUN binding requests every
 // 10s per worker were redundant; keep the NAT identity check at a lower rate,
 // and run it immediately on wake. A physical interface change invalidates the
 // UDP socket itself, not the WireGuard device or iOS VPN profile.
-func runIOSBindingChecks(ctx context.Context, id int, probe func() (net.Addr, error), cancel context.CancelFunc) {
+func runIOSBindingChecks(ctx context.Context, id int, probe func() (net.Addr, error), cancel context.CancelFunc, activity *iosSessionActivity) {
 	ticker := time.NewTicker(time.Duration(30+id%7) * time.Second)
 	defer ticker.Stop()
-	runIOSBindingLoop(ctx, id, probe, cancel, ticker.C, &iosPathEvents)
+	runIOSBindingLoop(ctx, id, probe, cancel, ticker.C, &iosPathEvents, activity)
 }
 
 func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, error), cancel context.CancelFunc,
-	ticks <-chan time.Time, events *iosNetworkEvents) {
+	ticks <-chan time.Time, events *iosNetworkEvents, activity *iosSessionActivity) {
 	snapshot := events.snapshot()
 	var mapped string
+	var previousReceive uint64
+	failures := 0
 	check := func() bool {
 		if ctx.Err() != nil {
 			return false
@@ -75,8 +88,27 @@ func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, erro
 			return false
 		}
 		if err != nil || address == nil {
+			var received uint64
+			if activity != nil {
+				received = activity.received.Load()
+			}
+			if received != previousReceive || (mapped == "" && (activity == nil || !activity.ready.Load())) {
+				failures = 0
+			} else {
+				failures++
+			}
+			previousReceive = received
+			if failures >= 2 {
+				log.Printf("[ВОРКЕР #%d] TURN: канал не отвечает на повторную проверку после потери сети", id)
+				cancel()
+				return false
+			}
 			return true
 		} // A lone STUN timeout is not proof that DTLS is dead.
+		failures = 0
+		if activity != nil {
+			previousReceive = activity.received.Load()
+		}
 		current := address.String()
 		if mapped != "" && mapped != current {
 			log.Printf("[ВОРКЕР #%d] TURN: NAT изменился, старый канал недействителен", id)
@@ -86,7 +118,15 @@ func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, erro
 		mapped = current
 		return true
 	}
-	if !check() {
+	verify := func() bool {
+		if !check() {
+			return false
+		}
+		// Confirm an unanswered probe immediately instead of waiting another
+		// full periodic interval after wake. Healthy DTLS traffic vetoes expiry.
+		return failures == 0 || check()
+	}
+	if !verify() {
 		return
 	}
 	for {
@@ -94,7 +134,7 @@ func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, erro
 		case <-ctx.Done():
 			return
 		case <-ticks:
-			if !check() {
+			if !verify() {
 				return
 			}
 		case <-snapshot.changed:
@@ -105,6 +145,9 @@ func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, erro
 				return
 			}
 			snapshot = next
+			if activity != nil {
+				previousReceive = activity.received.Load()
+			}
 			// Spread 63 wake probes instead of creating one radio/CPU burst.
 			timer := time.NewTimer(time.Duration(id%63) * 50 * time.Millisecond)
 			select {
@@ -113,7 +156,7 @@ func runIOSBindingLoop(ctx context.Context, id int, probe func() (net.Addr, erro
 				return
 			case <-timer.C:
 			}
-			if !check() {
+			if !verify() {
 				return
 			}
 		}

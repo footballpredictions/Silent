@@ -61,15 +61,17 @@ func launchWriter(parent context.Context, dtlsConn keepaliveConn, packets <-chan
 import ("context"; "net"; "sync"; "time")
 type bindingQuality struct{}
 func (*bindingQuality) observe(time.Duration,error,time.Time) {}
-func runTestIOSBindingChecks(ctx context.Context, id int, probe func()(net.Addr,error), cancel context.CancelFunc) {
+func runTestIOSBindingChecks(ctx context.Context, id int, probe func()(net.Addr,error), cancel context.CancelFunc, activity *iosSessionActivity) {
     timer := time.NewTicker(5*time.Millisecond)
     defer timer.Stop()
-    runIOSBindingLoop(ctx,id,probe,cancel,timer.C,&iosNetworkEvents{})
+    runIOSBindingLoop(ctx,id,probe,cancel,timer.C,&iosNetworkEvents{},activity)
 }
 func launchBinding(parent context.Context, tc *testTURNConnection) (context.Context,context.CancelFunc,<-chan struct{}) {
     sessCtx,sessCancel := context.WithCancel(parent)
     sessionID := 1
     _ = sessionID
+    activity := &iosSessionActivity{}
+    _ = activity
     var quality *bindingQuality
     var sessionWg sync.WaitGroup
     sessionWg.Add(1)
@@ -84,7 +86,7 @@ func launchBinding(parent context.Context, tc *testTURNConnection) (context.Cont
     registration = source[source.index("\td.Register(slot)"):source.index("\n\t// Proxy DTLS")]
     imports = '"context"; "sync"' if 'sync.' in registration else '"context"'
     wrapper = f'package main\nimport ({imports})\n'
-    wrapper += 'func holdRegistration(sessCtx context.Context,d *testDispatcher,slot *testWorkerSlot,ready chan struct{},hold <-chan struct{}) {\n'
+    wrapper += 'func holdRegistration(sessCtx context.Context,d *testDispatcher,slot *testWorkerSlot,ready chan struct{},hold <-chan struct{}) {\nactivity := &iosSessionActivity{}\n_ = activity\n'
     wrapper += registration + '\nclose(ready)\n<-hold\n}\n'
     (target / "registration.go").write_text(wrapper, encoding="utf-8")
     shutil.copyfile(root / "engine/network_lifecycle.go", target / "network_lifecycle.go")

@@ -159,13 +159,17 @@ func TestTURNFailureJournalContainsCodeButNoServerSecrets(t *testing.T) {
 }
 
 type testTURNConnection struct {
-	calls  atomic.Int32
-	rebind bool
-	ready  chan int32
+	calls   atomic.Int32
+	rebind  bool
+	noReply bool
+	ready   chan int32
 }
 
 func (c *testTURNConnection) SendBindingRequest() (net.Addr, error) {
 	n := c.calls.Add(1)
+	if c.noReply && n > 1 {
+		return nil, context.DeadlineExceeded
+	}
 	port := 1000
 	if c.rebind && n > 1 {
 		port = 2000
@@ -175,6 +179,18 @@ func (c *testTURNConnection) SendBindingRequest() (net.Addr, error) {
 	default:
 	}
 	return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: port}, nil
+}
+
+func TestActualBindingLoopRetiresAnUnreachableAllocation(t *testing.T) {
+	connection := &testTURNConnection{noReply: true, ready: make(chan int32, 4)}
+	ctx, cancel, done := launchBinding(context.Background(), connection)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("unreachable TURN channel was kept active without data")
+	}
+	<-done
 }
 
 func TestActualBindingLoopInvalidatesReboundNAT(t *testing.T) {

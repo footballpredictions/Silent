@@ -53,13 +53,14 @@ def adapt(source):
     context_setup = "\tsessCtx, sessCancel := context.WithCancel(ctx)\n\tdefer sessCancel()\n\n"
     replace_once(context_setup, "")
     marker = "\tturnConn, endpoint, err := dialUDPTURN(ctx, creds.TurnURLs, sessionID, tp)\n"
-    replace_once(marker, context_setup + marker)
+    replace_once(marker, context_setup + "\tactivity := &iosSessionActivity{}\n" + marker)
     replace_once("\tstopTransport := context.AfterFunc(ctx, func() { _ = turnConn.Close() })",
                  "\tstopTransport := context.AfterFunc(sessCtx, func() { _ = turnConn.Close() })")
     replace_once("\tdefer tc.Close()\n", "\tdefer tc.Close()\n"
                  "\tstopTransactions := context.AfterFunc(sessCtx, tc.Close)\n\tdefer stopTransactions()\n")
     replace_once("\td.Register(slot)\n\tdefer d.Unregister(slot)\n",
                  "\td.Register(slot)\n"
+                 "\tactivity.markReady()\n"
                  "\tvar removeOnce sync.Once\n"
                  "\tremoveSlot := func() { removeOnce.Do(func() { d.Unregister(slot) }) }\n"
                  "\tstopSlot := context.AfterFunc(sessCtx, removeSlot)\n"
@@ -73,11 +74,13 @@ def adapt(source):
 \t\t\taddress, probeErr := tc.SendBindingRequest()
 \t\t\tif quality != nil { quality.observe(time.Since(started), probeErr, time.Now()) }
 \t\t\treturn address, probeErr
-\t\t}, sessCancel)
+\t\t}, sessCancel, activity)
 \t}()
 ''' + source[end:]
     replace_once("\t\tLoggerFactory:          &NullLoggerFactory{},",
                  "\t\tLoggerFactory:          &iosTURNLoggerFactory{ctx: sessCtx, cancel: sessCancel, sessionID: sessionID},")
+    replace_once("\t\t\tkind, ctrlErr := ClassifyControlPayload(pkt[:n])\n",
+                 "\t\t\tactivity.markReceived()\n\t\t\tkind, ctrlErr := ClassifyControlPayload(pkt[:n])\n")
     return source
 
 

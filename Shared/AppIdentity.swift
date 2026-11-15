@@ -20,6 +20,12 @@ enum AppIdentity {
     }
 }
 
+enum VPNSceneOwnership {
+    static func wasDiscarded(_ ownerID: String, openSessions: Set<String>) -> Bool {
+        !openSessions.contains(ownerID)
+    }
+}
+
 enum RegistrationTunnelRoute {
     static let request = Data("registration-routing".utf8)
     static let internetDNS = ["1.1.1.1", "9.9.9.9"]

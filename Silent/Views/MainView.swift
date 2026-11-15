@@ -5,6 +5,7 @@ enum VpnState { case disconnected, connecting, connected, reconnecting, disconne
 
 struct RootView: View {
     @EnvironmentObject var vm: MainViewModel
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -16,10 +17,17 @@ struct RootView: View {
                 LoginView()
             }
         }
+        .onAppear { activateIfNeeded(scenePhase) }
+        .onChange(of: scenePhase) { activateIfNeeded($0) }
         .onOpenURL { url in
             guard url.scheme == "silentvpn" else { return }
             Task { await vm.onPaymentReturn() }
         }
+    }
+
+    private func activateIfNeeded(_ phase: ScenePhase) {
+        guard phase == .active else { return }
+        Task { await vm.sceneDidBecomeActive() }
     }
 }
 

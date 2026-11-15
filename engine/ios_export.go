@@ -4,6 +4,7 @@ package main
 
 /*
 #include <stdlib.h>
+#include <os/proc.h>
 typedef void (*packet_cb)(const unsigned char *data, int len);
 typedef void (*journal_cb)(const char *message, int level);
 static void call_journal(journal_cb cb, const char *message, int level) {
@@ -47,6 +48,7 @@ var (
 	engineMu      sync.Mutex
 	engineCancel  context.CancelFunc
 	engineDone    <-chan struct{}
+	engineExpand  chan struct{}
 	engineDev     *device.Device
 	engineAddress string
 	engineTUN     *flowTUN
@@ -176,6 +178,7 @@ func stopIOSEngine() {
 	t := engineTUN
 	engineCancel = nil
 	engineDone = nil
+	engineExpand = nil
 	engineDev = nil
 	engineAddress = ""
 	engineTUN = nil
@@ -227,11 +230,15 @@ func wdtt_start(
 		return 2
 	}
 	mode := "Основной"
+	requested := int(workers)
 	if strings.HasPrefix(devID, "boot:") {
 		mode = "Временный"
+		requested = min(requested, workersPerGroup)
 	}
-	writeIOSJournal(fmt.Sprintf("[%s] Хешей=%d, потоков=%d (в конфиге: %d)",
-		mode, len(hashes), workersPerGroup, int(workers)), 0)
+	requested = max(1, requested)
+	target := min(requested, iosMaxWorkers, min(4, len(hashes))*iosMaxWorkersPerHash)
+	writeIOSJournal(fmt.Sprintf("[%s] Хешей=%d, стартовых воркеров=%d, цель=%d (в конфиге: %d)",
+		mode, len(hashes), min(target, workersPerGroup), target, int(workers)), 0)
 	writeIOSJournal(fmt.Sprintf("[КЛИЕНТ] %s %s/%s CPU=%d", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU()), 0)
 	if dir != "" {
 		_ = os.MkdirAll(dir, 0o700)
@@ -266,7 +273,8 @@ func wdtt_start(
 		attempt++
 		writeIOSJournal(fmt.Sprintf("[РЕТРАНСЛЯТОР #%d] Запрос параметров VK · ожидание до %.0f с", attempt, budget.Seconds()), 0)
 		startedAt := time.Now()
-		result, err := startIOSRelay(ctx, peer, hash, wrapKey, devID, pass, budget, attempt)
+		groups := planIOSWorkerGroups(hashes, hash, target, workersPerGroup)
+		result, err := startIOSRelay(ctx, peer, groups, wrapKey, devID, pass, budget)
 		if err != nil && ctx.Err() == nil {
 			writeIOSJournal(fmt.Sprintf("[РЕТРАНСЛЯТОР #%d] %s · %.1f с", attempt, err, time.Since(startedAt).Seconds()), 2)
 		} else if err == nil {
@@ -308,6 +316,7 @@ func wdtt_start(
 	engineMu.Lock()
 	engineCancel = cancel
 	engineDone = relay.done
+	engineExpand = relay.expand
 	engineDev = wgDev
 	engineAddress = relay.config.address
 	engineTUN = flow
@@ -322,9 +331,10 @@ var errIOSRelaySocket = errors.New("Не удалось открыть лока�
 type iosRelay struct {
 	config relayWireGuardConfig
 	done   <-chan struct{}
+	expand chan struct{}
 }
 
-func startIOSRelay(parent context.Context, peer *net.UDPAddr, hash string, wrapKey []byte, deviceID, password string, budget time.Duration, groupID int) (iosRelay, error) {
+func startIOSRelay(parent context.Context, peer *net.UDPAddr, groups []iosWorkerGroup, wrapKey []byte, deviceID, password string, budget time.Duration) (iosRelay, error) {
 	localConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		return iosRelay{}, errIOSRelaySocket
@@ -337,6 +347,8 @@ func startIOSRelay(parent context.Context, peer *net.UDPAddr, hash string, wrapK
 	configCh := make(chan string, 1)
 	credentialFailure := make(chan error, 1)
 	done := make(chan struct{})
+	primaryDone := make(chan struct{})
+	expand := make(chan struct{}, 1)
 	go func() {
 		defer close(done)
 		defer stopLocal()
@@ -344,14 +356,52 @@ func startIOSRelay(parent context.Context, peer *net.UDPAddr, hash string, wrapK
 		defer localConn.Close()
 		// The worker group reads these same credentials from cache. Fetch them
 		// here so an early failure is distinguishable from GETCONF timing out.
-		if _, _, _, err := GetCreds(ctx, hash, groupID*100); err != nil {
+		if _, _, _, err := GetCreds(ctx, groups[0].hash, 100); err != nil {
 			select {
 			case credentialFailure <- iosCredentialError(err):
 			case <-ctx.Done():
 			}
 			return
 		}
-		runIOSWorkers(ctx, localConn, peer, hash, wrapKey, deviceID, password, localPort, configCh, groupID)
+		stats := NewStats()
+		disp := NewDispatcher(ctx, localConn, stats)
+		defer disp.Shutdown()
+		last := groups[len(groups)-1]
+		go reportIOSWorkers(ctx, disp, stats, last.firstID+last.size-1)
+
+		var pool sync.WaitGroup
+		var launched int
+		launch := func(index int, ready, groupDone chan struct{}) {
+			group := groups[index]
+			launched += group.size
+			pool.Go(func() {
+				defer close(groupDone)
+				runIOSWorkers(ctx, disp, stats, peer, group, wrapKey, deviceID, password, localPort, configCh, index+1, ready)
+			})
+		}
+		launch(0, nil, primaryDone)
+		if len(groups) > 1 {
+			select {
+			case <-ctx.Done():
+			case <-primaryDone:
+			case <-expand:
+				for index := 1; index < len(groups) && ctx.Err() == nil; index++ {
+					if C.os_proc_available_memory() < 16<<20 {
+						writeIOSJournal("[КЛИЕНТ] Достигнут резерв памяти iOS · новые группы не запускаются", 0)
+						break
+					}
+					ready, groupDone := make(chan struct{}), make(chan struct{})
+					launch(index, ready, groupDone)
+					select {
+					case <-ctx.Done():
+					case <-ready:
+					case <-groupDone:
+					}
+				}
+				writeIOSJournal(fmt.Sprintf("[КЛИЕНТ] Воркеров направлено в запуск: %d", launched), 0)
+			}
+		}
+		pool.Wait()
 	}()
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
@@ -360,9 +410,18 @@ func startIOSRelay(parent context.Context, peer *net.UDPAddr, hash string, wrapK
 	case raw := <-configCh:
 		config, parseErr := parseRelayWireGuardConfig(raw, localPort)
 		if parseErr == nil && ctx.Err() == nil {
-			return iosRelay{config: config, done: done}, nil
+			return iosRelay{config: config, done: done, expand: expand}, nil
 		}
 		err = errors.New("Ретранслятор выдал некорректную конфигурацию VPN")
+	case <-primaryDone:
+		select {
+		case raw := <-configCh:
+			if config, parseErr := parseRelayWireGuardConfig(raw, localPort); parseErr == nil && ctx.Err() == nil {
+				return iosRelay{config: config, done: done, expand: expand}, nil
+			}
+		default:
+		}
+		err = errors.New("Ретрансляторы завершились до получения конфигурации VPN")
 	case <-done:
 		select {
 		case err = <-credentialFailure:
@@ -379,6 +438,23 @@ func startIOSRelay(parent context.Context, peer *net.UDPAddr, hash string, wrapK
 	return iosRelay{}, err
 }
 
+func reportIOSWorkers(ctx context.Context, disp *Dispatcher, stats *Stats, target int) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			const mb = 1024.0 * 1024.0
+			up := float64(stats.totalBytesUp.Load()) / mb
+			down := float64(stats.totalBytesDown.Load()) / mb
+			writeIOSJournal(fmt.Sprintf("[СТАТИСТИКА] Активных: %d/%d | Трафик: %.2f МБ (↑ %.2f · ↓ %.2f)",
+				len(*disp.workers.Load()), target, up+down, up, down), 0)
+		}
+	}
+}
+
 func iosCredentialError(err error) error {
 	if _, unavailable := asCallUnavailableError(err); unavailable {
 		return errors.New("VK не подтвердил доступность звонка для ретранслятора")
@@ -391,39 +467,41 @@ func iosCredentialError(err error) error {
 
 func runIOSWorkers(
 	ctx context.Context,
-	localConn net.PacketConn,
+	disp *Dispatcher,
+	stats *Stats,
 	peer *net.UDPAddr,
-	hash string,
+	group iosWorkerGroup,
 	wrapKey []byte,
 	deviceID, password string,
 	localPort string,
 	configCh chan<- string,
 	groupID int,
+	ready chan struct{},
 ) {
 	defer func() {
 		if r := recover(); r != nil {
 			writeIOSJournal("Группа ретрансляторов завершилась с внутренней ошибкой", 2)
 		}
 	}()
-	stats := NewStats()
-	shutdownCh := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		close(shutdownCh)
-	}()
-	go stats.RunLoop(shutdownCh)
-
-	disp := NewDispatcher(ctx, localConn, stats)
-	defer disp.Shutdown()
-
-	tp := &TurnParams{Hashes: []string{hash}, WrapKey: wrapKey}
-	ids := make([]int, workersPerGroup)
+	tp := &TurnParams{Hashes: []string{group.hash}, WrapKey: wrapKey}
+	ids := make([]int, group.size)
 	for i := range ids {
-		ids[i] = (groupID-1)*workersPerGroup + i + 1
+		ids[i] = group.firstID + i
 	}
-	writeIOSJournal(fmt.Sprintf("libclient запущен (n=%d)", len(ids)), 1)
+	writeIOSJournal(fmt.Sprintf("[ГРУППА #%d] Запуск воркеров %d–%d", groupID, ids[0], ids[len(ids)-1]), 1)
 	WorkerGroup(ctx, groupID, 0, tp, peer, disp, localPort,
-		true, configCh, ids, &iosPause, deviceID, password, stats, nil, nil)
+		true, configCh, ids, &iosPause, deviceID, password, stats, nil, ready)
+}
+
+//export wdtt_expand_workers
+func wdtt_expand_workers() {
+	engineMu.Lock()
+	expand := engineExpand
+	engineExpand = nil
+	engineMu.Unlock()
+	if expand != nil {
+		expand <- struct{}{}
+	}
 }
 
 //export wdtt_assigned_address

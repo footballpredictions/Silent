@@ -18,7 +18,6 @@ struct SilentApp: App {
 @MainActor
 final class SilentAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didDiscardSceneSessions sceneSessions: Set<UISceneSession>) {
-        guard !sceneSessions.isEmpty else { return }
-        VpnManager.shared.stopAfterSceneDiscard()
+        VpnManager.shared.sceneSessionsDiscarded(Set(sceneSessions.map(\.persistentIdentifier)))
     }
 }

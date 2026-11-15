@@ -15,6 +15,7 @@ int wdtt_start(
 );
 char *wdtt_assigned_address(void);
 int wdtt_has_handshake(void);
+void wdtt_expand_workers(void);
 int wdtt_set_russian_policy(const char *json);
 void wdtt_stop(void);
 void wdtt_set_output(void (*cb)(const unsigned char *data, int len));

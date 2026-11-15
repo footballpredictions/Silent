@@ -149,6 +149,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                         self?.startPolicyRefresh()
                         self?.scheduleBootstrapExpiry(config.bootstrapDuration, payment: config.paymentRouting == true)
                         completionHandler(nil)
+                        if config.bootstrapDuration == nil { wdtt_expand_workers() }
                         return
                     }
                     do { try await Task.sleep(nanoseconds: 250_000_000) }

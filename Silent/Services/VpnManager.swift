@@ -11,6 +11,9 @@ final class VpnManager: ObservableObject {
     private(set) var sceneDiscardCount = 0
     private var waitForActiveScene = false
     private var pendingSceneStop: Task<Void, Never>?
+    private let ownerSceneKey = "ios-vpn-owner-scene"
+    private let sceneStopKey = "ios-vpn-discard-stop-pending"
+    var closingDiscardedScene: Bool { waitForActiveScene }
     var onSceneDiscard: (() -> Void)?
     private var observer: NSObjectProtocol?
 
@@ -36,6 +39,7 @@ final class VpnManager: ObservableObject {
     }
 
     func isApiTunnelActive() async -> Bool {
+        guard !UserDefaults.standard.bool(forKey: sceneStopKey) else { return false }
         guard let mgr = try? await load() else { return false }
         return mgr.connection.status == .connected
     }
@@ -44,6 +48,7 @@ final class VpnManager: ObservableObject {
         let discardCount = sceneDiscardCount
         await pendingSceneStop?.value
         guard discardCount == sceneDiscardCount,
+              !UserDefaults.standard.bool(forKey: sceneStopKey),
               !waitForActiveScene || UIApplication.shared.applicationState == .active else { throw CancellationError() }
         waitForActiveScene = false
         guard let url = AppIdentity.configURL else {
@@ -86,9 +91,32 @@ final class VpnManager: ObservableObject {
         }
     }
 
-    func stopAfterSceneDiscard() {
+    func sceneSessionsDiscarded(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        if let owner = UserDefaults.standard.string(forKey: ownerSceneKey), !ids.contains(owner) { return }
+        stopAfterSceneDiscard()
+    }
+
+    func prepareForegroundScene() async {
+        let app = UIApplication.shared
+        let defaults = UserDefaults.standard
+        let owner = defaults.string(forKey: ownerSceneKey)
+        let open = Set(app.openSessions.map(\.persistentIdentifier))
+        if let activeScene = app.connectedScenes.first(where: { $0.activationState == .foregroundActive }) {
+            let ownerDiscarded = owner.map { VPNSceneOwnership.wasDiscarded($0, openSessions: open) } ?? false
+            if ownerDiscarded && pendingSceneStop == nil { stopAfterSceneDiscard() }
+            if owner == nil || ownerDiscarded {
+                defaults.set(activeScene.session.persistentIdentifier, forKey: ownerSceneKey)
+            }
+        }
+        if defaults.bool(forKey: sceneStopKey), pendingSceneStop == nil { stopAfterSceneDiscard() }
+        await pendingSceneStop?.value
+    }
+
+    private func stopAfterSceneDiscard() {
         sceneDiscardCount += 1
         waitForActiveScene = true
+        UserDefaults.standard.set(true, forKey: sceneStopKey)
         onSceneDiscard?()
         // iOS may terminate the UI process immediately after this callback.
         if let connection = manager?.connection,
@@ -96,10 +124,17 @@ final class VpnManager: ObservableObject {
             connection.stopVPNTunnel()
         }
         pendingSceneStop?.cancel()
+        let discardCount = sceneDiscardCount
         pendingSceneStop = Task { [weak self] in
-            guard let self, let mgr = try? await self.load(), !Task.isCancelled,
-                  mgr.connection.status != .disconnected && mgr.connection.status != .invalid else { return }
+            guard let self else { return }
+            defer {
+                if self.sceneDiscardCount == discardCount { self.pendingSceneStop = nil }
+            }
+            guard (try? await self.load()) != nil, !Task.isCancelled else { return }
             await self.disconnect()
+            if self.sceneDiscardCount == discardCount, self.state == .disconnected {
+                UserDefaults.standard.removeObject(forKey: self.sceneStopKey)
+            }
         }
     }
 
@@ -158,7 +193,7 @@ final class VpnManager: ObservableObject {
             return
         }
         state = .disconnecting
-        connection.stopVPNTunnel()
+        if connection.status != .disconnecting { connection.stopVPNTunnel() }
         for _ in 0..<20 {
             if connection.status == .disconnected || connection.status == .invalid { break }
             do { try await Task.sleep(nanoseconds: 250_000_000) } catch { break }

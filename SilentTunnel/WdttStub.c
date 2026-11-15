@@ -23,6 +23,7 @@ int wdtt_start(
 
 char *wdtt_assigned_address(void) { return 0; }
 int wdtt_has_handshake(void) { return 0; }
+void wdtt_expand_workers(void) {}
 
 void wdtt_stop(void) {}
 

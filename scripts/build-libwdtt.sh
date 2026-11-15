@@ -44,8 +44,8 @@ cp "$ROOT/engine/platform_limits_ios.go" "$TMP/"
 sed '1s/!android || !arm/(!android || !arm) \&\& !ios/' "$SRC/platform_limits_default.go" > "$TMP/platform_limits_default.go"
 # The shared client targets large Android traffic bursts. Keep the per-worker
 # packet queue bounded independently in the smaller iOS extension process.
-sed -E 's/(workerSendBuf[[:space:]]*=[[:space:]]*)2048/\1256/' "$SRC/session.go" > "$TMP/session.go"
-grep -Eq 'workerSendBuf[[:space:]]*=[[:space:]]*256' "$TMP/session.go"
+sed -E 's/workerSendBuf[[:space:]]*=[[:space:]]*2048/workerSendBuf = 64/' "$SRC/session.go" > "$TMP/session.go"
+grep -Eq 'workerSendBuf[[:space:]]*=[[:space:]]*64' "$TMP/session.go"
 # A timed-out iOS attempt must release its DTLS reads before the next group starts.
 python3 - "$TMP/session.go" <<'PY'
 from pathlib import Path

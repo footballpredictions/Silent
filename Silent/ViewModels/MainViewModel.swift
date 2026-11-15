@@ -86,6 +86,7 @@ final class MainViewModel: ObservableObject {
     var canLogout: Bool { !vpnActionInProgress && paymentTask == nil && !paymentTunnelActive && !paymentCleanupActive }
     private var connectedAt: Date?
     private var canRecoverTunnel = false
+    private var didStartInitialData = false
     private var tunnelRecovery: Task<Void, Never>?
     private var serverSelectionVersion = 0
     private var prefetchTask: Task<Void, Never>?
@@ -125,29 +126,32 @@ final class MainViewModel: ObservableObject {
         vpnObserver = vpn.$state.removeDuplicates().sink { [weak self] state in
             self?.onVPNStateChanged(state)
         }
-        Task {
-            if AppIdentity.readTunnelConfig()?.bootstrapDuration != nil {
-                bootstrapActive = true
-            }
-            await vpn.refresh()
-            if AppIdentity.readTunnelConfig()?.paymentRouting == true || KeychainHelper.get(paymentRestoreKey) != nil {
-                bootstrapActive = false
-                let account = api.isLoggedIn ? (try? await api.getProfile())?.id : nil
-                paymentTunnelActive = true
-                await finishPaymentTunnel(account: account)
-            } else if bootstrapActive && (!api.isLoggedIn || vpn.state == .disconnected) {
-                await stopBootstrap()
-            } else if !api.isLoggedIn, vpn.state != .disconnected {
-                await vpn.disconnect()
-            }
-            await loadInitialData()
-            if launchStage != nil {
-                launchStage = .complete
-                try? await Task.sleep(nanoseconds: 260_000_000)
-                launchStage = nil
-            }
-            await loadAppearanceAndServers()
+    }
+
+    func sceneDidBecomeActive() async {
+        await vpn.prepareForegroundScene()
+        guard !didStartInitialData else { return }
+        didStartInitialData = true
+        let config = AppIdentity.readTunnelConfig()
+        bootstrapActive = config?.bootstrapDuration != nil
+        await vpn.refresh()
+        if config?.paymentRouting == true || KeychainHelper.get(paymentRestoreKey) != nil {
+            bootstrapActive = false
+            let account = api.isLoggedIn ? (try? await api.getProfile())?.id : nil
+            paymentTunnelActive = true
+            await finishPaymentTunnel(account: account)
+        } else if bootstrapActive && (!api.isLoggedIn || vpn.state == .disconnected) {
+            await stopBootstrap()
+        } else if !api.isLoggedIn, vpn.state != .disconnected {
+            await vpn.disconnect()
         }
+        await loadInitialData()
+        if launchStage != nil {
+            launchStage = .complete
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            launchStage = nil
+        }
+        await loadAppearanceAndServers()
     }
 
     private func onSceneDiscard() {
@@ -160,6 +164,19 @@ final class MainViewModel: ObservableObject {
     }
 
     private func onVPNStateChanged(_ state: VpnState) {
+        if vpn.closingDiscardedScene, state == .disconnected || state == .disconnecting {
+            vpnState = state
+            connectedAt = nil
+            russianListReceived = false
+            errorMessage = nil
+            if state == .disconnected {
+                bootstrapActive = false
+                bootstrapDeadline = nil
+                bootstrapMailReady = false
+                bootstrapReconnecting = false
+            }
+            return
+        }
         if paymentTunnelActive {
             if state == .disconnected, payment == .waiting, !paymentCleanupActive {
                 Task { await releasePaymentTunnel() }

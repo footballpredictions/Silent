@@ -5,6 +5,9 @@ import Foundation
 struct SessionsApiPolicyTest {
     @MainActor
     static func main() async throws {
+        precondition(!VPNSceneOwnership.wasDiscarded("original", openSessions: ["original"]))
+        precondition(!VPNSceneOwnership.wasDiscarded("original", openSessions: ["original", "other-window"]))
+        precondition(VPNSceneOwnership.wasDiscarded("original", openSessions: ["new-launch"]))
         let active = PublicApiFailover.bases(preferred: PublicApiFailover.hiveHttps, tunnelActive: true)
         precondition(active.first == "http://10.66.66.1:8000", "Whitelist sessions must reach the API through VPN first")
         precondition(active.count == Set(active).count)

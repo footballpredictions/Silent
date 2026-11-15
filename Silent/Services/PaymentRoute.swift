@@ -12,6 +12,18 @@ enum PaymentRoute {
         await PaymentConnectivity.check(host: site.host!)
     }
 
+    /// Connected/handshake can precede propagation of the app's DNS and routes.
+    @MainActor
+    static func waitUntilReady(attempts: Int, delayNanoseconds: UInt64 = 250_000_000,
+                               check: () async throws -> Bool) async throws -> Bool {
+        for attempt in 0..<max(0, attempts) {
+            try Task.checkCancellation()
+            if try await check() { return true }
+            if attempt + 1 < attempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+        }
+        return false
+    }
+
     @MainActor
     static func choose<Route>(_ routes: [Route], start: (Route) async throws -> Void,
                               probe: () async throws -> Bool, stop: () async -> Bool) async throws -> Int? {

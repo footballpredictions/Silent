@@ -371,30 +371,43 @@ private struct ServerPage: View {
         let p = vm.palette
         let locked = vm.vpnState != .disconnected
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text("Выбор сервера").font(.headline.weight(.semibold)).foregroundColor(p.fg)
+                    .padding(.bottom, 12)
                 if locked {
                     Text("Переключение недоступно: VPN активен.").font(.footnote).foregroundColor(p.fg.opacity(0.7))
+                        .padding(.bottom, 8)
                 }
                 if !vm.serverHint.isEmpty {
                     Text(vm.serverHint).font(.footnote).foregroundColor(p.fg.opacity(0.7))
+                        .padding(.bottom, 8)
                 }
                 ForEach(vm.servers) { server in
                     let selected = vm.selectedServer == server.key
                     Button { vm.selectServer(server.key) } label: {
-                        HStack {
-                            Text(server.title).font(.body.weight(.medium)).foregroundColor(p.fg)
-                            Spacer()
-                            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                                .foregroundColor(p.fg.opacity(locked ? 0.35 : 1))
+                        HStack(spacing: 4) {
+                            ZStack {
+                                Circle().stroke(p.fg.opacity(locked || !selected ? 0.4 : 1), lineWidth: 2)
+                                    .frame(width: 20, height: 20)
+                                if selected {
+                                    Circle().fill(p.fg.opacity(locked ? 0.4 : 1))
+                                        .frame(width: 10, height: 10)
+                                }
+                            }
+                            .frame(width: 48, height: 48)
+                            .accessibilityHidden(true)
+                            Text(server.title).font(.body)
+                                .foregroundColor(p.fg.opacity(locked ? 0.4 : 1))
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
                         }
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 48)
-                        .background(p.fg.opacity(selected ? 0.07 : 0.035), in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.leading, 12)
+                        .padding(.vertical, 6)
+                        .frame(minHeight: 60)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(locked || selected)
+                    .disabled(locked)
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }

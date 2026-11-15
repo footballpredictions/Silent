@@ -72,6 +72,22 @@ struct SessionsApiPolicyTest {
                      "One stalled TLS address must not hide another working YooMoney address")
         let unavailable = await PaymentConnectivity.anyReachable(["bad-a", "bad-b"]) { _ in false }
         precondition(!unavailable)
+        var readinessChecks = 0
+        let routeReady = try await PaymentRoute.waitUntilReady(attempts: 3, delayNanoseconds: 0) {
+            readinessChecks += 1
+            return readinessChecks == 2
+        }
+        precondition(routeReady && readinessChecks == 2, "Do not tear down a tunnel before app routes become ready")
+        readinessChecks = 0
+        let neverReady = try await PaymentRoute.waitUntilReady(attempts: 3, delayNanoseconds: 0) {
+            readinessChecks += 1
+            return false
+        }
+        precondition(!neverReady && readinessChecks == 3, "Readiness retries must remain bounded")
+        do {
+            _ = try await PaymentRoute.waitUntilReady(attempts: 3, delayNanoseconds: 0) { throw CancellationError() }
+            preconditionFailure("Readiness ignored cancellation")
+        } catch is CancellationError {}
         guard let mail = BootstrapLaunch.configuration(hash: hash, fingerprint: "test-device", password: "test-transport",
                                                        cell: 0, registrationRouting: true) else {
             preconditionFailure("Email confirmation needs a temporary Internet route")

@@ -884,11 +884,41 @@ final class MainViewModel: ObservableObject {
             let (index, route) = entry
             guard vpn.state == .disconnected else { throw APIError.network }
             logConnection("Оплата · проверка временного маршрута №\(index + 1)")
-            try await vpn.connect(route, timeout: 48)
-            try await api.checkTunnelGateway()
+            do {
+                try await vpn.connect(route, timeout: 48)
+                logConnection("Оплата · WireGuard готов · ожидаем доступ к шлюзу")
+                var gatewayError: Error = APIError.network
+                let ready = try await PaymentRoute.waitUntilReady(attempts: 6) {
+                    do {
+                        try await self.api.checkTunnelGateway(timeout: 1)
+                        return self.vpn.state == .connected
+                    } catch {
+                        try Task.checkCancellation()
+                        gatewayError = error
+                        return false
+                    }
+                }
+                guard ready else { throw gatewayError }
+                logConnection("Оплата · шлюз VPN ответил", level: .success)
+            } catch {
+                if let network = error as? URLError {
+                    logConnection("Оплата · ошибка запуска/шлюза · код сети \(network.code.rawValue)", level: .error)
+                } else {
+                    logConnection("Оплата · ошибка запуска/шлюза · \(error.localizedDescription)", level: .error)
+                }
+                throw error
+            }
         }, probe: {
-            guard await PaymentRoute.check(), vpn.state == .connected else { return false }
+            let siteReady = try await PaymentRoute.waitUntilReady(attempts: 2) {
+                await PaymentRoute.check()
+            }
+            guard siteReady, vpn.state == .connected else {
+                logConnection("Оплата · DNS/HTTPS ЮMoney не подтвердился после готовности шлюза", level: .error)
+                return false
+            }
+            logConnection("Оплата · HTTPS ЮMoney подтверждён · запрос API")
             preview = try await selectPaymentAPI(planId, bases: [PublicApiFailover.tunnelAPI])?.preview
+            if preview == nil { logConnection("Оплата · API расчёта не ответил через VPN", level: .error) }
             return preview != nil && vpn.state == .connected
         }, stop: {
             logConnection("Оплата · маршрут не подтвердился", level: .error)

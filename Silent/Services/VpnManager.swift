@@ -70,7 +70,10 @@ final class VpnManager: ObservableObject {
         proto.providerBundleIdentifier = AppIdentity.tunnelBundleId
         proto.serverAddress = config.serverIP
         proto.disconnectOnSleep = false
-        proto.enforceRoutes = config.bootstrapRoutesInternet
+        // Use the same routing mode as the working main tunnel. Full Internet
+        // routes are installed by the provider; scoping every route here can
+        // leave the app's new sockets on an unusable path after the handoff.
+        proto.enforceRoutes = false
         mgr.protocolConfiguration = proto
         mgr.localizedDescription = "Silent VPN"
         mgr.isEnabled = true

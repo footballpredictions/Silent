@@ -325,11 +325,11 @@ class APIService: ObservableObject {
         throw APIError.bootstrapUnavailable("Сервер временного VPN не ответил. Попробуйте другую сеть или повторите подключение.")
     }
 
-    func checkTunnelGateway() async throws {
+    func checkTunnelGateway(timeout: TimeInterval = 5) async throws {
         struct Health: Decodable { let status: String }
         let data = try await requestOnce("api/health", method: "GET", body: nil,
                                          auth: false, base: PublicApiFailover.tunnelAPI,
-                                         allowRefresh: false, timeout: 5)
+                                         allowRefresh: false, verifyTLS: true, timeout: timeout)
         guard try JSONDecoder().decode(Health.self, from: data).status == "ok" else {
             throw APIError.server("Шлюз VPN не подтвердил передачу данных")
         }

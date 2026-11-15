@@ -26,23 +26,27 @@ func relayTURNFailure(event, message string) string {
 
 func relaySocketFailure(event string) string {
 	direction, operation := "чтения", "чтении"
-	if strings.HasPrefix(event, "Ошибка Writer:") {
+	if strings.Contains(event, " Writer:") {
 		direction, operation = "записи", "записи"
+	}
+	layer := "DTLS"
+	if strings.HasPrefix(event, "Ошибка TURN ") {
+		layer = "TURN"
 	}
 	lower := strings.ToLower(event)
 	switch {
 	case strings.HasSuffix(lower, "eof"):
-		return "DTLS: ретранслятор закрыл соединение (EOF)"
+		return layer + ": ретранслятор закрыл соединение (EOF)"
 	case strings.Contains(lower, "network is unreachable"), strings.Contains(lower, "network is down"), strings.Contains(lower, "no route to host"):
-		return "DTLS: сеть недоступна при " + operation
+		return layer + ": сеть недоступна при " + operation
 	case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"):
-		return "DTLS: таймаут " + direction
+		return layer + ": таймаут " + direction
 	case strings.Contains(lower, "closed pipe"), strings.Contains(lower, "closed network connection"):
-		return "DTLS: локальный канал закрыт при " + operation
+		return layer + ": локальный канал закрыт при " + operation
 	case strings.Contains(lower, "connection reset"), strings.Contains(lower, "connection refused"):
-		return "DTLS: соединение отклонено при " + operation
+		return layer + ": соединение отклонено при " + operation
 	default:
-		return "DTLS: ошибка " + direction + " канала"
+		return layer + ": ошибка " + direction + " канала"
 	}
 }
 
@@ -100,7 +104,7 @@ func relayJournalEvent(line string) (message string, level int) {
 		return prefix + "ретранслятор отклонил подключение", 2
 	case strings.HasPrefix(event, "Ошибка (попытка"):
 		return prefix + "ошибка канала, повтор подключения", 2
-	case strings.HasPrefix(event, "Ошибка Reader:") || strings.HasPrefix(event, "Ошибка Writer:"):
+	case strings.HasPrefix(event, "Ошибка Reader:") || strings.HasPrefix(event, "Ошибка Writer:") || strings.HasPrefix(event, "Ошибка TURN Reader:") || strings.HasPrefix(event, "Ошибка TURN Writer:"):
 		return prefix + relaySocketFailure(event), 2
 	case event == "Keepalive: запись не прошла, канал закрывается":
 		return prefix + "DTLS: ошибка keepalive, канал закрывается", 2

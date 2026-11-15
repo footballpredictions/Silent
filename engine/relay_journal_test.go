@@ -32,6 +32,8 @@ func TestRelayJournalOnlyPublishesStructuredEvents(t *testing.T) {
 		{"[ВОРКЕР #2] Ошибка Reader: read udp 192.0.2.1:1234: network is unreachable", "Воркер №2 · DTLS: сеть недоступна при чтении", 2},
 		{"[ВОРКЕР #2] Ошибка Writer: write udp 192.0.2.1:1234: i/o timeout", "Воркер №2 · DTLS: таймаут записи", 2},
 		{"[ВОРКЕР #2] Ошибка Reader: confidential-key=do-not-export", "Воркер №2 · DTLS: ошибка чтения канала", 2},
+		{"[ВОРКЕР #2] Ошибка TURN Reader: read udp 192.0.2.1:1234: i/o timeout", "Воркер №2 · TURN: таймаут чтения", 2},
+		{"[ВОРКЕР #2] Ошибка TURN Writer: write udp 192.0.2.1:1234: network is unreachable", "Воркер №2 · TURN: сеть недоступна при записи", 2},
 	} {
 		message, level := relayJournalEvent("2026/11/13 16:45:21 " + tc.raw + "\n")
 		if message != tc.message || level != tc.level {

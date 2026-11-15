@@ -47,6 +47,17 @@ def adapt(source):
     # makes the same distinction in the shared client).
     replace_once("\t\t\t\tif writeErr != nil {\n",
                  "\t\t\t\tif writeErr != nil {\n\t\t\t\t\tif sessCtx.Err() != nil { return }\n")
+    # Record the original relay failure before it cancels DTLS. Otherwise the
+    # cancellation guard above would also hide the actual source of the close.
+    for operation, variable, label in [
+        ("n, _, readErr := relay.ReadFrom(buf)", "readErr", "TURN Reader"),
+        ("if _, writeErr := relay.WriteTo(out, peer); writeErr != nil {", "writeErr", "TURN Writer"),
+    ]:
+        if variable == "readErr":
+            old = "\t\t\t" + operation + "\n\t\t\tif readErr != nil {\n"
+        else:
+            old = "\t\t\t" + operation + "\n"
+        replace_once(old, old + f'\t\t\t\tif sessCtx.Err() == nil {{ log.Printf("[ВОРКЕР #%d] Ошибка {label}: %v", sessionID, {variable}) }}\n')
 
     # Pion reports failed allocation/permission renewal through its logger, not
     # ReadFrom/WriteTo. Keep that lifecycle signal instead of discarding it.

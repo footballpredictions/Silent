@@ -21,6 +21,27 @@ type testKeepaliveConn struct {
 
 type interruptedWrite struct{ cancel context.CancelFunc }
 
+func TestOriginalRelayFailureIsNotHiddenByDTLSCancellation(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		if cancelled {
+			cancel()
+		}
+		var output bytes.Buffer
+		previous := log.Writer()
+		log.SetOutput(&output)
+		reportRelayReadFailure(ctx, io.ErrUnexpectedEOF)
+		log.SetOutput(previous)
+		cancel()
+		if cancelled && output.Len() != 0 {
+			t.Fatal("cancelled relay reported another error")
+		}
+		if !cancelled && !strings.Contains(output.String(), "Ошибка TURN Reader") {
+			t.Fatal("original relay read failure was hidden")
+		}
+	}
+}
+
 func (*interruptedWrite) SetWriteDeadline(time.Time) error { return nil }
 func (c *interruptedWrite) Write([]byte) (int, error) {
 	if c.cancel != nil {

@@ -57,6 +57,15 @@ func launchWriter(parent context.Context, dtlsConn keepaliveConn, packets <-chan
     proxyWg.Add(1)
 '''
     (target / "writer.go").write_text(writer_prefix + writer_loop + suffix, encoding="utf-8")
+    relay_read = source.index("n, _, readErr := relay.ReadFrom(buf)")
+    failure_start = source.index("\t\t\tif readErr != nil {", relay_read)
+    failure_end = source.index("\n\t\t\t}", failure_start) + len("\n\t\t\t}")
+    failure = source[failure_start:failure_end]
+    failure_imports = '"context"; "log"' if 'log.' in failure else '"context"'
+    (target / "relay_failure.go").write_text(
+        f'package main\nimport ({failure_imports})\n'
+        'func reportRelayReadFailure(sessCtx context.Context,readErr error){\nsessionID:=1\n_ = sessionID\n'
+        + failure + '\n}\n', encoding="utf-8")
     binding_prefix = '''package main
 import ("context"; "net"; "sync"; "time")
 type bindingQuality struct{}

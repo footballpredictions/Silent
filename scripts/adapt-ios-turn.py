@@ -16,6 +16,8 @@ def patch(source):
 
 
 def prepare(source, target, unpatched=False):
+    if not (source / 'internal/client/allocation.go').is_file():
+        raise ValueError("Pion TURN module was not downloaded; refusing to copy an unrelated directory")
     shutil.copytree(source, target)
     path = target / 'internal/client/allocation.go'
     if not unpatched:

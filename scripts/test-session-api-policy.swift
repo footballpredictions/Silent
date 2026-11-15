@@ -5,6 +5,14 @@ import Foundation
 struct SessionsApiPolicyTest {
     @MainActor
     static func main() async throws {
+        let receipt = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: receipt) }
+        precondition(!AppIdentity.tunnelReady(for: "main-launch", at: receipt))
+        try AppIdentity.markTunnelReady(for: "bootstrap-launch", at: receipt)
+        precondition(!AppIdentity.tunnelReady(for: "main-launch", at: receipt), "Bootstrap readiness must not confirm the main tunnel")
+        try AppIdentity.markTunnelReady(for: "main-launch", at: receipt)
+        precondition(AppIdentity.tunnelReady(for: "main-launch", at: receipt))
+        precondition(!AppIdentity.tunnelReady(for: "next-launch", at: receipt), "A previous main start must not confirm the next one")
         precondition(!VPNSceneOwnership.wasDiscarded("original", openSessions: ["original"]))
         precondition(!VPNSceneOwnership.wasDiscarded("original", openSessions: ["original", "other-window"]))
         precondition(VPNSceneOwnership.wasDiscarded("original", openSessions: ["new-launch"]))

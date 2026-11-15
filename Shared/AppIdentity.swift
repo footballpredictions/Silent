@@ -18,11 +18,25 @@ enum AppIdentity {
 
     static var configURL: URL? { groupURL?.appendingPathComponent(configName) }
     static var errorURL: URL? { groupURL?.appendingPathComponent(errorName) }
+    static var readyURL: URL? { groupURL?.appendingPathComponent("tunnel-ready.txt") }
     static var workURL: URL? { groupURL?.appendingPathComponent("engine", isDirectory: true) }
 
     static func readTunnelConfig() -> TunnelConfig? {
         guard let configURL, let data = try? Data(contentsOf: configURL) else { return nil }
         return try? JSONDecoder().decode(TunnelConfig.self, from: data)
+    }
+
+    // Each start has its own nonce. A ready receipt from the preceding
+    // bootstrap/main extension must never confirm a newly started tunnel.
+    static func tunnelReady(for launchID: String, at url: URL? = readyURL) -> Bool {
+        guard !launchID.isEmpty, let url, let data = try? Data(contentsOf: url) else { return false }
+        return data == Data(launchID.utf8)
+    }
+
+    static func markTunnelReady(for launchID: String?, at url: URL? = readyURL) throws {
+        guard let launchID else { return } // Keep older stored configs readable.
+        guard let url else { throw CocoaError(.fileNoSuchFile) }
+        try Data(launchID.utf8).write(to: url, options: .atomic)
     }
 }
 
@@ -79,6 +93,7 @@ struct TunnelConfig: Codable {
     var bootstrapDuration: Int? = nil
     var paymentRouting: Bool? = nil
     var registrationRouting: Bool? = nil
+    var launchID: String? = nil
 
     var bootstrapRoutesInternet: Bool { paymentRouting == true || registrationRouting == true }
 }

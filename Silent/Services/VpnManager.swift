@@ -16,6 +16,7 @@ final class VpnManager: ObservableObject {
     var closingDiscardedScene: Bool { waitForActiveScene }
     var onSceneDiscard: (() -> Void)?
     private var observer: NSObjectProtocol?
+    private var pendingLaunchID: String?
 
     private init() {
         observer = NotificationCenter.default.addObserver(
@@ -26,7 +27,12 @@ final class VpnManager: ObservableObject {
             guard let conn = note.object as? NEVPNConnection else { return }
             Task { @MainActor in
                 guard let self, self.manager?.connection === conn else { return }
-                self.state = Self.map(conn.status)
+                if conn.status == .connected, let launchID = self.pendingLaunchID,
+                   !AppIdentity.tunnelReady(for: launchID) {
+                    self.state = .connecting
+                } else {
+                    self.state = Self.map(conn.status)
+                }
             }
         }
     }
@@ -70,7 +76,10 @@ final class VpnManager: ObservableObject {
             withIntermediateDirectories: true
         )
         if let errURL = AppIdentity.errorURL { try? FileManager.default.removeItem(at: errURL) }
-        let data = try JSONEncoder().encode(config)
+        let launchID = UUID().uuidString
+        var launchConfig = config
+        launchConfig.launchID = launchID
+        let data = try JSONEncoder().encode(launchConfig)
         try data.write(to: url, options: .atomic)
 
         let proto = NETunnelProviderProtocol()
@@ -89,11 +98,13 @@ final class VpnManager: ObservableObject {
         try Task.checkCancellation()
         guard discardCount == sceneDiscardCount else { throw CancellationError() }
         state = .connecting
+        pendingLaunchID = launchID
+        defer { pendingLaunchID = nil }
         do {
             try Task.checkCancellation()
             try mgr.connection.startVPNTunnel()
             let defaultTimeout: TimeInterval = config.hashes.count > 1 ? 58 : 50
-            try await waitForConnection(mgr.connection, timeout: timeout ?? defaultTimeout)
+            try await waitForConnection(mgr.connection, launchID: launchID, timeout: timeout ?? defaultTimeout)
         } catch {
             mgr.connection.stopVPNTunnel()
             state = Self.map(mgr.connection.status)
@@ -148,12 +159,13 @@ final class VpnManager: ObservableObject {
         }
     }
 
-    private func waitForConnection(_ connection: NEVPNConnection, timeout: TimeInterval) async throws {
+    private func waitForConnection(_ connection: NEVPNConnection, launchID: String, timeout: TimeInterval) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         repeat {
             try await Task.sleep(nanoseconds: 250_000_000)
             switch connection.status {
             case .connected:
+                guard AppIdentity.tunnelReady(for: launchID) else { continue }
                 state = .connected
                 return
             case .disconnected, .invalid:

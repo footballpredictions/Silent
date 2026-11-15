@@ -157,6 +157,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 for _ in 0..<60 {
                     guard !Task.isCancelled else { completionHandler(CancellationError()); return }
                     if wdtt_has_handshake() != 0 {
+                        do { try AppIdentity.markTunnelReady(for: config.launchID) }
+                        catch {
+                            self?.reading = false
+                            wdtt_stop()
+                            let text = "Не удалось передать приложению готовность VPN"
+                            self?.writeError(text)
+                            completionHandler(self?.tunnelError(text) ?? error)
+                            return
+                        }
                         VPNLog.write("Рукопожатие WireGuard подтверждено", level: .success)
                         self?.startPathMonitor()
                         self?.startPolicyRefresh()

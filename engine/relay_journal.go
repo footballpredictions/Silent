@@ -120,6 +120,8 @@ func relayJournalEvent(line string) (message string, level int) {
 		return prefix + event, 2
 	case event == "TURN: разрешение и канал продлены после сна":
 		return prefix + event, 1
+	case event == "DTLS: срок простоя канала истёк, новое рукопожатие":
+		return prefix + event, 0
 	case strings.HasPrefix(event, "TURN: продление allocation не подтверждено, канал закрывается"):
 		return prefix + relayTURNFailure(event, "TURN: ошибка продления канала"), 2
 	case strings.HasPrefix(event, "TURN: продление permission не подтверждено, канал закрывается"):

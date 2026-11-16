@@ -113,4 +113,10 @@ func launchBinding(parent context.Context, tc *testTURNConnection) (context.Cont
     (target / "logger.go").write_text(logger, encoding="utf-8")
     shutil.copyfile(root / "scripts/fixtures/session/keepalive_test.go", target / "keepalive_test.go")
     result = subprocess.run(["go", "test", "-mod=mod", "-count=1", "-v", "./..."], cwd=target, timeout=60)
-    sys.exit(result.returncode)
+    if result.returncode:
+        sys.exit(result.returncode)
+
+# This also extracts the actual wrapper installation and tests lost server
+# close_notify, successful TURN control and real two-way DTLS replacement.
+result = subprocess.run([sys.executable, "-B", str(root / "scripts/test-ios-dtls-idle.py"), sys.argv[1], "-race"], timeout=120)
+sys.exit(result.returncode)

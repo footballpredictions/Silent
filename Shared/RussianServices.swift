@@ -36,11 +36,27 @@ enum RussianServices {
         }
         return nil
     }
-    static func refresh(tunnelActive: Bool = false) async -> RussianRoutingPolicy? {
-        // Whitelist LTE may block every public API address. Use the already
-        // established tunnel for this control request; never replace it with
-        // a temporary VPN just to update the policy.
-        let bases = (tunnelActive ? ["http://10.66.66.1:8000"] : []) + ["https://89-125-188-100.nip.io", "http://87.58.213.193:9100", "http://78.17.74.27:9100", "http://192.177.26.38:9100", "http://89.37.192.241:9100"]
+    static func refresh(fetchGateway: (() async throws -> Data)? = nil) async -> RussianRoutingPolicy? {
+        func validated(_ data: Data) throws -> RussianRoutingPolicy? {
+            guard data.count <= 262144 else { return nil }
+            var value = try JSONDecoder().decode(RussianRoutingPolicy.self, from: data)
+            guard value.valid else { return nil }
+            value.enabled = true
+            if let url = cacheURL { try data.write(to: url, options: .atomic) }
+            return value
+        }
+        guard !Task.isCancelled else { return nil }
+        // The provider supplies an explicit through-tunnel connection. Its
+        // ordinary sockets follow the physical path, including private IPs.
+        if let fetchGateway {
+            do {
+                let data = try await fetchGateway()
+                guard !Task.isCancelled else { return nil }
+                if let value = try validated(data) { return value }
+            } catch { /* Preserve the existing public fallbacks and cache. */ }
+        }
+        guard !Task.isCancelled else { return nil }
+        let bases = ["https://89-125-188-100.nip.io", "http://87.58.213.193:9100", "http://78.17.74.27:9100", "http://192.177.26.38:9100", "http://89.37.192.241:9100"]
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 2.5
         configuration.timeoutIntervalForResource = 3
@@ -50,12 +66,9 @@ enum RussianServices {
             if Task.isCancelled { return nil }
             do {
                 let (data, response) = try await session.data(from: URL(string: base + "/api/vpn/routing-policy")!)
-                guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 262144 else { continue }
-                var value = try JSONDecoder().decode(RussianRoutingPolicy.self, from: data)
-                guard value.valid else { continue }
-                value.enabled = true
-                if let url = cacheURL { try data.write(to: url, options: .atomic) }
-                return value
+                guard !Task.isCancelled else { return nil }
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+                if let value = try validated(data) { return value }
             } catch { /* Keep the last validated policy when offline. */ }
         }
         return nil

@@ -15,6 +15,20 @@ def adapt(source):
     if count != 1:
         raise ValueError("Shared WDTT worker queue changed")
 
+    # Every application write must use the same serialized WALL-gap check.
+    # Keep the actual DTLS handshake raw; wrap immediately after it succeeds,
+    # before initial GETCONF and before any worker can enter the dispatcher.
+    replace_once("\tdtlsConn, err := dtls.Client(pipeB, peer, dtlsCfg)\n",
+                 "\trawDTLSConn, err := dtls.Client(pipeB, peer, dtlsCfg)\n")
+    replace_once("\tdefer dtlsConn.Close()\n", "\tdefer rawDTLSConn.Close()\n")
+    replace_once("\terr = dtlsConn.HandshakeContext(hctx)\n",
+                 "\terr = rawDTLSConn.HandshakeContext(hctx)\n")
+    replace_once("\tstats.IncActive()\n",
+                 "\tdtlsConn := newIOSDTLSConn(rawDTLSConn, func() {\n"
+                 '\t\tlog.Printf("[ВОРКЕР #%d] DTLS: срок простоя канала истёк, новое рукопожатие", sessionID)\n'
+                 "\t\tsessCancel()\n"
+                 "\t})\n\n\tstats.IncActive()\n")
+
     # GETCONF and the proxy must both unblock on session cancellation.
     old = ("\tstopDTLS := context.AfterFunc(sessCtx, func() {\n"
            "\t\t_ = dtlsConn.SetDeadline(time.Now())\n"

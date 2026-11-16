@@ -1,0 +1,158 @@
+// Exact backend/wdtt-src/server.go UDP proxy snapshot.
+// Full source SHA256: 3681426e9b716de9fa32ad51cfa335677f90c5f9b06a89ba0eb898119dd420e3
+// Only surrounding access/accounting are stubbed; the runner scales its 90s deadline.
+package main
+import("context";"net";"sync";"sync/atomic";"time")
+func runActualServerProxy(ctx context.Context,clientConn net.Conn,wgEndpoint string){
+var connDeviceID,connPassword string
+var connIsMainPass bool
+buf:=make([]byte,1600)
+n,err:=clientConn.Read(buf)
+if err!=nil{return}
+firstPacket:=buf[:n]
+	// WG прокси
+	wgConn, err := net.Dial("udp", wgEndpoint)
+	if err != nil {
+		return
+	}
+	defer wgConn.Close()
+
+	if uc, ok := wgConn.(*net.UDPConn); ok {
+		uc.SetReadBuffer(2 * 1024 * 1024)
+		uc.SetWriteBuffer(2 * 1024 * 1024)
+	}
+
+	if _, err := wgConn.Write(firstPacket); err != nil {
+		return
+	}
+	atomic.AddInt64(&totalBytesFromClient, int64(len(firstPacket)))
+
+	// Трекинг онлайн-статуса
+	if connDeviceID != "" {
+		activeDevicesMu.Lock()
+		activeDevices[connDeviceID]++
+		firstConn := activeDevices[connDeviceID] == 1
+		activeDevicesMu.Unlock()
+		if firstConn {
+			go reportDeviceOnline(connDeviceID, true)
+		}
+		defer func() {
+			activeDevicesMu.Lock()
+			activeDevices[connDeviceID]--
+			lastConn := activeDevices[connDeviceID] <= 0
+			if lastConn {
+				delete(activeDevices, connDeviceID)
+			}
+			activeDevicesMu.Unlock()
+			if lastConn {
+				go reportDeviceOnline(connDeviceID, false)
+			}
+		}()
+	}
+
+	pctx, pcancel := context.WithCancel(ctx)
+	defer pcancel()
+
+	context.AfterFunc(pctx, func() {
+		clientConn.SetDeadline(time.Now())
+		wgConn.SetDeadline(time.Now())
+	})
+
+	var proxyWg sync.WaitGroup
+	proxyWg.Add(2)
+
+	// Клиент → WG
+	go func() {
+		defer proxyWg.Done()
+		defer pcancel()
+		b := getBuf()
+		defer putBuf(b)
+		for {
+			select {
+			case <-pctx.Done():
+				return
+			default:
+			}
+			// Клиент шлёт DTLS keepalive каждые 15с. 90с deadline => мёртвые/ушедшие
+			// клиенты закрываются быстро (точный online/offline), активные не страдают.
+			clientConn.SetReadDeadline(time.Now().Add(90 * time.Second))
+			nn, err := clientConn.Read(*b)
+			if err != nil {
+				return
+			}
+			// Skip DTLS keepalive packets (1-byte 0xFF ping from client)
+			if nn == 1 && (*b)[0] == 0xFF {
+				continue
+			}
+			if isGetconfPacket(*b, nn) {
+				if !deviceVpnAllowed(connDeviceID) {
+					denyNoSubscription(clientConn, connDeviceID, "GETCONF-live")
+					return
+				}
+				continue
+			}
+			atomic.AddInt64(&totalBytesFromClient, int64(nn))
+			// Per-password upload tracking
+			if connIsMainPass {
+				atomic.AddInt64(&mainPassUp, int64(nn))
+			} else if connPassword != "" {
+				dbMutex.Lock()
+				e, ok := db.Passwords[connPassword]
+				if !ok || e == nil || isPasswordExpired(e) {
+					dbMutex.Unlock()
+					return
+				}
+				e.UpBytes += int64(nn)
+				dbMutex.Unlock()
+			}
+			if _, err := wgConn.Write((*b)[:nn]); err != nil {
+				return
+			}
+		}
+	}()
+
+	// WG → Клиент
+	go func() {
+		defer proxyWg.Done()
+		defer pcancel()
+		b := getBuf()
+		defer putBuf(b)
+		for {
+			select {
+			case <-pctx.Done():
+				return
+			default:
+			}
+			wgConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
+			nn, err := wgConn.Read(*b)
+			if err != nil {
+				if isNetTimeout(err) {
+					if pctx.Err() != nil {
+						return
+					}
+					continue
+				}
+				return
+			}
+			atomic.AddInt64(&totalBytesToClient, int64(nn))
+			// Per-password download tracking
+			if connIsMainPass {
+				atomic.AddInt64(&mainPassDown, int64(nn))
+			} else if connPassword != "" {
+				dbMutex.Lock()
+				e, ok := db.Passwords[connPassword]
+				if !ok || e == nil || isPasswordExpired(e) {
+					dbMutex.Unlock()
+					return
+				}
+				e.DownBytes += int64(nn)
+				dbMutex.Unlock()
+			}
+			if _, err := clientConn.Write((*b)[:nn]); err != nil {
+				return
+			}
+		}
+	}()
+
+	proxyWg.Wait()
+}

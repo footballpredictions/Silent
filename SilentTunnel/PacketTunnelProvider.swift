@@ -462,7 +462,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         guard activeConfig?.russian?.enabled == true else { return }
         policyRefresh = Task { [weak self] in
             while !Task.isCancelled {
-                if let policy = await RussianServices.refresh(tunnelActive: true), !Task.isCancelled,
+                if let policy = await RussianServices.refresh(fetchGateway: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await PolicyTunnelHTTP.fetch(through: self)
+                }), !Task.isCancelled,
                    let self, self.reading, self.activeConfig?.russian?.enabled == true {
                     if policy.revision == self.activeConfig?.russian?.revision || self.applyRussianPolicy(policy) {
                         self.activeConfig?.russian = policy

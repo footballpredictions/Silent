@@ -20,9 +20,9 @@ class ReleaseBundleTest(unittest.TestCase):
                 (target / 'Info.plist').write_bytes(plistlib.dumps({
                     'CFBundleVersion': '31', 'SilentBuildRevision': revision, 'CFBundleExecutable': 'Binary',
                 }))
-                (target / 'Binary').write_bytes(('(Запуск воркеров )[0-9]+[–-][0-9]+ ' + revision + ' TURN: канал не отвечает на повторную проверку TURN: нет ответа на две проверки TURN: разрешение и канал продлены после сна').encode())
+                (target / 'Binary').write_bytes(('(Запуск воркеров )[0-9]+[–-][0-9]+ ' + revision + ' TURN: канал не отвечает на повторную проверку TURN: нет ответа на две проверки TURN: разрешение и канал продлены после сна DTLS: срок простоя канала истёк, новое рукопожатие').encode())
             module.verify(app, '31', revision)
-            (tunnel / 'Binary').write_bytes((revision + ' TURN: канал не отвечает на повторную проверку TURN: нет ответа на две проверки TURN: разрешение и канал продлены после сна').encode())
+            (tunnel / 'Binary').write_bytes((revision + ' TURN: канал не отвечает на повторную проверку TURN: нет ответа на две проверки TURN: разрешение и канал продлены после сна DTLS: срок простоя канала истёк, новое рукопожатие').encode())
             module.verify(app, '31', revision)
             current_app = (app / 'Binary').read_bytes()
             (app / 'Binary').write_bytes(b'old app without current grouping')
@@ -31,6 +31,8 @@ class ReleaseBundleTest(unittest.TestCase):
             with self.assertRaises(ValueError): module.verify(app, '30', revision)
             with self.assertRaises(ValueError): module.verify(app, '31', 'b' * 40)
             original = (tunnel / 'Binary').read_bytes()
+            (tunnel / 'Binary').write_bytes(original.replace('DTLS: срок простоя канала истёк, новое рукопожатие'.encode(), b''))
+            with self.assertRaises(ValueError): module.verify(app, '31', revision)
             (tunnel / 'Binary').write_bytes(original.replace('TURN: разрешение и канал продлены после сна'.encode(), b''))
             with self.assertRaises(ValueError): module.verify(app, '31', revision)
             (tunnel / 'Binary').write_bytes(b'resources old engine')

@@ -10,6 +10,74 @@ import (
 	"time"
 )
 
+// The server closes an established DTLS proxy after 90s without incoming
+// application packets. Its close_notify may be lost while the phone sleeps;
+// successful TURN control requests cannot recreate the old DTLS keys.
+const iosDTLSServerIdleTimeout = 90 * time.Second
+
+var errIOSDTLSSendGap = errors.New("DTLS: истёк серверный срок без отправки, нужен новый канал")
+
+// Serialize all application writes (initial GETCONF, ping, access check and WG)
+// so none can conceal an expired session by refreshing its last-send timestamp.
+// Close deliberately uses the embedded Conn: cancellation must unblock a writer
+// without waiting for this mutex. now is injectable only for local tests.
+type iosDTLSConn struct {
+	net.Conn
+	sendMu       sync.Mutex
+	now          func() time.Time
+	onExpired    func()
+	lastSentWall int64
+	expired      bool
+}
+
+func newIOSDTLSConn(conn net.Conn, onExpired func()) *iosDTLSConn {
+	return newIOSDTLSConnWithClock(conn, time.Now, onExpired)
+}
+
+func newIOSDTLSConnWithClock(conn net.Conn, now func() time.Time, onExpired func()) *iosDTLSConn {
+	// Construction follows a successful handshake. Treat that as the initial
+	// lease too: sleeping before GETCONF/the first ping must not bypass expiry.
+	return &iosDTLSConn{Conn: conn, now: now, onExpired: onExpired, lastSentWall: now().UnixNano()}
+}
+
+func (c *iosDTLSConn) sendExpired(now time.Time) bool {
+	// Compare Unix timestamps, not time.Time.Sub: Darwin's monotonic clock can
+	// pause during system sleep while the remote server's lifetime continues.
+	return now.UnixNano()-c.lastSentWall >= int64(iosDTLSServerIdleTimeout)
+}
+
+func (c *iosDTLSConn) Write(payload []byte) (int, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.expired {
+		return 0, errIOSDTLSSendGap
+	}
+	if c.sendExpired(c.now()) {
+		c.expireSend()
+		return 0, errIOSDTLSSendGap
+	}
+	n, err := c.Conn.Write(payload)
+	if err == nil && n == len(payload) {
+		now := c.now()
+		// A write already in progress when the process slept must not revive
+		// an expired server session when it finally returns successfully.
+		if c.sendExpired(now) {
+			c.expireSend()
+			return n, errIOSDTLSSendGap
+		}
+		c.lastSentWall = now.UnixNano()
+	}
+	return n, err
+}
+
+// Called only with sendMu held; emit the recovery reason once per session.
+func (c *iosDTLSConn) expireSend() {
+	c.expired = true
+	if c.onExpired != nil {
+		c.onExpired()
+	}
+}
+
 type iosNetworkSnapshot struct {
 	changed    <-chan struct{}
 	generation uint64

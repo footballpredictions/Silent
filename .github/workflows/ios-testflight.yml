@@ -10,9 +10,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 45
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       IOS_ANDROID_SHA: 4a9bea240113230f820fe7cf33bc96c0274f49a6
     steps:
       - name: Check out iOS

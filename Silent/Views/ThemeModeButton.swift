@@ -31,7 +31,13 @@ private struct ThemeGlyph: View, Animatable {
 
     var body: some View {
         Canvas { context, size in
-            let t = min(1, max(0, progress))
+            draw(in: context, size: size)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func draw(in context: GraphicsContext, size: CGSize) {
+            let t = CGFloat(min(1, max(0, progress)))
             let d = min(size.width, size.height)
             let r = d * 0.22
             let x = size.width / 2
@@ -42,18 +48,18 @@ private struct ThemeGlyph: View, Animatable {
                 let scale = 1 - 0.55 * t
                 var rays = Path()
                 for i in 0..<8 {
-                    let angle = Double(i) * .pi / 4 + .pi / 2 * t
+                    let angle = CGFloat(i) * .pi / 4 + .pi / 2 * t
                     let start = (r + d * 0.05) * scale
                     let end = d * 0.44 * scale
                     rays.move(to: CGPoint(x: x + cos(angle) * start, y: y + sin(angle) * start))
                     rays.addLine(to: CGPoint(x: x + cos(angle) * end, y: y + sin(angle) * end))
                 }
-                context.stroke(rays, with: .color(ink.opacity(alpha)), lineWidth: d * 0.07 * scale)
+                context.stroke(rays, with: .color(ink.opacity(Double(alpha))), lineWidth: d * 0.07 * scale)
             }
 
             var disc = context
             disc.translateBy(x: x, y: y)
-            disc.rotate(by: .degrees(-28 * t))
+            disc.rotate(by: .degrees(Double(-28 * t)))
             disc.scaleBy(x: 1 + 0.08 * t, y: 1 + 0.08 * t)
             disc.drawLayer { layer in
                 layer.fill(Path(ellipseIn: CGRect(x: -r, y: -r, width: r * 2, height: r * 2)), with: .color(ink))
@@ -63,7 +69,5 @@ private struct ThemeGlyph: View, Animatable {
                     layer.fill(Path(ellipseIn: CGRect(x: r * 0.58 - cut, y: -r * 0.32 - cut, width: cut * 2, height: cut * 2)), with: .color(.black))
                 }
             }
-        }
-        .accessibilityHidden(true)
     }
 }

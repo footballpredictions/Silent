@@ -486,7 +486,6 @@ final class MainViewModel: ObservableObject {
                     do {
                         config = try await api.previewVpnConfig(server: selectedServer, tunnelActive: true,
                                                                refreshExpiredToken: true)
-                        try Task.checkCancellation()
                     } catch APIError.http(404, _) {
                         // Legacy servers and a missing device still use the
                         // normal config/register path. A network timeout does

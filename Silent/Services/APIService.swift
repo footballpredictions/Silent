@@ -439,14 +439,15 @@ class APIService: ObservableObject {
                           tunnelOnly: tunnelOnly)
     }
 
-    func previewVpnConfig(server: String, tunnelActive: Bool) async throws -> VpnConfig {
+    func previewVpnConfig(server: String, tunnelActive: Bool, refreshExpiredToken: Bool = false) async throws -> VpnConfig {
         let path = PublicApiFailover.serverQuery("api/vpn/config-preview", fingerprint: deviceFingerprint, preferred: server)
         let bases = tunnelActive ? [PublicApiFailover.tunnelAPI] : PublicApiFailover.paymentPublicBases
         var lastError: Error = APIError.network
         for base in bases {
             do {
                 let data = try await requestOnce(path, method: "GET", body: nil, auth: true, base: base,
-                                                 allowRefresh: false, verifyTLS: true, timeout: 3)
+                                                 allowRefresh: refreshExpiredToken, verifyTLS: true, timeout: 3,
+                                                 refreshOnSameBase: tunnelActive && refreshExpiredToken)
                 return try JSONDecoder().decode(VpnConfig.self, from: data)
             } catch let error as APIError {
                 guard case .network = error else { throw error }

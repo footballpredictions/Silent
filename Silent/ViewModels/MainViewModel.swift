@@ -82,7 +82,8 @@ final class MainViewModel: ObservableObject {
     private var vpnObserver: AnyCancellable?
     private var bootstrapActive = false
     private var bootstrapAttempted = false
-    private var bootstrapCell = 0
+    private var bootstrapCell = BootstrapLaunch.cellHosts.firstIndex(of:
+        UserDefaults.standard.string(forKey: "ios-bootstrap-cell-host") ?? "") ?? 0
     @Published private var vpnActionInProgress = false
     var canLogout: Bool { !vpnActionInProgress && paymentTask == nil && !paymentTunnelActive && !paymentCleanupActive }
     private var connectedAt: Date?
@@ -291,6 +292,7 @@ final class MainViewModel: ObservableObject {
                 do {
                     try await connectBootstrap(local)
                     bootstrapCell = cell
+                    UserDefaults.standard.set(local.serverIP, forKey: "ios-bootstrap-cell-host")
                     return
                 } catch {
                     await vpn.disconnect()
@@ -480,8 +482,27 @@ final class MainViewModel: ObservableObject {
                 rememberConfigSession(cached, account: loaded.id)
             } else {
                 do {
-                    let config = try await requestMainConfig(selectedServer, tunnelOnly: true)
+                    let config: VpnConfig
+                    do {
+                        config = try await api.previewVpnConfig(server: selectedServer, tunnelActive: true,
+                                                               refreshExpiredToken: true)
+                        try Task.checkCancellation()
+                    } catch APIError.http(404, _) {
+                        // Legacy servers and a missing device still use the
+                        // normal config/register path. A network timeout does
+                        // not start a second request to the same failed route.
+                        config = try await requestMainConfig(selectedServer, tunnelOnly: true)
+                    }
                     try Task.checkCancellation()
+                    guard let confirmed = config.selected_server,
+                          servers.contains(where: { $0.key == confirmed }) else {
+                        throw APIError.server("Сервер не подтвердил стартовую конфигурацию")
+                    }
+                    saveServerConfig(config, slot: confirmed)
+                    if confirmed != selectedServer {
+                        storeSelectedServer(confirmed)
+                        logConnection("Запрошенный сервер недоступен · выбран доступный сервер")
+                    }
                     rememberConfigSession(config, account: loaded.id)
                     logConnection("Конфиг выбранного сервера сохранён")
                 } catch is CancellationError {

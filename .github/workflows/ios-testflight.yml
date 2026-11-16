@@ -9,7 +9,20 @@ permissions:
   contents: read
 
 jobs:
+  startup-regression:
+    runs-on: ubuntu-24.04
+    container: swift:6.2@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
+    timeout-minutes: 10
+    steps:
+      - name: Check out iOS
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Replay saved-account startup
+        run: python3 scripts/test-startup-boot.py
+
   build:
+    needs: startup-regression
     runs-on: macos-15
     timeout-minutes: 45
     env:

@@ -12,32 +12,38 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 ios = root if (root / 'Silent/ViewModels').is_dir() else root / 'ios'
 source = (ios / 'Silent/ViewModels/MainViewModel.swift').read_text(encoding='utf-8')
+api_source = (ios / 'Silent/Services/APIService.swift').read_text(encoding='utf-8')
 
-def method(name):
-    pos = source.index('func ' + name + '(')
-    start = source.rfind('\n', 0, pos) + 1
-    opening = source.index('{', pos)
+def method(name, text=source):
+    pos = text.index('func ' + name + '(')
+    start = text.rfind('\n', 0, pos) + 1
+    opening = text.index('{', pos)
     depth, end = 1, opening + 1
     while depth:
-        depth += (source[end] == '{') - (source[end] == '}')
+        depth += (text[end] == '{') - (text[end] == '}')
         end += 1
-    return source[start:end]
+    return text[start:end]
 
 methods = '\n'.join(method(name) for name in [
     'loadInitialData', 'restoreSavedAccount', 'startBootstrap', 'connectBootstrap',
-    'loadAccount', 'stopBootstrap',
+    'loadAccount', 'stopBootstrap', 'rememberLoginSession',
 ])
+if 'func rememberConfigSession(' in source:
+    methods += '\n' + method('rememberConfigSession')
+get_profile = method('getProfile', api_source)
 
 fixture = r'''import Foundation
 enum APIError:Error { case network, unauthorized, http(Int,String), server(String), bootstrapUnavailable(String) }
 enum Stage { case configuration, session, tunnel, data }
 enum State { case connected, disconnected }
-struct Subscription { var is_active=true }
-struct UserProfile { var id="fixture-startup-account";var is_admin=true;var subscription=Subscription() }
-struct VpnConfig {}
+struct Subscription:Codable { var is_active=true }
+struct DeviceInfo:Codable {var id="fixture-main-device"}
+struct UserProfile:Codable { var id="fixture-startup-account";var is_admin=true;var subscription=Subscription();var current_device_id:String?;var devices=[DeviceInfo()] }
+struct VpnConfig {var device_id="fixture-main-device"}
 struct TunnelConfig:Codable { var deviceId="boot:fixture";var serverIP="";var hashes=["fixture-hash"];var bootstrapDuration:Int?=300;var registrationRouting:Bool?;var paymentRouting:Bool?;var dns:[String]=[] }
 struct BootstrapCache:Codable {var savedAt:Date;var config:TunnelConfig}
 enum LocalStore {static let preferredServer="server1"}
+enum PublicApiFailover {static func serverQuery(_ path:String,fingerprint:String)->String{path}}
 enum RegistrationTunnelRoute {static let internetDNS=["1.1.1.1"]}
 enum KeychainHelper {static func get(_ key:String)->String?{nil};static func set(_ value:String,key:String){} }
 enum BootstrapLaunch {
@@ -70,8 +76,9 @@ enum BootstrapLaunch {
    clock.record("public-probe",publicHealthy ? 0.1:3)
    return publicHealthy ? UserProfile():nil
  }
- func getProfile(tunnelOnly:Bool=false) async throws ->UserProfile {
+ func request<T:Decodable>(_ path:String,tunnelOnly:Bool=false) async throws ->T {
    try Task.checkCancellation()
+   precondition(path == "api/users/me")
    if revokeProfile {clock.record("profile:revoked");throw APIError.unauthorized}
    if vpn.state == .connected {
       clock.record("profile:tunnel",gatewayFailure ? 5:0.1)
@@ -79,7 +86,7 @@ enum BootstrapLaunch {
         if !tunnelOnly {clock.record("profile:public-failover",40)}
         throw APIError.network
       }
-      return UserProfile()
+      return try JSONDecoder().decode(T.self,from:JSONEncoder().encode(UserProfile()))
    }
    clock.record("profile:public-failover",40);throw APIError.network
  }
@@ -88,6 +95,7 @@ enum BootstrapLaunch {
  }
  func checkTunnelGateway() async throws {clock.record("gateway",0.1)}
  func logout(){isLoggedIn=false}
+GET_PROFILE
 }
 @MainActor final class VM {
  let api:API;let vpn:VPN;let clock:Clock
@@ -100,7 +108,6 @@ enum BootstrapLaunch {
  init(publicHealthy:Bool,cached:Bool=false){clock=Clock();vpn=VPN(clock);api=API(vpn,clock,publicHealthy:publicHealthy);configSaved=cached}
  func logConnection(_ text:String,level:Level = .info){clock.record("log:"+text)}
  enum Level {case info,error,success}
- func rememberLoginSession(){}
  func loadServerConfigCache(account:String){}
  func cachedServerConfig(_ slot:String,maxAge:TimeInterval=86_400)->VpnConfig?{configSaved ? VpnConfig():nil}
  func prefetchServerConfigs(account:String,slots:[String],tunnelActive:Bool) async {clock.record("preview:tunnel",3)}
@@ -114,6 +121,9 @@ METHODS
 }
 @main struct StartupReplay {
  @MainActor static func main() async {
+   let sessionKey="vpn-session-fixture-startup-account"
+   UserDefaults.standard.removeObject(forKey:sessionKey)
+   defer {UserDefaults.standard.removeObject(forKey:sessionKey)}
    let direct=VM(publicHealthy:true)
    await direct.run()
    precondition(direct.loggedIn && !direct.bootstrapActive)
@@ -126,11 +136,18 @@ METHODS
    if !cached.loggedIn || cached.clock.events.contains("preview:tunnel") || cached.clock.events.contains("required-config:tunnel") {
       failures.append("valid selected config cannot leave boot waiting on optional stale-cache preview; trace=\(cached.clock.events)")
    } else { print("PASS: validated profile and usable selected cache finish without optional preview") }
+   if UserDefaults.standard.string(forKey:sessionKey) != "fixture-main-device" {
+      failures.append("usable cached config lost session mapping when profile current_device_id is absent")
+   }
+   UserDefaults.standard.removeObject(forKey:sessionKey)
    let cold=VM(publicHealthy:false)
    cold.bootstrapActive=true;cold.vpn.state = .connected
    try! await cold.confirmedAccount()
    if !cold.loggedIn || !cold.configSaved || cold.clock.events.contains("preview:tunnel") {
       failures.append("cold start makes duplicate preview before mandatory main config; trace=\(cold.clock.events)")
+   }
+   if UserDefaults.standard.string(forKey:sessionKey) != "fixture-main-device" {
+      failures.append("cold selected config did not preserve session mapping")
    }
    if let save=cold.clock.events.firstIndex(of:"required-config:tunnel"),let stop=cold.clock.events.lastIndex(of:"stop"),save<stop {
       print("PASS: cold selected config is saved before temporary VPN stops")
@@ -168,10 +185,11 @@ METHODS
    if !failures.isEmpty {for failure in failures {print("FAIL: "+failure)};exit(1)}
  }
 }
-'''.replace('METHODS', methods)
+'''.replace('METHODS', methods).replace('GET_PROFILE', get_profile)
 
 if '--emit' in sys.argv:
-    path=root / '.playwright-mcp/startup-ios-replay.swift'
+    path=ios.parent / '.playwright-mcp/startup-ios-replay.swift'
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(fixture,encoding='utf-8')
     print(path)
 else:

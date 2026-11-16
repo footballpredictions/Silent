@@ -19,7 +19,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Replay saved-account startup
-        run: python3 scripts/test-startup-boot.py
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3
+          python3 scripts/test-startup-boot.py
 
   build:
     needs: startup-regression

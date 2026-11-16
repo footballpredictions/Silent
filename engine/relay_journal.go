@@ -115,7 +115,9 @@ func relayJournalEvent(line string) (message string, level int) {
 	case event == "TURN: физическая сеть изменилась, нужен новый сокет":
 		return prefix + "сеть: обновляем UDP-сокет после смены интерфейса", 0
 	case event == "TURN: канал не отвечает на повторную проверку после потери сети":
-		return prefix + "TURN: нет ответа на две проверки · обновляем недоступный канал", 2
+		// This retires one worker; it does not establish a whole-VPN failure.
+		// Preserve the reason while the dispatcher reports the live channel count.
+		return prefix + "TURN: нет ответа на две проверки · обновляем недоступный канал", 0
 	case event == "TURN: сервер не подтвердил продление канала после сна":
 		return prefix + event, 2
 	case event == "TURN: разрешение и канал продлены после сна":

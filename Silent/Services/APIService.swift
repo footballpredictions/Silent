@@ -238,9 +238,10 @@ class APIService: ObservableObject {
         throw APIError.network
     }
 
-    func getProfile() async throws -> UserProfile {
+    func getProfile(tunnelOnly: Bool = false) async throws -> UserProfile {
         guard isLoggedIn else { throw APIError.unauthorized }
-        return try await request(PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint))
+        return try await request(PublicApiFailover.serverQuery("api/users/me", fingerprint: deviceFingerprint),
+                                 tunnelOnly: tunnelOnly)
     }
 
     /// Do not walk every public endpoint before bootstrap on an unreachable Wi-Fi network.

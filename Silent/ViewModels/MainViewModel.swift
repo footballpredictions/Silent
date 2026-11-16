@@ -147,7 +147,9 @@ final class MainViewModel: ObservableObject {
         } else if !api.isLoggedIn, vpn.state != .disconnected {
             await vpn.disconnect()
         }
+        let launchStarted = ProcessInfo.processInfo.systemUptime
         await loadInitialData()
+        logConnection("Подготовка приложения завершена · \(elapsedConnectionTime(since: launchStarted))", key: "launch-duration")
         if launchStage != nil {
             launchStage = .complete
             try? await Task.sleep(nanoseconds: 260_000_000)
@@ -279,7 +281,7 @@ final class MainViewModel: ObservableObject {
         var stage = "Не удалось получить настройки временного VPN"
         let discardCount = vpn.sceneDiscardCount
         do {
-            let cells = registrationRouting ? [bootstrapCell, (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count] : [bootstrapCell]
+            let cells = [bootstrapCell, (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count]
             for cell in cells {
                 guard let local = BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
                                                                  password: bootstrapPassword, cell: cell,
@@ -288,6 +290,7 @@ final class MainViewModel: ObservableObject {
                 stage = "Не удалось запустить временный VPN"
                 do {
                     try await connectBootstrap(local)
+                    bootstrapCell = cell
                     return
                 } catch {
                     await vpn.disconnect()
@@ -334,6 +337,7 @@ final class MainViewModel: ObservableObject {
     }
 
     private func connectBootstrap(_ config: TunnelConfig) async throws {
+        let started = ProcessInfo.processInfo.systemUptime
         if launchStage != nil { launchStage = .tunnel }
         try await vpn.connect(config)
         let deadline = Date().addingTimeInterval(TimeInterval(config.bootstrapDuration ?? BootstrapLaunch.duration))
@@ -347,7 +351,7 @@ final class MainViewModel: ObservableObject {
         }
         logConnection(config.registrationRouting == true
                       ? "Временный VPN для почты · маршрут включён"
-                      : "Временный VPN готов: шлюз ответил", level: .success)
+                      : "Временный VPN готов: шлюз ответил · \(elapsedConnectionTime(since: started))", level: .success)
     }
 
     private func stopBootstrap() async {
@@ -462,24 +466,39 @@ final class MainViewModel: ObservableObject {
         authLoadingTitle = "Загрузка аккаунта…"
         let loaded: UserProfile
         if let loadedProfile { loaded = loadedProfile }
-        else { loaded = try await api.getProfile() }
+        else { loaded = try await api.getProfile(tunnelOnly: bootstrapActive && vpn.state == .connected) }
+        try Task.checkCancellation()
         profile = loaded
         selectedServer = UserDefaults.standard.string(forKey: "vpn-server-\(loaded.id)") ?? LocalStore.preferredServer
         rememberLoginSession()
         loadServerConfigCache(account: loaded.id)
         if bootstrapActive, vpn.state == .connected, (loaded.is_admin || loaded.subscription.is_active) {
-            await prefetchServerConfigs(account: loaded.id, slots: [selectedServer], tunnelActive: true)
-            if cachedServerConfig(selectedServer) == nil {
+            // Reuse the account/device-bound transport already accepted by the
+            // main connect path. A 15-minute background refresh must not hold
+            // the splash screen on an otherwise valid 24-hour cache entry.
+            if let cached = cachedServerConfig(selectedServer) {
+                rememberConfigSession(cached, account: loaded.id)
+            } else {
                 do {
-                    _ = try await requestMainConfig(selectedServer, tunnelOnly: true)
+                    let config = try await requestMainConfig(selectedServer, tunnelOnly: true)
+                    try Task.checkCancellation()
+                    rememberConfigSession(config, account: loaded.id)
                     logConnection("Конфиг выбранного сервера сохранён")
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch APIError.unauthorized {
+                    throw APIError.unauthorized
+                } catch APIError.http(401, let detail) {
+                    throw APIError.http(401, detail)
                 } catch {
                     logConnection("Не удалось сохранить стартовый конфиг · \(error.localizedDescription)", level: .error)
                 }
             }
         }
+        try Task.checkCancellation()
         if bootstrapActive { logConnection("Вход выполнен · завершаем временный VPN") }
         await stopBootstrap()
+        try Task.checkCancellation()
         loggedIn = true
         bootstrapFailed = false
         scheduleServerPrefetch()
@@ -488,6 +507,12 @@ final class MainViewModel: ObservableObject {
     private func rememberLoginSession() {
         guard let profile, let id = profile.current_device_id, profile.devices.contains(where: { $0.id == id }) else { return }
         UserDefaults.standard.set(id, forKey: "vpn-session-\(profile.id)")
+    }
+
+    private func rememberConfigSession(_ config: VpnConfig, account: String) {
+        guard let profile, profile.id == account,
+              profile.devices.contains(where: { $0.id == config.device_id }) else { return }
+        UserDefaults.standard.set(config.device_id, forKey: "vpn-session-\(account)")
     }
 
     private func loadAppearanceAndServers() async {

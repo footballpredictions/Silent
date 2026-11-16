@@ -2,6 +2,45 @@ package main
 
 import "testing"
 
+func TestRelayJournalWorkerRecoveryDoesNotReportWholeTunnelFailure(t *testing.T) {
+	// Replay the reported 63 -> 62 -> 63 recovery. The failed control probes
+	// explain one worker replacement, not the health of the entire VPN.
+	for _, tc := range []struct {
+		raw, message string
+	}{
+		{"[ДИСП] Воркер #1 зарегистрирован (всего: 63)", "Воркер №1 активен · активных каналов: 63"},
+		{"[ВОРКЕР #1] TURN: канал не отвечает на повторную проверку после потери сети", "Воркер №1 · TURN: нет ответа на две проверки · обновляем недоступный канал"},
+		{"[ДИСП] Воркер #1 отключён (осталось: 62)", "Воркер №1 отключён · активных каналов: 62"},
+		{"[ДИСП] Воркер #1 зарегистрирован (всего: 63)", "Воркер №1 активен · активных каналов: 63"},
+	} {
+		message, level := relayJournalEvent(tc.raw)
+		if message != tc.message || level != 0 {
+			t.Errorf("per-worker recovery: got (%q, %d), want (%q, info)", message, level, tc.message)
+		}
+	}
+}
+
+func TestRelayJournalRetainsZeroWorkersAndRealFailures(t *testing.T) {
+	for _, tc := range []struct {
+		raw, message string
+		level        int
+	}{
+		// Zero can also occur during an intentional stop. Keep the count visible
+		// without pretending the stateless journal knows why the VPN stopped.
+		{"[ДИСП] Воркер #1 отключён (осталось: 0)", "Воркер №1 отключён · активных каналов: 0", 0},
+		{"[СТАТИСТИКА] Активных: 0 | Трафик: 0.00 МБ", "[СТАТИСТИКА] Активных: 0 | Трафик: 0.00 МБ", 0},
+		{"[ВОРКЕР #1] TURN: сервер не подтвердил продление канала после сна", "Воркер №1 · TURN: сервер не подтвердил продление канала после сна", 2},
+		{"[ВОРКЕР #1] TURN: продление allocation не подтверждено, канал закрывается · код 437", "Воркер №1 · TURN: ошибка продления канала · код 437", 2},
+		{"[ВОРКЕР #1] Ошибка Writer: i/o timeout", "Воркер №1 · DTLS: таймаут записи", 2},
+		{"[FATAL] panic worker", "Внутренняя ошибка сетевого модуля", 2},
+	} {
+		message, level := relayJournalEvent(tc.raw)
+		if message != tc.message || level != tc.level {
+			t.Errorf("failure evidence lost: got (%q, %d), want (%q, %d)", message, level, tc.message, tc.level)
+		}
+	}
+}
+
 func TestRelayJournalOnlyPublishesStructuredEvents(t *testing.T) {
 	for _, tc := range []struct {
 		raw, message string
@@ -27,7 +66,7 @@ func TestRelayJournalOnlyPublishesStructuredEvents(t *testing.T) {
 		{"[ВОРКЕР #2] TURN: продление permission не подтверждено, канал закрывается · таймаут", "Воркер №2 · TURN: ошибка продления разрешения · таймаут", 2},
 		{"[ВОРКЕР #2] TURN: NAT изменился, старый канал недействителен", "Воркер №2 · сеть: NAT изменился, канал обновляется", 0},
 		{"[ВОРКЕР #2] TURN: физическая сеть изменилась, нужен новый сокет", "Воркер №2 · сеть: обновляем UDP-сокет после смены интерфейса", 0},
-		{"[ВОРКЕР #2] TURN: канал не отвечает на повторную проверку после потери сети", "Воркер №2 · TURN: нет ответа на две проверки · обновляем недоступный канал", 2},
+		{"[ВОРКЕР #2] TURN: канал не отвечает на повторную проверку после потери сети", "Воркер №2 · TURN: нет ответа на две проверки · обновляем недоступный канал", 0},
 		{"[ВОРКЕР #2] TURN: сервер не подтвердил продление канала после сна", "Воркер №2 · TURN: сервер не подтвердил продление канала после сна", 2},
 		{"[ВОРКЕР #2] TURN: разрешение и канал продлены после сна", "Воркер №2 · TURN: разрешение и канал продлены после сна", 1},
 		{"[ВОРКЕР #2] DTLS: срок простоя канала истёк, новое рукопожатие", "Воркер №2 · DTLS: срок простоя канала истёк, новое рукопожатие", 0},

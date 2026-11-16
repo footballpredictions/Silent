@@ -26,7 +26,7 @@ def method(name, text=source):
 
 methods = '\n'.join(method(name) for name in [
     'loadInitialData', 'restoreSavedAccount', 'startBootstrap', 'connectBootstrap',
-    'loadAccount', 'stopBootstrap', 'rememberLoginSession',
+    'loadAccount', 'stopBootstrap', 'rememberLoginSession', 'elapsedConnectionTime',
 ])
 if 'func rememberConfigSession(' in source:
     methods += '\n' + method('rememberConfigSession')
@@ -104,14 +104,18 @@ GET_PROFILE
  var bootstrapActive=false;var bootstrapAttempted=false;var bootstrapStarting=false
  var bootstrapFailed=false;var bootstrapMailReady=false;var bootstrapReconnecting=false
  var bootstrapCell=0;var bootstrapDeadline:Date?;let bootstrapHash="fixture-hash";let bootstrapPassword="fixture"
- let bootstrapCacheKey="fixture-cache";var configSaved=false
+ let bootstrapCacheKey="fixture-cache";var configSaved=false;var requiredConfigError:Error?
  init(publicHealthy:Bool,cached:Bool=false){clock=Clock();vpn=VPN(clock);api=API(vpn,clock,publicHealthy:publicHealthy);configSaved=cached}
  func logConnection(_ text:String,level:Level = .info){clock.record("log:"+text)}
  enum Level {case info,error,success}
  func loadServerConfigCache(account:String){}
  func cachedServerConfig(_ slot:String,maxAge:TimeInterval=86_400)->VpnConfig?{configSaved ? VpnConfig():nil}
  func prefetchServerConfigs(account:String,slots:[String],tunnelActive:Bool) async {clock.record("preview:tunnel",3)}
- func requestMainConfig(_ slot:String,tunnelOnly:Bool) async throws ->VpnConfig{clock.record("required-config:tunnel",0.1);configSaved=true;return VpnConfig()}
+ func requestMainConfig(_ slot:String,tunnelOnly:Bool) async throws ->VpnConfig{
+   clock.record(tunnelOnly ? "required-config:tunnel":"required-config:public",0.1)
+   if let requiredConfigError {throw requiredConfigError}
+   configSaved=true;return VpnConfig()
+ }
  func makeTunnel(_ config:VpnConfig,bootstrapDuration:Int)->TunnelConfig{TunnelConfig(serverIP:"cell1")}
  func scheduleServerPrefetch(){clock.record("background-prefetch")}
  func run() async {await loadInitialData()}
@@ -167,6 +171,35 @@ METHODS
    let task=Task {await cancelled.run()};task.cancel();await task.value
    precondition(!cancelled.loggedIn && !cancelled.configSaved && !cancelled.bootstrapAttempted)
    print("PASS: cancelled launch does not start bootstrap or mutate saved account")
+   let configCancelled=VM(publicHealthy:false)
+   configCancelled.bootstrapActive=true;configCancelled.vpn.state = .connected
+   configCancelled.requiredConfigError=CancellationError()
+   await configCancelled.restoreForTest()
+   if configCancelled.loggedIn || configCancelled.configSaved || !configCancelled.api.isLoggedIn || configCancelled.clock.events.contains("background-prefetch") {
+      failures.append("cancellation during mandatory config was swallowed and completed login")
+   } else {print("PASS: config cancellation cannot complete login or revoke saved authentication")}
+   let configRefusals:[(String,APIError)]=[("unauthorized",.unauthorized),("401",.http(401,"fixture revoked"))]
+   for (label,error) in configRefusals {
+      let refused=VM(publicHealthy:false)
+      refused.bootstrapActive=true;refused.vpn.state = .connected;refused.requiredConfigError=error
+      await refused.restoreForTest()
+      if refused.loggedIn || refused.api.isLoggedIn || refused.configSaved || refused.clock.events.contains("background-prefetch") {
+         failures.append("mandatory config \(label) was swallowed and restored an unauthorized account")
+      } else {print("PASS: mandatory config \(label) revokes login without completing boot as authenticated")}
+   }
+   let configOffline=VM(publicHealthy:false)
+   configOffline.bootstrapActive=true;configOffline.vpn.state = .connected
+   configOffline.requiredConfigError=APIError.network
+   await configOffline.restoreForTest()
+   if !configOffline.loggedIn || !configOffline.api.isLoggedIn || configOffline.configSaved || configOffline.bootstrapAttempted ||
+      configOffline.clock.events.contains("profile:public-failover") ||
+      configOffline.clock.events.contains("required-config:public") ||
+      configOffline.clock.events.contains("bootstrap:https-fallback") ||
+      configOffline.clock.events.filter({$0=="required-config:tunnel"}).count != 1 ||
+      configOffline.clock.events.filter({$0=="stop"}).count != 1 ||
+      !configOffline.clock.events.contains(where:{$0.hasPrefix("log:Не удалось сохранить стартовый конфиг")}) {
+      failures.append("config network failure retried public/bootstrap routes, blocked confirmed login, or was not logged; trace=\(configOffline.clock.events)")
+   } else {print("PASS: config network failure is logged once; confirmed login completes without bootstrap/public retry")}
    let blocked=VM(publicHealthy:false)
    await blocked.run()
    guard blocked.loggedIn,blocked.configSaved,

@@ -24,6 +24,7 @@ if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
 fi
 
 python3 "$ROOT/scripts/test-vpn-toggle-stop.py"
+python3 "$ROOT/scripts/test-startup-boot.py"
 python3 "$ROOT/scripts/test-russian-policy-route.py"
 python3 "$ROOT/scripts/test-tunnel-start.py"
 go test "$ROOT/engine/wg_config.go" "$ROOT/engine/wg_config_test.go"

@@ -913,10 +913,12 @@ final class MainViewModel: ObservableObject {
 
     private func preparePaymentRoute(_ planId: String) async throws -> (base: String, preview: PaymentPreview) {
         let current = vpn.state
-        if current == .connected, await PaymentRoute.check(), vpn.state == current {
+        if (current == .connected || (current == .disconnected && !paymentTunnelActive)),
+           await PaymentRoute.check(), vpn.state == current {
             let bases = current == .connected ? [PublicApiFailover.tunnelAPI] : PublicApiFailover.paymentPublicBases
             if let route = try await selectPaymentAPI(planId, bases: bases), vpn.state == current {
-                logConnection("Оплата · ЮMoney и API доступны", level: .success)
+                logConnection(current == .connected ? "Оплата · ЮMoney и API доступны"
+                              : "Оплата · ЮMoney и API доступны напрямую", level: .success)
                 return route
             }
         }

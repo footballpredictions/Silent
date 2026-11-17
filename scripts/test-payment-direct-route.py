@@ -49,6 +49,7 @@ enum PublicApiFailover {
 }
 @MainActor final class VM {
     let vpn = VPN(); let api = API()
+    var paymentTunnelActive = false
     enum Level { case success, info, error }
     func logConnection(_ text: String, level: Level = .info) {}
 PREFLIGHT
@@ -81,6 +82,7 @@ SELECTION
         }
         await scenario("direct API fallback stays on public HTTPS", expected: alternate) { $0.api.unavailable = [primary] }
         await scenario("site-only access does not pretend the API works", expected: nil) { $0.api.unavailable = [primary, alternate] }
+        await scenario("disconnected held payment route retains owned tunnel cleanup", expected: nil) { $0.paymentTunnelActive = true }
         await scenario("network change during preflight rejects stale route", expected: nil) { vm in
             PaymentRoute.onCheck = { vm.vpn.state = .connected }
         }

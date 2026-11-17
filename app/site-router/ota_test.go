@@ -156,7 +156,7 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 			io.WriteString(w, `{"available":true,"version":"1.0.999"}`)
 		case "/api/vpn/routing-policy":
 			io.WriteString(w, `{"schema_version":1,"revision":"policy-through-existing-wg"}`)
-		case "/api/users/me", "/api/users/devices/fixture-device", "/api/auth/refresh":
+		case "/api/users/me", "/api/users/devices/fixture-device", "/api/auth/refresh", "/api/payments/preview", "/api/payments/init", "/api/payments/status/fixture-label":
 			if r.Header.Get("Authorization") != "Bearer fixture" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -239,6 +239,7 @@ func TestOTAOverExistingEncryptedWireGuardKeepsApplicationTCP(t *testing.T) {
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/api/users/me"}, {"PATCH", "/api/users/devices/fixture-device"},
 		{"DELETE", "/api/users/devices/fixture-device"}, {"POST", "/api/auth/refresh"},
+		{"POST", "/api/payments/preview"}, {"POST", "/api/payments/init"}, {"GET", "/api/payments/status/fixture-label"},
 	} {
 		request, _ := http.NewRequest(tc.method, local.URL+tc.path, strings.NewReader(`{"fixture":true}`))
 		request.Header.Set("Authorization", "Bearer fixture")

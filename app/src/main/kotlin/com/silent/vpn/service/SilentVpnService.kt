@@ -659,6 +659,7 @@ class SilentVpnService : Service() {
                     adaptiveRelays = com.silent.vpn.BuildConfig.UDP_RELAY_QUALITY && !isBootstrap,
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
+                    payment = isBootstrap && obj.optBoolean("payment_tunnel", false),
                     fastWgCache = fastWgCache,
                     requireGetconfAccess = requireGetconf,
                 ),

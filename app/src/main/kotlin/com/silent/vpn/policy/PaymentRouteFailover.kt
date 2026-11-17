@@ -26,9 +26,11 @@ internal class PaymentRouteFailover(private val attemptTimeoutMs: Long = 25_000L
     ): Boolean {
         val ticket = generation
         val routes = (listOfNotNull(selected?.takeIf { it in candidates }) + candidates).distinct()
+        var attempted: BootstrapOverlayEndpoint? = null
         for (route in routes) {
             currentCoroutineContext().ensureActive()
             if (ticket != generation) return false
+            attempted = route
             val ready = try {
                 val result = withTimeoutOrNull(attemptTimeoutMs) {
                     start(route, route == selected) && probe()
@@ -38,6 +40,9 @@ internal class PaymentRouteFailover(private val attemptTimeoutMs: Long = 25_000L
             } catch (cancelled: CancellationException) {
                 if (ticket == generation) withContext(NonCancellable) { stop(route) }
                 throw cancelled
+            } catch (rejection: PaymentApiRejection) {
+                if (ticket == generation) withContext(NonCancellable) { stop(route) }
+                throw rejection
             } catch (_: Exception) {
                 false
             }
@@ -48,8 +53,9 @@ internal class PaymentRouteFailover(private val attemptTimeoutMs: Long = 25_000L
                 return true
             }
             selected = null
-            withContext(NonCancellable) { stop(route) }
+            // The next attempt retargets the payment transport inside the held VPN.
         }
+        if (ticket == generation && attempted != null) withContext(NonCancellable) { stop(attempted) }
         return false
     }
 

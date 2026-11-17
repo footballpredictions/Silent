@@ -7,10 +7,35 @@ import okhttp3.ConnectionPool
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.net.Proxy
+import java.net.URL
+import java.net.HttpURLConnection
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
 internal object PaymentInternetProbe {
+    suspend fun checkDirect(context: Context): Boolean {
+        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) return false
+        val network = VpnNetworkHelper.findUnderlyingNetwork(context) ?: return false
+        val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).socketFactory(network.socketFactory)
+            .dns(object : Dns { override fun lookup(hostname: String) = network.getAllByName(hostname).toList() })
+            .connectTimeout(2, TimeUnit.SECONDS).readTimeout(2, TimeUnit.SECONDS).callTimeout(4, TimeUnit.SECONDS)
+            .followRedirects(false).followSslRedirects(false).build()
+        return try { PaymentHttpsProbe.check(client) } finally {
+            client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
+        }
+    }
+
     suspend fun check(context: Context): Boolean {
+        if (BrowserScopedTunnel.isRunning()) return withContext(Dispatchers.IO) {
+            val connection = URL(BrowserScopedTunnel.OTA_BASE_URL + "/_silent/payment-site").openConnection(Proxy.NO_PROXY) as HttpURLConnection
+            try {
+                connection.connectTimeout = 1_000
+                connection.readTimeout = 5_000
+                connection.useCaches = false
+                connection.responseCode == 204
+            } catch (_: Exception) { false } finally { connection.disconnect() }
+        }
         if (!SilentVpnService.isRunning || !WdttTunnelManager.isBootstrapMode() ||
             !WdttTunnelManager.tunnelReady.value) return false
         var network = VpnNetworkHelper.getSilentVpnNetwork(context)

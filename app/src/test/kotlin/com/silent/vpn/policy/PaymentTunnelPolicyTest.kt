@@ -6,22 +6,11 @@ import org.junit.Test
 
 class PaymentTunnelPolicyTest {
     @Test
-    fun `mobile without main vpn always acquires payment bridge`() {
-        assertTrue(PaymentTunnelPolicy.needsBridge(false, true, false, true))
-        assertTrue(PaymentTunnelPolicy.needsBridge(false, true, false, false))
-    }
-
-    @Test
-    fun `main VPN payment uses the working payment bridge on both LTE and wifi`() {
-        assertTrue(PaymentTunnelPolicy.needsBridge(true, true, false, false))
-        assertTrue(PaymentTunnelPolicy.needsBridge(true, false, false, true))
-    }
-
-    @Test
-    fun `wifi direct only when reachable and no bootstrap to retain`() {
-        assertFalse(PaymentTunnelPolicy.needsBridge(false, false, false, true))
-        assertTrue(PaymentTunnelPolicy.needsBridge(false, false, true, true))
-        assertTrue(PaymentTunnelPolicy.needsBridge(false, false, false, false))
+    fun `payment background API requests keep full browser tunnel while login retains old overlay`() {
+        assertFalse(PaymentTunnelPolicy.needsApiOverlay(true, true))
+        assertFalse(PaymentTunnelPolicy.needsApiOverlay(false, true))
+        assertFalse(PaymentTunnelPolicy.needsApiOverlay(false, false))
+        assertTrue(PaymentTunnelPolicy.needsApiOverlay(true, false))
     }
 
     @Test

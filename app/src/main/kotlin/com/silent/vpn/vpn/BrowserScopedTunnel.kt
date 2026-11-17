@@ -150,17 +150,20 @@ object BrowserScopedTunnel {
         whitelist: Boolean,
         semanticKey: String,
         russian: JSONObject = JSONObject(),
+        payment: Boolean = false,
     ) {
         if (key == semanticKey && isRunning()) return
         val browsers = if (whitelist || targets.isNotEmpty() || domains.isNotEmpty()) browserUids(context) else emptySet()
         val shape = JSONObject().apply {
             put("russian_enabled", russian.optBoolean("enabled", false))
-            put("wg", config.toWgUserspaceString())
+            // A payment peer can change without replacing a compatible Android TUN.
+            put("wg", if (payment) "payment" else config.toWgUserspaceString())
             put("addresses", config.`interface`.addresses.joinToString(","))
             put("dns", config.`interface`.dnsServers.joinToString(","))
             put("mtu", config.`interface`.mtu.orElse(1200))
             put("apps", JSONArray(appPolicy.packages.sorted()))
             put("excludes", JSONArray(transportExcludes.sorted()))
+            put("payment_api_only", payment && transportExcludes.isEmpty())
             put("domains", JSONArray(domains.sorted()))
             put("whitelist", whitelist)
             put("browsers", JSONArray(browsers.sorted()))
@@ -173,6 +176,7 @@ object BrowserScopedTunnel {
             try {
                 val update = JSONObject().put("revision", ack.revision).put("targets", JSONArray(targets.toList()))
                     .put("russian", russian)
+                if (payment) update.put("wireguard", config.toWgUserspaceString())
                 checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
                 check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied) { "Не подтверждено обновление адресов обхода" }
                 key = semanticKey
@@ -197,7 +201,9 @@ object BrowserScopedTunnel {
             }
             for (dns in config.`interface`.dnsServers) builder.addDnsServer(dns)
             for (pkg in appPolicy.packages) builder.addDisallowedApplication(pkg)
-            val routes = if (Build.VERSION.SDK_INT >= 33) "0.0.0.0/0"
+            val routes = if (payment && transportExcludes.isEmpty())
+                config.peers.flatMap { it.allowedIps }.joinToString(",")
+                else if (Build.VERSION.SDK_INT >= 33) "0.0.0.0/0"
                 else AllowedIpsHelper.generateExclusionAllowedIPs(transportExcludes)
             for (cidr in routes.split(',').map { it.trim() }.filter { it.isNotEmpty() }) {
                 val parts = cidr.split('/')
@@ -224,6 +230,7 @@ object BrowserScopedTunnel {
                     put("mtu", config.`interface`.mtu.orElse(1200))
                     put("ota_port", OTA_PORT)
                     put("ota_address", config.`interface`.addresses.first().address.hostAddress)
+                    put("tunnel_dns", JSONArray(config.`interface`.dnsServers.mapNotNull { it.hostAddress }))
                     put("whitelist", whitelist)
                     put("debug", BuildConfig.DEBUG)
                     put("targets", JSONArray(targets.toList()))
@@ -276,9 +283,9 @@ object BrowserScopedTunnel {
                 try {
                     RouterProcessOutput.consume(native.inputStream) { line ->
                         if (line == "READY") { readySeen.set(true); ready.countDown() }
-                        else if (line.startsWith("POLICY_READY:")) {
+                        else if (line.startsWith("POLICY_READY:") || line.startsWith("WG_FAILED:")) {
                             targetAck?.takeIf { it.revision == line.substringAfter(':').toLongOrNull() }?.let {
-                                it.applied = true
+                                it.applied = line.startsWith("POLICY_READY:")
                                 it.done.countDown()
                             }
                         }

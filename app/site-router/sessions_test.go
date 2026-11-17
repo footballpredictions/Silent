@@ -18,6 +18,9 @@ func TestSessionsRelayPreservesMethodsAuthAndBody(t *testing.T) {
 		{"POST", "/api/auth/refresh", `{"refresh_token":"fixture"}`},
 		{"POST", "/api/auth/qr/approve", `{"token":"fixture-session","payload":"silentvpn://qr?k=s&c=fixture-session"}`},
 		{"POST", "/api/auth/qr/user-code", ""},
+		{"POST", "/api/payments/preview", `{"plan_type":"month"}`},
+		{"POST", "/api/payments/init", `{"plan_type":"month"}`},
+		{"GET", "/api/payments/status/fixture-label", ""},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			transport := sessionsRoundTrip(func(r *http.Request) (*http.Response, error) {
@@ -46,7 +49,7 @@ type sessionsRoundTrip func(*http.Request) (*http.Response, error)
 func (f sessionsRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestSessionsRelayRejectsUnrelatedWrites(t *testing.T) {
-	for _, path := range []string{"/api/users/devices", "/api/users/devices/a/b", "/api/admin/users", "/api/payments/init", "/api/users/me"} {
+	for _, path := range []string{"/api/users/devices", "/api/users/devices/a/b", "/api/admin/users", "/api/payments/other", "/api/users/me"} {
 		w := httptest.NewRecorder()
 		otaHandler(sessionsRoundTrip(func(*http.Request) (*http.Response, error) { t.Fatal("unrelated write forwarded"); return nil, nil })).ServeHTTP(w, httptest.NewRequest("POST", path, nil))
 		if w.Code != 403 {
@@ -56,7 +59,7 @@ func TestSessionsRelayRejectsUnrelatedWrites(t *testing.T) {
 }
 
 func TestQrRelayRequiresAuthentication(t *testing.T) {
-	for _, path := range []string{"/api/auth/qr/approve", "/api/auth/qr/user-code"} {
+	for _, path := range []string{"/api/auth/qr/approve", "/api/auth/qr/user-code", "/api/payments/preview", "/api/payments/init"} {
 		w := httptest.NewRecorder()
 		otaHandler(sessionsRoundTrip(func(*http.Request) (*http.Response, error) {
 			t.Fatal("unauthenticated QR write forwarded")

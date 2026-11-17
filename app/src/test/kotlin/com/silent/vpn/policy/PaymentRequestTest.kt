@@ -22,7 +22,7 @@ class PaymentRequestTest {
         var requests = 0
         try {
             PaymentRequest.run {
-                PaymentRequest.retry { requests++; throw CancellationException("cancel") }
+                PaymentRequest.create { requests++; throw CancellationException("cancel") }
             }
             fail("must propagate cancellation")
         } catch (_: CancellationException) {
@@ -31,15 +31,11 @@ class PaymentRequestTest {
     }
 
     @Test
-    fun `transient network failure can retry once inside the same deadline`() = runTest {
+    fun `network failure never replays payment creation`() = runTest {
         var requests = 0
-        val label = PaymentRequest.run {
-            PaymentRequest.retry {
-                if (++requests == 1) throw java.io.IOException("temporary")
-                "label"
-            }
-        }
-        assertEquals("label", label)
-        assertEquals(2, requests)
+        try {
+            PaymentRequest.run { PaymentRequest.create { requests++; throw java.io.IOException("timeout after send") } }
+            fail("must propagate failure")
+        } catch (_: java.io.IOException) { assertEquals(1, requests) }
     }
 }

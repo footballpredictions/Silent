@@ -23,7 +23,7 @@ class PaymentRouteFailoverTest {
         }, probe = { events += "https:${exit.ip}"; exit == second }, stop = { events += "stop:${it.ip}" })
         assertTrue(ready)
         assertEquals(second, router.selected)
-        assertEquals(listOf("start:${first.ip}", "https:${first.ip}", "stop:${first.ip}",
+        assertEquals(listOf("start:${first.ip}", "https:${first.ip}",
             "start:${second.ip}", "https:${second.ip}"), events)
     }
 
@@ -42,7 +42,7 @@ class PaymentRouteFailoverTest {
         var starts = 0; var probes = 0; var stopped = 0
         val ready = router.prepare(listOf(first, second), { _, _ -> starts++; true }, { probes++; false }, { stopped++ })
         assertFalse(ready); assertNull(router.selected)
-        assertEquals(2, starts); assertEquals(2, probes); assertEquals(2, stopped)
+        assertEquals(2, starts); assertEquals(2, probes); assertEquals(1, stopped)
     }
 
     @Test fun `successful current exit is reused and rechecked`() = runTest {
@@ -69,7 +69,7 @@ class PaymentRouteFailoverTest {
             if (route == first) delay(1_000)
             true
         }, { true }, { stopped += it }))
-        assertEquals(listOf(first), stopped); assertEquals(second, router.selected)
+        assertTrue(stopped.isEmpty()); assertEquals(second, router.selected)
     }
 
     @Test fun `cancellation never starts another server`() = runTest {

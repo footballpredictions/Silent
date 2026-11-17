@@ -2,12 +2,9 @@ package com.silent.vpn.policy
 
 /** Payment depends on connectivity, not cached subscription/profile state or plan tier. */
 internal object PaymentTunnelPolicy {
-    fun needsBridge(
-        mainTunnelUp: Boolean,
-        mobile: Boolean,
-        bootstrapAvailable: Boolean,
-        publicBackendReachable: Boolean,
-    ): Boolean = mainTunnelUp || mobile || bootstrapAvailable || !publicBackendReachable
+    // Payment includes the app from the first start. Background API calls must
+    // not replace its browser tunnel with the legacy API-only overlay.
+    fun needsApiOverlay(appExcluded: Boolean, payment: Boolean): Boolean = appExcluded && !payment
 
     /**
      * Browser routes: WG up + TURN outside tunnel.

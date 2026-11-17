@@ -215,6 +215,7 @@ class SilentRepository @Inject constructor(
         connectTimeoutSec: Long? = null,
         readTimeoutSec: Long? = null,
         requireNativeUpstream: Boolean = false,
+        retryConnections: Boolean = true,
     ): SilentApi {
         val nipHost = DEFAULT_SERVER_HOST
         val builder = OkHttpClient.Builder()
@@ -249,6 +250,7 @@ class SilentRepository @Inject constructor(
         val connectSec = connectTimeoutSec ?: if (baseUrl.contains("10.66.")) 12L else 4L
         val readSec = readTimeoutSec ?: 20L
         builder
+            .retryOnConnectionFailure(retryConnections)
             .followRedirects(false)
             .followSslRedirects(false)
             .connectTimeout(connectSec, TimeUnit.SECONDS)
@@ -832,6 +834,16 @@ class SilentRepository @Inject constructor(
      */
     fun publicHiveApi(): SilentApi =
         buildApi("${getPublicServerUrl().trimEnd('/')}/", connectTimeoutSec = 3, readTimeoutSec = 8)
+
+    /** Payment pins one API after a read-only preview. Never replay init on another base. */
+    fun paymentApi(base: String): SilentApi = buildApi("${base.trimEnd('/')}/",
+        connectTimeoutSec = 3, readTimeoutSec = 8,
+        requireNativeUpstream = base == com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL,
+        retryConnections = false)
+
+    fun paymentPublicBases(): List<String> =
+        (listOf(getPublicServerUrl(), "https://$DEFAULT_SERVER_HOST") + standbyApiUrlsForOverlay())
+            .map { it.trimEnd('/') }.filter { it.startsWith("https://") }.distinct()
 
     /** true когда app excluded из WG и overlay ещё нужен (прокси не поднят). */
     fun needsTunnelApiOverlay(): Boolean =

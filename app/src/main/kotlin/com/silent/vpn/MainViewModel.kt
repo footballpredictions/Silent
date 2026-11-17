@@ -251,6 +251,12 @@ class MainViewModel @Inject constructor(
     private var paymentBootstrapHeld = false
     private var paymentCleanupJob: Job? = null
     private val paymentRoutes = com.silent.vpn.policy.PaymentRouteFailover()
+    private val paymentReservation = com.silent.vpn.policy.PaymentRouteSession<
+        com.silent.vpn.data.SilentApi, com.silent.vpn.data.PaymentPreview, String>(
+        { android.os.SystemClock.elapsedRealtime() })
+    private var paymentApi: com.silent.vpn.data.SilentApi? = null
+    private var paymentPlan: String? = null
+    private var paymentRoutePreview: com.silent.vpn.data.PaymentPreview? = null
     private var paymentAttemptEndpoint: com.silent.vpn.policy.BootstrapOverlayEndpoint? = null
     private var paymentRouteJob: Job? = null
     private var paymentRouteEpoch = 0L
@@ -983,26 +989,63 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /** Use the working browser-capable bridge; a running main VPN is saved and restored. */
-    private suspend fun needsPaymentInternetBridge(): Boolean {
-        val mainUp = repo.isMainVpnTunnelUp()
-        val mobile = repo.isOnMobileData()
-        val bootstrap = paymentBootstrapHeld || WdttTunnelManager.isBootstrapMode()
-        val publicReachable = if (mainUp || mobile || bootstrap) {
-            true
-        } else {
-            // Не ставим открытие оплаты за полной очередью таймаутов public API.
-            kotlinx.coroutines.withTimeoutOrNull(750L) {
-                repo.isPublicBackendReachable(forceProbe = false)
-            } ?: false
+    private fun paymentRouteIdentity(plan: String): String = listOf(
+        repo.getAccessToken(), plan, paymentRouteEpoch,
+        com.silent.vpn.vpn.VpnNetworkHelper.findUnderlyingNetwork(appContext)?.networkHandle,
+        com.silent.vpn.vpn.VpnNetworkHelper.getSilentVpnNetwork(appContext)?.networkHandle,
+        WdttTunnelManager.paymentConnectionId(), System.identityHashCode(WdttTunnelManager.lastParams()),
+    ).joinToString("|")
+
+    private suspend fun fetchPaymentPreview(api: com.silent.vpn.data.SilentApi, plan: String): com.silent.vpn.data.PaymentPreview {
+        val response = api.previewPayment(com.silent.vpn.data.PaymentInitRequest(plan))
+        if (!response.isSuccessful) {
+            val message = parseError(response.errorBody()?.string() ?: "") ?: "Ошибка расчёта"
+            if (response.code() in listOf(400, 401, 402, 403, 422)) throw com.silent.vpn.policy.PaymentApiRejection(message)
+            error(message)
         }
-        return com.silent.vpn.policy.PaymentTunnelPolicy.needsBridge(
-            mainUp,
-            mobile,
-            bootstrap,
-            publicReachable,
-        )
+        return response.body() ?: error("Не удалось получить расчёт")
     }
+
+    /** Same contract as iOS: browser + preview must work on one unchanged route. */
+    private suspend fun preparePaymentRoute(plan: String): com.silent.vpn.policy.PreparedPaymentRoute<
+        com.silent.vpn.data.SilentApi, com.silent.vpn.data.PaymentPreview, String> {
+        val epoch = paymentRouteEpoch
+        val main = repo.isMainVpnTunnelUp()
+        val native = com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL
+        val bases = if (paymentBootstrapHeld || WdttTunnelManager.isBootstrapMode()) emptyList()
+            else if (main) listOf(native).filter { com.silent.vpn.vpn.BrowserScopedTunnel.isRunning() }
+            else repo.paymentPublicBases()
+        return paymentReservation.prepare(
+            identity = { paymentRouteIdentity(plan) },
+            stillOwned = { epoch == paymentRouteEpoch && repo.isLoggedIn() },
+            currentBases = bases,
+            siteAvailable = {
+                if (main) com.silent.vpn.vpn.PaymentInternetProbe.check(appContext)
+                else com.silent.vpn.vpn.PaymentInternetProbe.checkDirect(appContext)
+            },
+            api = { repo.paymentApi(it) },
+            preview = { api -> kotlinx.coroutines.withTimeoutOrNull(5_000) { fetchPaymentPreview(api, plan) } },
+            temporary = {
+                paymentPlan = plan
+                paymentRoutePreview = null
+                if (!ensurePaymentBootstrapHeld(appContext, force = true, verify = true)) {
+                    error("Не удалось включить временный интернет для оплаты. Повторите.")
+                }
+                val api = repo.paymentApi(native)
+                api to (paymentRoutePreview ?: fetchPaymentPreview(api, plan))
+            },
+        ).also {
+            paymentApi = it.api
+            DebugLog.i("MainViewModel", when {
+                paymentBootstrapHeld -> "Оплата: используем готовый временный маршрут"
+                main -> "Оплата: используем основной VPN"
+                else -> "Оплата: ЮMoney и API доступны напрямую"
+            })
+        }
+    }
+
+    private suspend fun needsPaymentInternetBridge(): Boolean = paymentBootstrapHeld ||
+        WdttTunnelManager.isBootstrapMode() || (!repo.isMainVpnTunnelUp() && paymentApi == null)
 
     /** Пока жив payment-bootstrap — скачать WG выбранного слота, чтобы первый тумблер не был пустым. */
     private suspend fun prefetchMainConfigBeforePaymentTeardown() {
@@ -1472,13 +1515,15 @@ class MainViewModel @Inject constructor(
     }
 
     /** Как подтверждение почты при регистрации: bootstrap VPN остаётся включённым, пока идёт оплата. */
-    private suspend fun ensurePaymentBootstrapHeld(context: Context, force: Boolean = false): Boolean {
+    private suspend fun ensurePaymentBootstrapHeld(context: Context, force: Boolean = false, verify: Boolean = false): Boolean {
         val epoch = paymentRouteEpoch
         return paymentBootstrapMutex.withLock {
             if (epoch != paymentRouteEpoch) return@withLock false
             if (!force && !isPaymentConfirmationPending() && _paymentState.value != PaymentUiState.COMPLETED) {
                 return@withLock false
             }
+            if (!verify && paymentRoutes.selected != null && isPaymentBootstrapTunnelUp() &&
+                com.silent.vpn.vpn.BrowserScopedTunnel.isRunning()) return@withLock true
             val routeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             paymentRouteJob = routeJob
             try {
@@ -1501,10 +1546,16 @@ class MainViewModel @Inject constructor(
                         paymentRoutes.prepare(candidates,
                             start = { route, reuse -> ensurePaymentBootstrapHeldLocked(context, route, reuse) },
                             probe = {
-                                val ready = awaitPaymentBrowserRoutes() &&
-                                    com.silent.vpn.vpn.PaymentInternetProbe.check(context)
-                                DebugLog.i("MainViewModel", "payment HTTPS ready=$ready exit=${paymentAttemptEndpoint?.ip}")
-                                ready
+                                if (!awaitPaymentBrowserRoutes() || !com.silent.vpn.vpn.PaymentInternetProbe.check(context)) false
+                                else {
+                                    val api = repo.paymentApi(com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL)
+                                    val plan = paymentPlan
+                                    if (plan != null) paymentRoutePreview = fetchPaymentPreview(api, plan)
+                                    else check(api.getProfile().isSuccessful) { "API оплаты не подтвердился" }
+                                    paymentApi = api
+                                    DebugLog.i("MainViewModel", "Оплата: ЮMoney и API доступны через ${paymentAttemptEndpoint?.ip}")
+                                    true
+                                }
                             },
                             stop = { route ->
                                 if (paymentAttemptEndpoint == route) {
@@ -1531,6 +1582,12 @@ class MainViewModel @Inject constructor(
             holdPaymentBootstrapIfRunning()
             return awaitPaymentApiReady()
         }
+        if (paymentBootstrapHeld && WdttTunnelManager.lastParams()?.payment == true) {
+            paymentReservation.clear()
+            paymentAttemptEndpoint = endpoint
+            if (!WdttTunnelManager.switchPaymentExit(endpoint.ip, endpoint.port)) return false
+            return awaitPaymentApiReady()
+        }
         if (SilentVpnService.isRunning || WdttTunnelManager.running.value) {
             DebugLog.i("MainViewModel", "payment bootstrap: switch to ${endpoint.ip}")
             stopVpnLocally(context)
@@ -1553,11 +1610,9 @@ class MainViewModel @Inject constructor(
         silentBootstrapSync = false
         repo.clearTunnelApiBase()
         DebugLog.i("MainViewModel", "payment bootstrap start mobile=$onMobile exit=${endpoint.ip}")
-        launchVpnService(context.applicationContext, config, forceBootstrap = true)
+        launchVpnService(context.applicationContext, config, forceBootstrap = true, forcePayment = true)
         if (awaitPaymentApiReady()) return true
         DebugLog.w("MainViewModel", "payment bootstrap: tunnel API not ready")
-        stopPaymentBootstrap(context)
-        waitVpnServiceDown()
         return false
     }
 
@@ -1617,6 +1672,10 @@ class MainViewModel @Inject constructor(
 
     private suspend fun finishPaymentInternetLocked() {
         paymentRoutes.clear()
+        paymentReservation.clear()
+        paymentApi = null
+        paymentRoutePreview = null
+        paymentPlan = null
         paymentAttemptEndpoint = null
         paymentMainHandoff.finish(
             stopPayment = {
@@ -1669,6 +1728,10 @@ class MainViewModel @Inject constructor(
         paymentMainHandoff.discard()
         paymentRouteEpoch++
         paymentRoutes.clear()
+        paymentReservation.clear()
+        paymentApi = null
+        paymentRoutePreview = null
+        paymentPlan = null
         paymentAttemptEndpoint = null
         paymentBootstrapHeld = false
         paymentRouteJob?.cancel()
@@ -1796,6 +1859,10 @@ class MainViewModel @Inject constructor(
 
     /** API через ephemeral/bootstrap tunnel — тот же канал, что login/register на LTE. */
     private suspend fun <T> withEphemeralBackendApi(block: suspend () -> T): T {
+        if (paymentBootstrapHeld && isPaymentBootstrapTunnelUp() && com.silent.vpn.vpn.BrowserScopedTunnel.isRunning()) {
+            repo.ensureBootstrapTunnelApi()
+            return block()
+        }
         awaitTunnelApiReady()
         if (!WdttTunnelManager.isBootstrapMode() || !WdttTunnelManager.tunnelReady.value) {
             error("ephemeral tunnel not ready")
@@ -1922,11 +1989,18 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun applyPaidSubscriptionIfReady(plan: String): Boolean {
+    private suspend fun applyPaidSubscriptionIfReady(plan: String, api: com.silent.vpn.data.SilentApi? = null): Boolean {
         // Called inside the payment-status API block: keep its working overlay/base.
         // fetchProfileNow may skip HTTP while the LTE overlay is active.
         return com.silent.vpn.policy.refreshPaidPaymentProfile(
-            fetch = { repo.fetchProfileDirect().getOrThrow() },
+            fetch = {
+                if (api == null) repo.fetchProfileDirect().getOrThrow()
+                else {
+                    val response = api.getProfile()
+                    check(response.isSuccessful) { "Не удалось обновить подписку" }
+                    response.body() ?: error("Не удалось обновить подписку")
+                }
+            },
             isPaid = { p ->
                 p.is_admin || (p.subscription.is_active &&
                     p.subscription.plan_type !in listOf("trial", "test") &&
@@ -4681,9 +4755,10 @@ class MainViewModel @Inject constructor(
         config: VpnConfig,
         forceBootstrap: Boolean = false,
         requireGetconf: Boolean = false,
+        forcePayment: Boolean = false,
     ) {
         val isBootstrap = forceBootstrap || bootstrapVpnMode
-        if (repo.isOlcrtcBypass()) {
+        if (repo.isOlcrtcBypass() && !forcePayment) {
             viewModelScope.launch {
                 // Кеш с login/sync — без лишнего /olcrtc2-config перед стартом сервиса.
                 val olc = repo.resolveOlcrtcConfigForConnect()
@@ -4730,7 +4805,7 @@ class MainViewModel @Inject constructor(
         val wdttConfig = wdttConnectConfig(forService)
         val intent = Intent(context, SilentVpnService::class.java).apply {
             action = SilentVpnService.ACTION_CONNECT
-            putExtra(SilentVpnService.EXTRA_CONFIG, Gson().toJson(wdttConfig))
+            putExtra(SilentVpnService.EXTRA_CONFIG, org.json.JSONObject(Gson().toJson(wdttConfig)).put("payment_tunnel", forcePayment).toString())
             putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, isBootstrap)
             putExtra(SilentVpnService.EXTRA_REQUIRE_GETCONF, !isBootstrap && requireGetconf)
         }
@@ -5299,8 +5374,8 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private suspend fun initPaymentApi(planType: String): com.silent.vpn.data.PaymentResponse {
-        val res = repo.getApi().initPayment(com.silent.vpn.data.PaymentInitRequest(planType))
+    private suspend fun initPaymentApi(api: com.silent.vpn.data.SilentApi, planType: String): com.silent.vpn.data.PaymentResponse {
+        val res = api.initPayment(com.silent.vpn.data.PaymentInitRequest(planType))
         if (res.isSuccessful) return res.body()!!
         throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка оплаты")
     }
@@ -5321,18 +5396,8 @@ class MainViewModel @Inject constructor(
             try {
                 previous?.join()
                 cleanup?.join()
-                suspend fun fetch(): com.silent.vpn.data.PaymentPreview {
-                    val response = repo.getApi().previewPayment(com.silent.vpn.data.PaymentInitRequest(planType))
-                    if (!response.isSuccessful) error(parseError(response.errorBody()?.string() ?: "") ?: "Ошибка расчёта")
-                    return response.body() ?: error("Не удалось получить расчёт")
-                }
                 val preview = PaymentRequest.run(com.silent.vpn.policy.PaymentRouteFailover.PREPARATION_TIMEOUT_MS) {
-                    if (needsPaymentInternetBridge()) {
-                        if (!ensurePaymentBootstrapHeld(appContext, force = true)) {
-                            error("Не удалось включить временный интернет для оплаты. Повторите.")
-                        }
-                        withEphemeralBackendApi { fetch() }
-                    } else repo.withUserBackendApi { fetch() }
+                    preparePaymentRoute(planType).preview
                 }
                 onPreview(preview)
                 previewDelivered = true
@@ -5359,7 +5424,8 @@ class MainViewModel @Inject constructor(
 
     /** onUrl(url, label) — клиент открывает url во внешнем браузере и запускает poll по label. */
     fun initPayment(planType: String, onUrl: (String, String) -> Unit, onError: (String) -> Unit) {
-        // Повторный тап не должен молча зависать: отменяем предыдущую попытку.
+        // A second tap must not cancel an in-flight POST and create another payment.
+        if (_paymentBusyPlan.value != null) return
         val previous = paymentInitJob
         previous?.cancel()
         val cleanup = paymentCleanupJob
@@ -5369,14 +5435,9 @@ class MainViewModel @Inject constructor(
                 previous?.join()
                 cleanup?.join()
                 PaymentRequest.run(com.silent.vpn.policy.PaymentRouteFailover.PREPARATION_TIMEOUT_MS) {
-                    val bridge = needsPaymentInternetBridge()
-                    if (bridge && !ensurePaymentBootstrapHeld(appContext, force = true)) {
-                        error("Не удалось включить временный интернет для оплаты. Повторите.")
-                    }
-                    val pay = PaymentRequest.retry {
-                        if (bridge) withEphemeralBackendApi { initPaymentApi(planType) }
-                        else repo.withUserBackendApi { initPaymentApi(planType) }
-                    }
+                    val route = preparePaymentRoute(planType)
+                    check(route.identity == paymentRouteIdentity(planType)) { "Сеть изменилась. Повторите оплату." }
+                    val pay = PaymentRequest.create { initPaymentApi(route.api, planType) }
                     rememberPaymentAndOpen(pay.url, pay.label, onUrl)
                 }
             } catch (e: CancellationException) {
@@ -5396,8 +5457,8 @@ class MainViewModel @Inject constructor(
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         repo.savePendingPaymentLabel(label)
         try {
-            // API overlays may have run since preparation. Restore browser routes before launch.
-            if (paymentBootstrapHeld && !ensurePaymentBootstrapHeld(appContext, force = true)) {
+            // Init used the pinned API; do not select/probe again before opening the browser.
+            if (paymentBootstrapHeld && (!isPaymentBootstrapTunnelUp() || !awaitPaymentBrowserRoutes())) {
                 error("Платёжный сайт недоступен через доступные серверы. Попробуйте позже.")
             }
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -5414,13 +5475,15 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun paymentStatusApi(label: String): String {
-        val res = repo.getApi().getPaymentStatus(label)
+        val api = if (paymentBootstrapHeld && com.silent.vpn.vpn.BrowserScopedTunnel.isRunning())
+            repo.paymentApi(com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL) else paymentApi ?: repo.getApi()
+        val res = api.getPaymentStatus(label)
         if (res.isSuccessful) {
             val payment = res.body()!!
             if (payment.status != "completed") return payment.status
             if (payment.subscription_applied == false) return "activation_pending"
             // Save and publish /users/me before success can release the temporary VPN.
-            return if (applyPaidSubscriptionIfReady(payment.plan_type)) "completed" else "profile_pending"
+            return if (applyPaidSubscriptionIfReady(payment.plan_type, api)) "completed" else "profile_pending"
         }
         throw IllegalStateException(parseError(res.errorBody()?.string() ?: "") ?: "Ошибка проверки оплаты")
     }
@@ -5462,21 +5525,10 @@ class MainViewModel @Inject constructor(
                 }
                 delay(4000)
                 val status = runCatching {
-                    if (paymentBootstrapHeld || (bootstrapVpnMode && WdttTunnelManager.isBootstrapMode())) {
-                        if (!isPaymentBootstrapTunnelUp()) {
-                            ensurePaymentBootstrapHeld(appContext)
-                        }
-                        withEphemeralBackendApi { paymentStatusApi(label) }
-                    } else if (!repo.isMainVpnTunnelUp() && repo.isOnMobileData()) {
-                        var result: String? = null
-                        runEphemeralApiBootstrap(appContext, force = false) {
-                            result = runCatching { paymentStatusApi(label) }.getOrNull()
-                            result != null
-                        }
-                        result
-                    } else {
-                        repo.withUserBackendApi { paymentStatusApi(label) }
+                    if (paymentBootstrapHeld && !isPaymentBootstrapTunnelUp()) {
+                        check(ensurePaymentBootstrapHeld(appContext)) { "Временный интернет недоступен" }
                     }
+                    paymentStatusApi(label)
                 }.getOrNull()
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 when (status) {

@@ -185,6 +185,7 @@ object WdttTunnelManager {
         val adaptiveRelays: Boolean = false,
         val apiWgConfig: String? = null,
         val isBootstrap: Boolean = false,
+        val payment: Boolean = false,
         /** Быстрый WG из кеша конфига (плитка QS, холодный старт). */
         val fastWgCache: Boolean = false,
         /** Подписка отозвана локально — не применять API_CACHE, ждать GETCONF. */
@@ -475,6 +476,7 @@ object WdttTunnelManager {
 
                     wgHelper = WireGuardHelper(appContext).also {
                         it.profileMtu = WireGuardConfigBuilder.profileMtuFromApiConfig(params.apiWgConfig)
+                        it.paymentMode = params.payment
                     }
 
                     val workers = if (params.isBootstrap) {
@@ -1846,6 +1848,34 @@ object WdttTunnelManager {
     fun isBootstrapMode(): Boolean = isBootstrapMode
     fun lastParams(): Params? = lastParams
 
+    fun paymentConnectionId(): Long = processStartedAtMs
+
+    /** Retarget only a payment-owned transport. The Android VPN and WG device stay up. */
+    suspend fun switchPaymentExit(ip: String, port: Int): Boolean = startStopMutex.withLock {
+        val previous = lastParams ?: return@withLock false
+        val context = lastContext ?: return@withLock false
+        if (!previous.payment || !isBootstrapMode || overlayRestoreSuppressed) return@withLock false
+        if (previous.serverIp == ip && previous.serverPort == port && tunnelReady.value) return@withLock true
+        val reader = readerJob
+        killProcess()
+        reader?.join()
+        wgApplyJob?.cancel()
+        wgApplyJob?.join()
+        val next = previous.copy(serverIp = ip, serverPort = port, apiWgConfig = null)
+        wgApplyMutex.withLock {
+            deleteOldConf(context)
+            lastParams = next
+            deferredApiWgConfig = null
+            appliedWgConfigSource = WgConfigSource.NONE
+            tunnelReady.value = false
+            liveGetconfApplied.value = false
+            wgConfigPending = false
+        }
+        updateLog("payment_exit", "Оплата: меняем выход внутри временного VPN", 1)
+        start(context, next, isSwitching = true, expectedSession = next)
+        true
+    }
+
     fun wgConfigSettled(): Boolean = tunnelReady.value
     suspend fun awaitWgConfigSettled(timeoutMs: Long = 8000L) {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -1905,7 +1935,9 @@ object WdttTunnelManager {
         return activeWorkers.value <= 0 && System.currentTimeMillis() - last > thresholdMs
     }
 
-    private fun needsWgOverlayReload(): Boolean = SilentRepository.APP_EXCLUDED_FROM_VPN
+    private fun needsWgOverlayReload(): Boolean = com.silent.vpn.policy.PaymentTunnelPolicy.needsApiOverlay(
+        SilentRepository.APP_EXCLUDED_FROM_VPN, lastParams?.payment == true,
+    )
 
     suspend fun <T> withApiOverlay(block: suspend () -> T): T {
         if (overlayRestoreSuppressed) error("VPN API overlay suppressed")

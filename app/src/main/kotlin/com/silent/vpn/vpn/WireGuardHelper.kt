@@ -63,6 +63,7 @@ import java.io.ByteArrayInputStream
 class WireGuardHelper(context: Context) {
 
     var profileMtu: Int? = null
+    var paymentMode: Boolean = false
 
     private val appContext = context.applicationContext
 
@@ -381,14 +382,17 @@ class WireGuardHelper(context: Context) {
             val tunnel = sharedTunnel
             // Main VPN uses the same userspace WG device for app traffic and excluded-app OTA TCP.
             // Android Network.bind cannot reach VPN from an excluded UID (EPERM).
-            if (!isBootstrap && !apiOverlayMode && !includeAppOverlay) {
+            if ((!isBootstrap || paymentMode) && !apiOverlayMode && !includeAppOverlay) {
                 if (tunnel != null) {
                     backend.setState(tunnel, Tunnel.State.DOWN, null)
                     sharedTunnel = null
                 }
                 BrowserScopedTunnel.start(
-                    appContext, finalConfig, resolveAppTunnelPolicy(appContext),
-                    excludeRouteCidrs, siteTargets, siteDomains, siteWhitelist, semanticKey, russian,
+                    appContext, finalConfig,
+                    if (paymentMode) AppTunnelPolicy(false, resolveBootstrapExcludedApps(appContext))
+                        else resolveAppTunnelPolicy(appContext),
+                    if (paymentMode) excludeIPs else excludeRouteCidrs,
+                    siteTargets, siteDomains, siteWhitelist, semanticKey, russian, payment = paymentMode,
                 )
                 lastAppliedSemanticKey = semanticKey
                 lastExcludeRouteKey = excludeRouteKey

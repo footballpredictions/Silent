@@ -1,7 +1,5 @@
 package com.silent.vpn.policy
 
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
 internal object PaymentRequest {
@@ -10,14 +8,6 @@ internal object PaymentRequest {
         withTimeoutOrNull(timeoutMs) { Result.success(block()) }?.getOrThrow()
             ?: error("Не удалось открыть оплату. Проверьте интернет и повторите.")
 
-    suspend fun <T> retry(block: suspend () -> T): T {
-        try {
-            return block()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            delay(400)
-            return block()
-        }
-    }
+    /** A timed-out POST may already have created a payment. Never replay it. */
+    suspend fun <T> create(block: suspend () -> T): T = block()
 }

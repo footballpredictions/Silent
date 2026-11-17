@@ -110,7 +110,7 @@ class PaymentHttpsProbeTest {
             true
         }, { PaymentHttpsProbe.check(client, current.probeUrl()) }, { stopped += it }))
         assertEquals(second, router.selected)
-        assertEquals(listOf(first), stopped)
+        assertTrue(stopped.isEmpty())
         assertEquals("HEAD", failed.takeRequest().method)
         assertEquals("HEAD", working.takeRequest().method)
     }

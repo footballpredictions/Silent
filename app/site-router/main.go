@@ -27,6 +27,7 @@ type configuration struct {
 	Russian     russianConfig `json:"russian"`
 	Socket      string        `json:"socket"`
 	Wireguard   string        `json:"wireguard"`
+	TunnelDNS   []string      `json:"tunnel_dns"`
 	MTU         int           `json:"mtu"`
 	Whitelist   bool          `json:"whitelist"`
 	Targets     []string      `json:"targets"`
@@ -330,6 +331,7 @@ func run(path string) error {
 		if err != nil {
 			return err
 		}
+		adapter.ota.setPaymentDNS(cfg.TunnelDNS)
 		defer adapter.ota.stack.Close()
 		server, serveErr := adapter.ota.serveWithHealth(cfg.OTAPort, func() (uint64, uint64) {
 			return adapter.pathSent.Load(), adapter.pathReceived.Load()
@@ -349,7 +351,10 @@ func run(path string) error {
 	}
 	fmt.Println("READY")
 	// Kotlin owns lifetime and closes stdin before closing the FD/process.
-	return applyRouterUpdates(os.Stdin, adapter.policy, os.Stdout, adapter.russian, adapter.direct.resetNetwork)
+	return applyRouterUpdates(os.Stdin, adapter.policy, os.Stdout, adapter.russian, adapter.direct.resetNetwork, func(config string) error {
+		// Payment exit changes replace the peer on the same device and TUN.
+		return wg.IpcSet("replace_peers=true\n" + config)
+	})
 }
 func main() {
 	if len(os.Args) != 2 {

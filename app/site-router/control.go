@@ -16,7 +16,7 @@ func applyTargetUpdates(input io.Reader, policy *sitePolicy, output io.Writer, r
 	return applyRouterUpdates(input, policy, output, router, nil)
 }
 
-func applyRouterUpdates(input io.Reader, policy *sitePolicy, output io.Writer, russian *russianRouter, networkChanged func()) error {
+func applyRouterUpdates(input io.Reader, policy *sitePolicy, output io.Writer, russian *russianRouter, networkChanged func(), setWireguard ...func(string) error) error {
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 4096), 2*1024*1024)
 	var networkEpoch uint64
@@ -27,9 +27,16 @@ func applyRouterUpdates(input io.Reader, policy *sitePolicy, output io.Writer, r
 			Targets      *[]string      `json:"targets"`
 			NetworkEpoch uint64         `json:"network_epoch"`
 			PhysicalDNS  *[]string      `json:"physical_dns"`
+			Wireguard    *string        `json:"wireguard"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &update) != nil || update.Revision <= 0 || (update.Targets != nil && len(*update.Targets) > 16384) {
 			continue
+		}
+		if update.Wireguard != nil {
+			if len(setWireguard) == 0 || len(*update.Wireguard) > 65536 || setWireguard[0](*update.Wireguard) != nil {
+				fmt.Fprintf(output, "WG_FAILED:%d\n", update.Revision)
+				continue
+			}
 		}
 		if update.Targets != nil {
 			policy.replaceTargets(*update.Targets)

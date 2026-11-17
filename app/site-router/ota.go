@@ -29,13 +29,14 @@ import (
 // Updates, routing policy and authenticated sessions over the running WG device.
 // No second WG handshake/key, Android bind, overlay, or application route change.
 type otaStack struct {
-	stack   *stack.Stack
-	link    *channel.Endpoint
-	address tcpip.Address
-	gateway tcpip.Address
-	port    uint16
-	next    atomic.Uint32
-	active  sync.Map
+	stack      *stack.Stack
+	link       *channel.Endpoint
+	address    tcpip.Address
+	gateway    tcpip.Address
+	port       uint16
+	next       atomic.Uint32
+	active     sync.Map
+	paymentDNS []tcpip.Address
 }
 
 func newOTAStack(ctx context.Context, address string, mtu int, write func([]byte) error) (*otaStack, error) {
@@ -87,15 +88,21 @@ func (o *otaStack) dial(ctx context.Context, _, target string) (net.Conn, error)
 	if target != net.JoinHostPort(o.gateway.String(), fmt.Sprint(o.port)) {
 		return nil, errors.New("OTA target rejected")
 	}
+	return o.dialRemote(ctx, o.gateway, o.port)
+}
+
+// Internal TCP only. Public HTTP remains restricted to the API allowlist below.
+func (o *otaStack) dialRemote(ctx context.Context, remote tcpip.Address, remotePort uint16) (net.Conn, error) {
 	// Below Android's ephemeral range. Only active exact API tuples are intercepted.
 	for attempt := 0; attempt < 128; attempt++ {
 		port := uint16(23000 + o.next.Add(1)%128)
-		if _, used := o.active.LoadOrStore(port, true); used {
+		target := tcpip.FullAddress{NIC: 1, Addr: remote, Port: remotePort}
+		if _, used := o.active.LoadOrStore(port, target); used {
 			continue
 		}
 		conn, err := gonet.DialTCPWithBind(ctx, o.stack,
 			tcpip.FullAddress{NIC: 1, Addr: o.address, Port: port},
-			tcpip.FullAddress{NIC: 1, Addr: o.gateway, Port: o.port}, ipv4.ProtocolNumber)
+			target, ipv4.ProtocolNumber)
 		if err != nil {
 			o.active.Delete(port)
 			return nil, err
@@ -113,15 +120,17 @@ func (o *otaStack) receive(packet []byte) bool {
 	if h < 20 || len(packet) < h+20 {
 		return false
 	}
-	if tcpip.AddrFrom4Slice(packet[12:16]) != o.gateway || tcpip.AddrFrom4Slice(packet[16:20]) != o.address {
+	if tcpip.AddrFrom4Slice(packet[16:20]) != o.address {
 		return false
 	}
 	source := uint16(packet[h])<<8 | uint16(packet[h+1])
 	port := uint16(packet[h+2])<<8 | uint16(packet[h+3])
-	if source != o.port {
+	value, active := o.active.Load(port)
+	if !active {
 		return false
 	}
-	if _, active := o.active.Load(port); !active {
+	target := value.(tcpip.FullAddress)
+	if source != target.Port || tcpip.AddrFrom4Slice(packet[12:16]) != target.Addr {
 		return false
 	}
 	p := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(append([]byte(nil), packet...))})
@@ -135,13 +144,17 @@ func tcpipSourceIsOTA(o *otaStack, packet []byte) bool {
 		return false
 	}
 	h := int(packet[0]&15) * 4
-	if h < 20 || len(packet) < h+20 || tcpip.AddrFrom4Slice(packet[12:16]) != o.address || tcpip.AddrFrom4Slice(packet[16:20]) != o.gateway {
+	if h < 20 || len(packet) < h+20 || tcpip.AddrFrom4Slice(packet[12:16]) != o.address {
 		return false
 	}
 	port := uint16(packet[h])<<8 | uint16(packet[h+1])
 	remote := uint16(packet[h+2])<<8 | uint16(packet[h+3])
-	_, active := o.active.Load(port)
-	return active && remote == o.port
+	value, active := o.active.Load(port)
+	if !active {
+		return false
+	}
+	target := value.(tcpip.FullAddress)
+	return remote == target.Port && tcpip.AddrFrom4Slice(packet[16:20]) == target.Addr
 }
 
 func otaHandler(transport http.RoundTripper) http.Handler {
@@ -166,7 +179,10 @@ func otaHandler(transport http.RoundTripper) http.Handler {
 		qrWrite := r.Method == http.MethodPost && (r.URL.Path == "/api/auth/qr/approve" || r.URL.Path == "/api/auth/qr/user-code")
 		id := strings.TrimPrefix(r.URL.Path, "/api/users/devices/")
 		deviceWrite := id != r.URL.Path && len(id) > 0 && len(id) <= 128 && strings.Trim(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == "" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete)
-		if !readOnly && !sessionRead && !refresh && !qrWrite && !deviceWrite {
+		paymentWrite := r.Method == http.MethodPost && (r.URL.Path == "/api/payments/preview" || r.URL.Path == "/api/payments/init")
+		label := strings.TrimPrefix(r.URL.Path, "/api/payments/status/")
+		paymentRead := r.Method == http.MethodGet && label != r.URL.Path && len(label) > 0 && len(label) <= 128 && strings.Trim(label, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == ""
+		if !readOnly && !sessionRead && !refresh && !qrWrite && !deviceWrite && !paymentWrite && !paymentRead {
 			http.Error(w, "Endpoint not allowed", http.StatusForbidden)
 			return
 		}
@@ -194,6 +210,14 @@ func (o *otaStack) serveWithHealth(port int, health func() (uint64, uint64)) (*h
 		ResponseHeaderTimeout: 15 * time.Second, DisableCompression: true}
 	upstream := otaHandler(transport)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/_silent/payment-site" {
+			if o.probePaymentSite(r.Context()) {
+				w.WriteHeader(http.StatusNoContent)
+			} else {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+			return
+		}
 		if health != nil && r.Method == http.MethodGet && r.URL.Path == "/_silent/health" {
 			sent, received := health()
 			w.Header().Set("Content-Type", "application/json")

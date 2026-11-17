@@ -660,6 +660,7 @@ class SilentVpnService : Service() {
                     apiWgConfig = apiWg,
                     isBootstrap = isBootstrap,
                     payment = isBootstrap && obj.optBoolean("payment_tunnel", false),
+                    paymentApiOnly = isBootstrap && obj.optBoolean("payment_tunnel", false) && obj.optBoolean("payment_api_only", false),
                     fastWgCache = fastWgCache,
                     requireGetconfAccess = requireGetconf,
                 ),

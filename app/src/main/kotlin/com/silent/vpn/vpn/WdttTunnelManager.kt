@@ -186,6 +186,7 @@ object WdttTunnelManager {
         val apiWgConfig: String? = null,
         val isBootstrap: Boolean = false,
         val payment: Boolean = false,
+        val paymentApiOnly: Boolean = false,
         /** Быстрый WG из кеша конфига (плитка QS, холодный старт). */
         val fastWgCache: Boolean = false,
         /** Подписка отозвана локально — не применять API_CACHE, ждать GETCONF. */
@@ -476,7 +477,6 @@ object WdttTunnelManager {
 
                     wgHelper = WireGuardHelper(appContext).also {
                         it.profileMtu = WireGuardConfigBuilder.profileMtuFromApiConfig(params.apiWgConfig)
-                        it.paymentMode = params.payment
                     }
 
                     val workers = if (params.isBootstrap) {
@@ -1465,6 +1465,7 @@ object WdttTunnelManager {
                             normalized,
                             effectiveExcludeIps(),
                             isBootstrap = isBootstrapMode,
+                            apiOverlayMode = lastParams?.paymentApiOnly == true,
                             mobileApiRoute = mobileApiRouteEnabled(),
                         )
                     }
@@ -1850,12 +1851,18 @@ object WdttTunnelManager {
 
     fun paymentConnectionId(): Long = processStartedAtMs
 
-    /** Retarget only a payment-owned transport. The Android VPN and WG device stay up. */
+    /** Retarget the transport in the existing service. Android reapplies the WG routes as needed. */
     suspend fun switchPaymentExit(ip: String, port: Int): Boolean = startStopMutex.withLock {
         val previous = lastParams ?: return@withLock false
         val context = lastContext ?: return@withLock false
         if (!previous.payment || !isBootstrapMode || overlayRestoreSuppressed) return@withLock false
         if (previous.serverIp == ip && previous.serverPort == port && tunnelReady.value) return@withLock true
+        val oldConfig = lastWgConfig
+        wgApplyMutex.withLock {
+            if (oldConfig != null) withContext(Dispatchers.IO) {
+                wgHelper?.startTunnel(oldConfig, effectiveExcludeIps(), isBootstrap = true, apiOverlayMode = true)
+            }
+        }
         val reader = readerJob
         killProcess()
         reader?.join()
@@ -2139,7 +2146,7 @@ object WdttTunnelManager {
 
     /** После появления TURN IP — расширить маршруты bootstrap (0.0.0.0/0 − TURN) для браузеров/почты. */
     private fun reloadBootstrapAllowedIps() {
-        if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive) return
+        if (!isBootstrapMode || !tunnelReady.value || apiOverlayActive || lastParams?.paymentApiOnly == true) return
         if (WireGuardHelper.isWgTransitionActive()) return
         val now = System.currentTimeMillis()
         if (now - lastBootstrapRouteReloadMs < 1_500L) return
@@ -2179,6 +2186,7 @@ object WdttTunnelManager {
                         config,
                         effectiveExcludeIps(context.applicationContext),
                         isBootstrap = isBootstrapMode,
+                        apiOverlayMode = params?.paymentApiOnly == true,
                         mobileApiRoute = mobileApiRouteEnabled(),
                     )
                 }

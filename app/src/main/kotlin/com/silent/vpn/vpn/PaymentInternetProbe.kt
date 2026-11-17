@@ -3,27 +3,24 @@ package com.silent.vpn.vpn
 import android.content.Context
 import com.silent.vpn.service.SilentVpnService
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.URL
+import java.net.HttpURLConnection
 import okhttp3.ConnectionPool
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.net.Proxy
-import java.net.URL
-import java.net.HttpURLConnection
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
 internal object PaymentInternetProbe {
-    suspend fun checkDirect(context: Context): Boolean {
-        if (SilentVpnService.isRunning || WdttTunnelManager.running.value) return false
-        val network = VpnNetworkHelper.findUnderlyingNetwork(context) ?: return false
+    suspend fun checkDirect(context: Context): Boolean = withContext(Dispatchers.IO) {
+        val network = VpnNetworkHelper.findUnderlyingNetwork(context) ?: return@withContext false
         val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).socketFactory(network.socketFactory)
             .dns(object : Dns { override fun lookup(hostname: String) = network.getAllByName(hostname).toList() })
             .connectTimeout(2, TimeUnit.SECONDS).readTimeout(2, TimeUnit.SECONDS).callTimeout(4, TimeUnit.SECONDS)
             .followRedirects(false).followSslRedirects(false).build()
-        return try { PaymentHttpsProbe.check(client) } finally {
-            client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
-        }
+        PaymentProbeClient.check(client)
     }
 
     suspend fun check(context: Context): Boolean {
@@ -60,11 +57,6 @@ internal object PaymentInternetProbe {
             .followRedirects(false)
             .followSslRedirects(false)
             .build()
-        return try {
-            PaymentHttpsProbe.check(client)
-        } finally {
-            client.connectionPool.evictAll()
-            client.dispatcher.executorService.shutdown()
-        }
+        return PaymentProbeClient.check(client)
     }
 }

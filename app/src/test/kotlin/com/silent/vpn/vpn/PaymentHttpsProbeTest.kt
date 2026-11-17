@@ -42,6 +42,27 @@ class PaymentHttpsProbeTest {
         servers.forEach { it.shutdown() }
     }
 
+    @Test fun `TLS socket cleanup runs off the UI dispatcher after a real HEAD response`() = runBlocking {
+        val main = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "payment-ui-test") }.asCoroutineDispatcher()
+        val closedOn = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val sockets = object : javax.net.SocketFactory() {
+            override fun createSocket(): java.net.Socket = object : java.net.Socket() {
+                override fun close() { closedOn += Thread.currentThread().name; super.close() }
+            }
+            override fun createSocket(h: String, p: Int) = error("unused")
+            override fun createSocket(h: String, p: Int, l: java.net.InetAddress, q: Int) = error("unused")
+            override fun createSocket(h: java.net.InetAddress, p: Int) = error("unused")
+            override fun createSocket(h: java.net.InetAddress, p: Int, l: java.net.InetAddress, q: Int) = error("unused")
+        }
+        val server = server().apply { enqueue(MockResponse().setResponseCode(200)) }
+        val client = client().newBuilder().socketFactory(sockets).build()
+        try {
+            assertTrue(withContext(main) { PaymentProbeClient.check(client, server.probeUrl()) })
+            assertTrue("idle TLS socket must actually be closed", closedOn.isNotEmpty())
+            assertFalse("Conscrypt close_notify must never run on UI", closedOn.any { it == "payment-ui-test" })
+        } finally { main.close(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown() }
+    }
+
     @Test fun `successful TLS response uses HEAD without payment credentials`() = runBlocking {
         val server = server()
         server.enqueue(MockResponse().setResponseCode(200))

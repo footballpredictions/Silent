@@ -921,6 +921,9 @@ final class MainViewModel: ObservableObject {
                               : "Оплата · ЮMoney и API доступны напрямую", level: .success)
                 return route
             }
+            if current == .disconnected, vpn.state == current {
+                logConnection("Оплата · ЮMoney доступна напрямую, API оплаты не подтвердился")
+            }
         }
         try Task.checkCancellation()
         let preferredExit = UserDefaults.standard.string(forKey: "payment-preferred-exit") ?? BootstrapLaunch.paymentHosts[1]

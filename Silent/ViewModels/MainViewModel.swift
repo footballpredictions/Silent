@@ -913,8 +913,11 @@ final class MainViewModel: ObservableObject {
 
     private func preparePaymentRoute(_ planId: String) async throws -> (base: String, preview: PaymentPreview) {
         let current = vpn.state
-        if (current == .connected || (current == .disconnected && !paymentTunnelActive)),
+        let canCheckDirect = current == .disconnected && !paymentTunnelActive
+        var directSiteReady = false
+        if (current == .connected || canCheckDirect),
            await PaymentRoute.check(), vpn.state == current {
+            directSiteReady = current == .disconnected
             let bases = current == .connected ? [PublicApiFailover.tunnelAPI] : PublicApiFailover.paymentPublicBases
             if let route = try await selectPaymentAPI(planId, bases: bases), vpn.state == current {
                 logConnection(current == .connected ? "Оплата · ЮMoney и API доступны"
@@ -926,16 +929,17 @@ final class MainViewModel: ObservableObject {
             }
         }
         try Task.checkCancellation()
+        guard vpn.state == current else { throw APIError.network }
         let preferredExit = UserDefaults.standard.string(forKey: "payment-preferred-exit") ?? BootstrapLaunch.paymentHosts[1]
         let orderedHosts = BootstrapLaunch.paymentHosts.indices.sorted {
             (BootstrapLaunch.paymentHosts[$0] == preferredExit ? 0 : 1, $0) <
             (BootstrapLaunch.paymentHosts[$1] == preferredExit ? 0 : 1, $1)
         }
-        let routes = orderedHosts.compactMap { index in
+        let candidates = orderedHosts.compactMap { index in
             BootstrapLaunch.configuration(hash: bootstrapHash, fingerprint: api.deviceFingerprint,
                                           password: bootstrapPassword, cell: index, payment: true)
         }
-        guard !routes.isEmpty else {
+        guard !candidates.isEmpty else {
             throw APIError.server("Не удалось проверить доступ к ЮMoney и API оплаты. Попробуйте другую сеть.")
         }
         if current == .connected, !paymentTunnelActive {
@@ -946,7 +950,28 @@ final class MainViewModel: ObservableObject {
             }
         }
         paymentTunnelActive = true
-        if AppIdentity.readTunnelConfig()?.paymentRouting != true { await vpn.disconnect() }
+        let retainedPayment = [.connected, .reconnecting].contains(vpn.state) &&
+            AppIdentity.readTunnelConfig()?.paymentRouting == true
+        if retainedPayment {
+            directSiteReady = AppIdentity.readTunnelConfig()?.paymentAPIOnly == true
+        } else {
+            if vpn.state != .disconnected { await vpn.disconnect() }
+            try Task.checkCancellation()
+            guard vpn.state == .disconnected else { throw APIError.network }
+            if !canCheckDirect { directSiteReady = await PaymentRoute.check() }
+            try Task.checkCancellation()
+            guard vpn.state == .disconnected else { throw APIError.network }
+        }
+        // Keep public DNS and the browser's route on the physical network when
+        // the site answers there. The VPN then claims only the private API gateway.
+        let routes = candidates.map { candidate in
+            var route = candidate
+            if directSiteReady {
+                route.paymentAPIOnly = true
+                route.dns = []
+            }
+            return route
+        }
         var preview: PaymentPreview?
         let picked = try await PaymentRoute.choose(Array(routes.enumerated()), start: { entry in
             let (index, route) = entry
@@ -991,6 +1016,9 @@ final class MainViewModel: ObservableObject {
             }
             guard siteReady, vpn.state == .connected else {
                 logConnection("Оплата · DNS/HTTPS ЮMoney не подтвердился после готовности шлюза", level: .error)
+                if directSiteReady, vpn.state == .connected {
+                    throw APIError.server("Прямой доступ к ЮMoney прервался. Проверьте сеть и повторите оплату.")
+                }
                 return false
             }
             logConnection("Оплата · HTTPS ЮMoney подтверждён · запрос API")
@@ -1007,7 +1035,8 @@ final class MainViewModel: ObservableObject {
         })
         if let picked, let preview {
             UserDefaults.standard.set(routes[picked].serverIP, forKey: "payment-preferred-exit")
-            logConnection("Оплата · ЮMoney доступна через маршрут №\(picked + 1)", level: .success)
+            logConnection(directSiteReady ? "Оплата · ЮMoney напрямую, API через временный VPN"
+                          : "Оплата · ЮMoney доступна через маршрут №\(picked + 1)", level: .success)
             return (PublicApiFailover.tunnelAPI, preview)
         }
         throw APIError.server("Не удалось включить временный интернет для оплаты. Повторите.")

@@ -24,6 +24,7 @@ jobs:
           apt-get install -y --no-install-recommends python3
           python3 scripts/test-startup-boot.py
           python3 scripts/test-payment-direct-route.py
+          python3 scripts/test-payment-split-route.py
 
   build:
     needs: startup-regression

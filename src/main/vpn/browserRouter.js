@@ -133,6 +133,11 @@ async function start({ conf, gateway, resourcesPath, initialPolicy, protectedTar
   policy = { ...policy, ...initialPolicy }
   const exe = path.join(resourcesPath, 'wireguard', 'site-router.exe')
   if (!fs.existsSync(exe)) throw new Error('В сборке отсутствует маршрутизатор сайтов')
+  // Permanent Firewall allow so Windows does not ask every launch.
+  try {
+    await require('../firewallAllow').ensureSilentVpnFirewallAllow(resourcesPath, send)
+  } catch (_) { /* non-fatal: VPN still starts */ }
+  if (run !== generation || isCancelled()) throw new Error('Запуск VPN отменён')
   const child = spawn(exe, [], { cwd: path.dirname(exe), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   const session = { child, pending: new Map(), ready: false, stopping: false, send, gateway, protectedTargets }
   current = session

@@ -108,3 +108,40 @@ test('when public and tunnel both fail, keep the real failure and bound recovery
   assert.equal(state.tunnelCalls, 2)
   assert.equal(state.publicCalls, 1)
 })
+
+test('a lost mutation response inside an established tunnel is not replayed through tunnel or public', async () => {
+  for (const quiet of [false, true]) {
+    const { state, request } = harness([])
+    if (quiet) state.apiQuietUntil = state.clock + 1000
+    state.tunnelHttpRequest = async () => {
+      state.tunnelCalls++
+      throw Object.assign(new Error('ECONNRESET'), { requestDispatched: true })
+    }
+    await assert.rejects(request({ method: 'POST', path: '/api/payments/init' }), /ECONNRESET/)
+    assert.equal(state.tunnelCalls, 1)
+    assert.equal(state.publicCalls, 0)
+  }
+})
+
+test('mutation fallback is safe when tunnel TCP connection could not be opened', async () => {
+  const { state, request } = harness([])
+  state.tunnelHttpRequest = async () => {
+    state.tunnelCalls++
+    throw Object.assign(new Error('ECONNREFUSED'), { requestDispatched: false })
+  }
+  assert.equal((await request({ method: 'POST', path: '/api/vpn/connect' })).data.source, 'public')
+  assert.equal(state.tunnelCalls, 1)
+  assert.equal(state.publicCalls, 1)
+})
+
+test('an actual API failure is logged once with a safe path after all recovery fails', async () => {
+  const { state, request } = harness([])
+  state.wgApplied = false
+  state.publicDirectRequest = async () => { throw Error('All public API bases failed') }
+  const logs = []
+  state.sendLog = line => logs.push(line)
+  await assert.rejects(request({ path: '/api/users/me?private=fixture' }), /All public API bases failed/)
+  assert.equal(logs.length, 1, 'final API failure must stay visible')
+  assert.match(logs[0], /\[API\].*GET.*\/api\/users\/me/)
+  assert.ok(!logs[0].includes('private=fixture'), 'request parameters must not appear in diagnostics')
+})

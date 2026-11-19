@@ -19,19 +19,35 @@ const TELEGRAM_URLS = [
   'https://flora.web.telegram.org/',
 ]
 
-export async function warmupBrowsingPath(timeoutMs = 14_000): Promise<void> {
+let warmupInFlight: Promise<void> | null = null
+
+export function warmupBrowsingPath(timeoutMs = 5_000): Promise<void> {
+  if (warmupInFlight) return warmupInFlight
+  warmupInFlight = runWarmup(timeoutMs).finally(() => { warmupInFlight = null })
+  return warmupInFlight
+}
+
+async function runWarmup(timeoutMs: number): Promise<void> {
   const urls = [...YOUTUBE_URLS, ...TELEGRAM_URLS]
   const ctrl = new AbortController()
   const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
   try {
+    let next = 0
+    const probe = async () => {
+      while (next < urls.length && !ctrl.signal.aborted) {
+        const url = urls[next++]
+        try {
+          await fetch(url, {
+            method: 'HEAD',
+            mode: 'no-cors',
+            cache: 'no-store',
+            signal: ctrl.signal,
+          })
+        } catch { /* warming is best effort */ }
+      }
+    }
     await Promise.allSettled([
-      ...urls.map(url =>
-        fetch(url, {
-          mode: 'no-cors',
-          cache: 'no-store',
-          signal: ctrl.signal,
-        }),
-      ),
+      probe(), probe(), probe(),
       (window as any).electronAPI?.warmupTelegramPath?.().catch(() => null),
     ])
   } finally {

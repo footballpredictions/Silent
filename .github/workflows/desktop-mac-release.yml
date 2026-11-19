@@ -1,0 +1,78 @@
+name: Desktop macOS release
+
+on:
+  push:
+    tags: ['desktop-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-mac-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            goarch: amd64
+          - arch: arm64
+            goarch: arm64
+    env:
+      MAC_ARCH: ${{ matrix.goarch }}
+      PACKAGE_ARCH: ${{ matrix.arch }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.3'
+          cache-dependency-path: |
+            wdtt-go/go.sum
+            site-router/go.sum
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Test shared desktop source and native modules
+        run: |
+          npm test
+          python3 -m unittest discover -s scripts -p 'test_deploy_release.py'
+          (cd wdtt-go && go test ./... && go vet ./...)
+          (cd site-router && go test ./... && go vet ./...)
+      - name: Build release DMG
+        run: bash build-mac.sh
+      - name: Verify the exact app inside the DMG
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          commit="$(git rev-parse HEAD)"
+          dmg="build-mac/Silent VPN Setup ${version}-${PACKAGE_ARCH}.dmg"
+          mount="$RUNNER_TEMP/silent-mac-${PACKAGE_ARCH}"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          node scripts/verify_release_package.cjs darwin "$PACKAGE_ARCH" "$mount/Silent VPN.app" "$version" "$commit" "build-mac/verified-${PACKAGE_ARCH}.json"
+          hdiutil detach "$mount"
+          trap - EXIT
+          shasum -a 256 "$dmg" > "build-mac/SHA256-${PACKAGE_ARCH}.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-mac-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            build-mac/*.dmg
+            build-mac/verified-*.json
+            build-mac/SHA256-*.txt
+          if-no-files-found: error
+          retention-days: 14

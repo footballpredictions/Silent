@@ -18,3 +18,25 @@ test('second instance during quit does not touch a destroyed BrowserWindow', () 
   assert.doesNotThrow(() => handler({}, ['silentvpn://payment']))
   assert.equal(deepLinks, 0)
 })
+
+test('Windows window appears while firewall preparation is still pending', async () => {
+  const source = fs.readFileSync(require.resolve('../src/main/main'), 'utf8')
+  const start = source.indexOf('app.whenReady().then(') + 'app.whenReady().then('.length
+  const end = source.indexOf('\n})\n\nlet macQuitFlushDone', start) + 2
+  let ready, windows = 0
+  const firewall = new Promise(resolve => { ready = resolve })
+  const startup = vm.runInNewContext(`(${source.slice(start, end)})`, {
+    app: { getPath: () => 'fixture', setAsDefaultProtocolClient() {}, isPackaged: true },
+    process: { platform: 'win32', resourcesPath: 'fixture' },
+    russianServices: { configure() {} }, startRussianPolicyRefresh() {}, softTamperHints() {},
+    isDebugBuild: false, sendLog() {}, killOrphanWdtt() {},
+    path: require('node:path'), fs: { existsSync: () => false },
+    require: () => ({ ensureSilentVpnFirewallAllow: () => firewall }),
+    createWindow() { windows++ }, createTray() {}, warmVkExcludeIps() {},
+  })
+  const done = startup()
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(windows, 1, 'netsh firewall preparation must not delay the first window')
+  } finally { ready(); await done }
+})

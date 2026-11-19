@@ -7,6 +7,50 @@
 !define SILENT_WG_DIR "C:\ProgramData\SilentVPN\wireguard"
 !define SILENT_PD_DIR "C:\ProgramData\SilentVPN"
 
+!macro CustomSilentFirewallAdd
+  DetailPrint "Configuring Windows Firewall for Silent VPN..."
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN site-router"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN site-router out"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN app"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN app out"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN wdtt"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN wdtt out"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Silent VPN site-router" dir=in action=allow program="$INSTDIR\resources\wireguard\site-router.exe" enable=yes profile=any'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Silent VPN site-router out" dir=out action=allow program="$INSTDIR\resources\wireguard\site-router.exe" enable=yes profile=any'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Silent VPN app" dir=in action=allow program="$INSTDIR\Silent VPN.exe" enable=yes profile=any'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Silent VPN app out" dir=out action=allow program="$INSTDIR\Silent VPN.exe" enable=yes profile=any'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Silent VPN wdtt" dir=in action=allow program="$INSTDIR\resources\wdtt-client.exe" enable=yes profile=any'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Silent VPN wdtt out" dir=out action=allow program="$INSTDIR\resources\wdtt-client.exe" enable=yes profile=any'
+  Pop $0
+!macroend
+
+!macro CustomSilentFirewallRemove
+  DetailPrint "Removing Silent VPN firewall rules..."
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN site-router"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN site-router out"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN app"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN app out"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN wdtt"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Silent VPN wdtt out"'
+  Pop $0
+!macroend
+
 !macro silentWgUninstallTunnel WGEXE
   ${If} ${FileExists} "${WGEXE}"
     nsExec::ExecToLog '"${WGEXE}" /uninstalltunnelservice wg-turn'
@@ -21,6 +65,8 @@
   nsExec::ExecToLog 'taskkill /F /IM "Silent VPN.exe"'
   Pop $0
   nsExec::ExecToLog 'taskkill /F /IM wdtt-client.exe'
+  Pop $0
+  nsExec::ExecToLog 'taskkill /F /IM site-router.exe'
   Pop $0
   nsExec::ExecToLog 'taskkill /F /IM wireguard.exe'
   Pop $0
@@ -90,6 +136,8 @@
   Pop $0
   nsExec::ExecToLog 'taskkill /F /IM wdtt-client.exe'
   Pop $0
+  nsExec::ExecToLog 'taskkill /F /IM site-router.exe'
+  Pop $0
   nsExec::ExecToLog 'taskkill /F /IM wireguard.exe'
   Pop $0
 
@@ -149,6 +197,7 @@
   FileClose $0
 
   Sleep 1500
+  !insertmacro CustomSilentFirewallAdd
   DetailPrint "WireGuard repair done"
 !macroend
 
@@ -164,6 +213,7 @@
 
 !macro customUnInstall
   ${ifNot} ${isUpdated}
+    !insertmacro CustomSilentFirewallRemove
     DetailPrint "Silent VPN: полная деинсталляция..."
     !insertmacro silentVpnWipeAll
     ${If} $INSTDIR != ""

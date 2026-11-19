@@ -1,5 +1,29 @@
 # Деплой PC-клиента (ветка `pc`)
 
+## Публикация desktop 1.0.175 и новее
+
+`scripts/deploy_release.py` сохраняет старые загрузки, проверяет SHA-256 файла
+до активации и атомарно заменяет манифест. Сервисы VPN/API не перезапускаются.
+Перед загрузкой проверяется bind mount `/app/update` контейнера API.
+
+```text
+python scripts/deploy_release.py "Silent.VPN.Setup.1.0.175.exe" 1.0.175 --platform pc
+python scripts/deploy_release.py "Silent.VPN.Setup.1.0.175.deb" 1.0.175 --platform linux
+python scripts/deploy_release.py "Silent.VPN.Setup.1.0.175-x64.dmg" 1.0.175 --platform mac --arch x64
+python scripts/deploy_release.py "Silent.VPN.Setup.1.0.175-arm64.dmg" 1.0.175 --platform mac --arch arm64
+```
+
+Тег `desktop-v*` запускает `.github/workflows/desktop-mac-release.yml`:
+два отдельных DMG, immutable action SHA, только `contents: read`, без публикации
+из CI. Каждый DMG монтируется read-only и проверяется
+`scripts/verify_release_package.cjs`, включая release-флаг, версию,
+архитектуру, исходный commit Go и SHA native-модуля из app.asar.
+Артефакты CI публикуются только после проверки локальным оператором.
+
+Windows/Linux можно собирать в отдельных worktree, чтобы подготовка релиза
+не завершала запущенный пользовательский VPN. Bootstrap остаётся прежним,
+если владелец явно не задаёт новый.
+
 **Репозиторий:** `Silent-Project/pc/`  
 **Шпаргалка Agent:** полный список deploy-файлов — **этот файл**. Индекс: `backend/.cursor/MEMORY_BANK.md` → «Деплой».
 

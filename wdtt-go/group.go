@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-
 const (
 	workersPerGroup  = 9
 	defaultCycleSecs = 36000
@@ -187,7 +186,7 @@ func WorkerGroup(
 				}
 
 				configDelivered, sessErr := RunSession(ctx, tp, peer, d, localPort,
-					getConf, cc, wid, &credsSnapshot, deviceID, password, stats)
+					getConf, cc, wid, &credsSnapshot, deviceID, password, stats, attempt)
 
 				if getConf {
 					if configDelivered {
@@ -316,5 +315,3 @@ type Credentials struct {
 	TurnURLs      []string
 	CacheStreamID int
 }
-
-

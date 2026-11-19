@@ -68,6 +68,7 @@ const buildFlags = require('./buildFlags')
 const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
 const { otaPlatform, wdttBinaryName, killOrphanWdttCmd } = require('./otaPlatform')
 const { effectiveConnectWorkers, WORKERS_PER_GROUP } = require('./workerLimits')
+const workerProgress = require('./workerProgress').createWorkerProgress()
 const {
   beginOlcrtcSession,
   stopOlcrtcSession,
@@ -589,26 +590,28 @@ function sendLog(line) {
 
   // Сначала [WG]/[VPN]/… — иначе parseLibclientLine глотает *fail*/*timeout*
   // (probe FAIL) и SilentVPN-main.log остаётся без диагноза (лог 08:42).
-  if (/^\[WG\]|^\[VPN\]|^\[Update\]|^\[olcrtc|^\[sing-box|^\[КАПЧА\]|^\[Sites\]|^\[Apps\]/.test(trimmed)) {
+  if (/^\[WG\]|^\[VPN\]|^\[API\]|^\[Workers\]|^\[Update\]|^\[olcrtc|^\[sing-box|^\[КАПЧА\]|^\[Sites\]|^\[Apps\]/.test(trimmed)) {
     mirrorMainLog(trimmed)
     // Wintun can warn while renaming a stale foreign adapter and still create
     // our interface successfully. Native startup failure is reported separately.
     const recoveredAdapterRename = /^\[Sites\].*Failed to set foreign adapter name.*Code 0x00000490/i.test(trimmed)
     const isError =
-      !recoveredAdapterRename && (/\[olcrtc2?:err\]|FATAL|критич/i.test(trimmed) ||
+      !trimmed.startsWith('[Workers]') && !recoveredAdapterRename && (/^\[API\].*не выполнен:|\[olcrtc2?:err\]|FATAL|критич/i.test(trimmed) ||
       (/error|ошиб|таймаут|timeout|site-router:.*failed/i.test(trimmed) &&
         !/operation not permitted|unreachable network|Failed to send packet|prefetch 498|soft-miss|exit/i.test(
           trimmed,
         )))
     let tag = 'VPN'
     if (trimmed.startsWith('[WG]')) tag = 'WireGuard'
+    else if (trimmed.startsWith('[API]')) tag = 'API'
+    else if (trimmed.startsWith('[Workers]')) tag = 'Workers'
     else if (trimmed.startsWith('[Sites]')) tag = 'Sites'
     else if (trimmed.startsWith('[Apps]')) tag = 'Apps'
     else if (trimmed.startsWith('[КАПЧА]')) tag = 'Captcha'
     else if (trimmed.startsWith('[olcrtc')) tag = 'olcrtc'
     else if (trimmed.startsWith('[sing-box')) tag = 'sing-box'
     sendWdttLog({
-      key: `sys_${tag}_${trimmed.slice(0, 36).replace(/\d+/g, '#')}`,
+      key: tag === 'Workers' ? 'workers_progress' : `sys_${tag}_${trimmed.slice(0, 36).replace(/\d+/g, '#')}`,
       message: trimmed,
       priority: isError ? 99 : 2,
       isError,
@@ -931,14 +934,14 @@ function clearTelegramWarmupTimers() {
 
 function maybeWarmupTelegram(sendLogFn, opts = {}) {
   if (!vpnSessionActive || vpnBootstrapMode || vpnOlcrtcMode) return
-  const force = !!opts.force
-  if (!force && activeWorkerCount < WORKERS_PER_GROUP) {
+  if (telegramWarmupMinWorkersDone) return
+  if (activeWorkerCount < WORKERS_PER_GROUP) {
     if (opts.logDefer) {
       sendLogFn?.(`[Apps] warmup Telegram отложен (workers=${activeWorkerCount}<${WORKERS_PER_GROUP})`)
     }
     return
   }
-  if (activeWorkerCount >= WORKERS_PER_GROUP) telegramWarmupMinWorkersDone = true
+  telegramWarmupMinWorkersDone = true
   void warmupTelegramTcp(sendLogFn)
 }
 
@@ -948,7 +951,7 @@ function scheduleTelegramWarmupRetries(sendLogFn) {
   for (const ms of [4000, 8000, 20000, 35000]) {
     telegramWarmupTimers.push(setTimeout(() => {
       if (!vpnSessionActive || vpnBootstrapMode) return
-      maybeWarmupTelegram(sendLogFn, { force: ms >= 20000 })
+      maybeWarmupTelegram(sendLogFn)
     }, ms))
   }
 }
@@ -1672,6 +1675,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
   }
 
   // DNS bypass в фоне — не блокировать spawn/подписку на stdout (раньше теряли секунды).
+  clearTelegramWarmupTimers()
+  telegramWarmupMinWorkersDone = false
+  workerProgress.reset()
   const excludePromise = collectExcludeIPs(config)
   // Linux/mac: hosts + LAN iface для WDTT до spawn.
   const spawnEnv = { ...process.env }
@@ -1859,108 +1865,114 @@ async function beginWdttSession(config, { switching = false } = {}) {
     normalizedConf = normalizeWgConfText(normalizedConf)
 
     wgInstallInFlight = true
-
-    sendLog(`[WG] Применение конфига (${source})...`)
-    sendLog('[WG] Ожидание WDTT UDP 127.0.0.1:9000...')
-    // confPath: GETCONF уже на диске (wdtt-file) — не ждать лишний UDP poll
-    const proxyWaitMs = switching ? 4_000 : 6_000
-    const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, proxyWaitMs, sendLog, confPath)
-    if (!wdttReady) {
-      wgInstallInFlight = false
-      wgAttempted = false
-      failWireGuard('Таймаут: WDTT не подключился к серверу')
-      return false
-    }
-
-    fs.writeFileSync(confPath, normalizedConf)
-
-    // syncconf только если служба жива И ключи/peer те же (reconnect).
-    // Улей↔сота: PublicKey другой — Windows syncconf его не меняет → 10.66.66.1 timeout + leak РФ.
-    const alreadyUp = await isServiceRunningAsync()
-    if (process.platform === 'darwin') {
-      try {
-        const { ensureHelperDaemon } = require('./vpn/wireguard')
-        sendLog('[WG] Служба VPN: после перезагрузки macOS один раз спросит пароль, потом поднимет туннель')
-        await ensureHelperDaemon(sendLog)
-      } catch (e) {
-        wgInstallInFlight = false
-        failWireGuard(String(e?.message || e))
+    try {
+      sendLog(`[WG] Применение конфига (${source})...`)
+      sendLog('[WG] Ожидание WDTT UDP 127.0.0.1:9000...')
+      // confPath: GETCONF уже на диске (wdtt-file) — не ждать лишний UDP poll
+      const proxyWaitMs = switching ? 4_000 : 6_000
+      const wdttReady = await waitForWdttProxy('127.0.0.1', 9000, proxyWaitMs, sendLog, confPath)
+      if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
+      if (!wdttReady) {
+        wgAttempted = false
+        failWireGuard('Таймаут: WDTT не подключился к серверу')
         return false
       }
-    }
-    const browserPolicy = process.platform === 'win32' && !vpnBootstrapMode
-      ? await prepareBrowserRoutingPolicy() : undefined
-    const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
-      skipWdttWait: true,
-      subnetOnly: (vpnBootstrapMode && isHiveBootstrapIp(config.server_ip)) || wgCredPhase,
-      skipForceStop: alreadyUp,
-      reuseRuntime: true,
-      dnsOverride: sessionDnsOverride,
-      browserRouting: process.platform === 'win32' && !vpnBootstrapMode,
-      browserPolicy,
-      isCancelled: () => !vpnSessionActive || vpnConnectSeq !== wgConnectSeq,
-    })
-    const timeoutMs = isProcessElevated() ? 70000 : 90000
-    let ok = false
-    try {
-      ok = await Promise.race([
-        wgPromise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('WG install timeout')), timeoutMs)),
-      ])
-    } catch (e) {
-      sendLog('[WG] ' + (e.message || 'install failed'))
-      ok = false
-    } finally {
-      wgInstallInFlight = false
-    }
-    if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
-    // Windows: служба Wintun иногда успевает подняться после race — soft-OK ок.
-    // Darwin/Linux: «процесс/utun жив» ≠ data-plane. Лог 10:05: data-plane мёртв,
-    // apply вернул false, а эта ветка всё равно ставила «успех» → сайты по Wi‑Fi.
-    if (!ok && (await isServiceRunningAsync())) {
-      if (process.platform === 'win32') {
-        sendLog('[WG] Туннель/служба активны после таймаута — считаем успехом')
-        ok = true
-      } else {
-        sendLog('[WG] utun/служба живы, но install/probe не OK — НЕ считаем успехом')
+
+      fs.writeFileSync(confPath, normalizedConf)
+
+      // syncconf только если служба жива И ключи/peer те же (reconnect).
+      // Улей↔сота: PublicKey другой — Windows syncconf его не меняет → 10.66.66.1 timeout + leak РФ.
+      const alreadyUp = await isServiceRunningAsync()
+      if (process.platform === 'darwin') {
+        try {
+          const { ensureHelperDaemon } = require('./vpn/wireguard')
+          sendLog('[WG] Служба VPN: после перезагрузки macOS один раз спросит пароль, потом поднимет туннель')
+          await ensureHelperDaemon(sendLog)
+        } catch (e) {
+          failWireGuard(String(e?.message || e))
+          return false
+        }
       }
-    }
-    if (ok) {
-      if (!vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
-      wgApplied = true
-      wgAttempted = true
-      clearWgRetries()
-      // Handshake после смены сервера: ConfigSync не должен сразу уходить на public IP Улья.
-      wgRouteSettleUntil = Date.now() + 15_000
-      await addServerBypassRoutes([...excludeIPs], sendLog)
-      await ensureNipIoBypassRoutes(sendLog)
-      await syncAdminNipHosts(peerIsHive(config?.server_ip, ADMIN_HIVE_IP), sendLog)
-      scheduleBypassRefresh(sendLog)
+      const browserPolicy = process.platform === 'win32' && !vpnBootstrapMode
+        ? await prepareBrowserRoutingPolicy() : undefined
+      if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
+      const wgPromise = applyWireGuardConfig(confPath, isDev, __dirname, sendLog, [...excludeIPs], {
+        skipWdttWait: true,
+        subnetOnly: (vpnBootstrapMode && isHiveBootstrapIp(config.server_ip)) || wgCredPhase,
+        skipForceStop: alreadyUp,
+        reuseRuntime: true,
+        dnsOverride: sessionDnsOverride,
+        browserRouting: process.platform === 'win32' && !vpnBootstrapMode,
+        browserPolicy,
+        isCancelled: () => !vpnSessionActive || vpnConnectSeq !== wgConnectSeq,
+      })
+      const timeoutMs = isProcessElevated() ? 70000 : 90000
+      let ok = false
       try {
-        const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
-        await refreshAppExclusionBypassAfterTunnel(sendLog)
-        const { applySiteBypassFromFile, defaultSiteBypassPath } = require('./apps/siteBypass')
-        void applySiteBypassFromFile(defaultSiteBypassPath(app.getPath('userData')), sendLog, {
-          dnsServers: String(sessionDnsOverride || config?.wg_dns || '1.1.1.1,1.0.0.1,77.88.8.8').split(/[,\s]+/).filter(Boolean),
-        }).catch(e => sendLog(`[Sites] ${e.message}`))
+        ok = await Promise.race([
+          wgPromise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('WG install timeout')), timeoutMs)),
+        ])
       } catch (e) {
-        sendLog(`[Apps] bypass after tunnel: ${e?.message || e}`)
+        sendLog('[WG] ' + (e.message || 'install failed'))
+        ok = false
       }
-      if (wgCredPhase) maybeScheduleFullTunnelUpgrade()
-      scheduleTunnelReadyPoll(sendLog)
-      ensureVpnReadyEvent(sendLog)
-      return true
+      if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
+      // Windows: служба Wintun иногда успевает подняться после race — soft-OK ок.
+      // Darwin/Linux: «процесс/utun жив» ≠ data-plane. Лог 10:05: data-plane мёртв,
+      // apply вернул false, а эта ветка всё равно ставила «успех» → сайты по Wi‑Fi.
+      if (!ok && (await isServiceRunningAsync())) {
+        if (process.platform === 'win32') {
+          sendLog('[WG] Туннель/служба активны после таймаута — считаем успехом')
+          ok = true
+        } else {
+          sendLog('[WG] utun/служба живы, но install/probe не OK — НЕ считаем успехом')
+        }
+      }
+      if (ok) {
+        if (!vpnBootstrapMode) await require('./vpn/browserRouter').updatePolicy(prepareBrowserRoutingPolicy())
+        if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
+        wgApplied = true
+        wgAttempted = true
+        clearWgRetries()
+        // Handshake после смены сервера: ConfigSync не должен сразу уходить на public IP Улья.
+        wgRouteSettleUntil = Date.now() + 15_000
+        await addServerBypassRoutes([...excludeIPs], sendLog)
+        await ensureNipIoBypassRoutes(sendLog)
+        await syncAdminNipHosts(peerIsHive(config?.server_ip, ADMIN_HIVE_IP), sendLog)
+        scheduleBypassRefresh(sendLog)
+        try {
+          const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
+          await refreshAppExclusionBypassAfterTunnel(sendLog)
+          const { applySiteBypassFromFile, defaultSiteBypassPath } = require('./apps/siteBypass')
+          void applySiteBypassFromFile(defaultSiteBypassPath(app.getPath('userData')), sendLog, {
+            dnsServers: String(sessionDnsOverride || config?.wg_dns || '1.1.1.1,1.0.0.1,77.88.8.8').split(/[,\s]+/).filter(Boolean),
+          }).catch(e => sendLog(`[Sites] ${e.message}`))
+        } catch (e) {
+          sendLog(`[Apps] bypass after tunnel: ${e?.message || e}`)
+        }
+        if (wgCredPhase) maybeScheduleFullTunnelUpgrade()
+        scheduleTunnelReadyPoll(sendLog)
+        ensureVpnReadyEvent(sendLog)
+        return true
+      }
+      failWireGuard(
+        process.platform === 'darwin'
+          ? 'VPN на Mac не поднялся (нет ответа туннеля или служба VPN не установлена). Тумблер сброшен, чтобы сайты не шли мимо VPN — попробуйте ещё раз.'
+          : process.platform === 'linux'
+            ? 'WireGuard не запустился. Проверьте helper / polkit'
+            : isProcessElevated()
+              ? 'WireGuard не запустился. Проверьте services.msc → WireGuardTunnel$wg-turn'
+              : 'Разрешите UAC (Да) или запустите «Silent VPN (Admin).bat»',
+      )
+      return false
+    } catch (error) {
+      if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
+      failWireGuard(String(error?.message || error))
+      return false
+    } finally {
+      if (vpnConnectSeq === wgConnectSeq) wgInstallInFlight = false
     }
-    failWireGuard(
-      process.platform === 'darwin'
-        ? 'VPN на Mac не поднялся (нет ответа туннеля или служба VPN не установлена). Тумблер сброшен, чтобы сайты не шли мимо VPN — попробуйте ещё раз.'
-        : process.platform === 'linux'
-          ? 'WireGuard не запустился. Проверьте helper / polkit'
-          : isProcessElevated()
-            ? 'WireGuard не запустился. Проверьте services.msc → WireGuardTunnel$wg-turn'
-            : 'Разрешите UAC (Да) или запустите «Silent VPN (Admin).bat»',
-    )
-    return false
   }
 
   const applyFromFile = async () => {
@@ -1993,6 +2005,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
   requestApplyWgAfterCaptcha = requestApplyFromFile
 
   const handleLine = (line) => {
+    if (isDebugBuild) workerProgress.observe(line)
     const lineTrim = String(line || '').trim()
     if (lineTrim.startsWith('CAPTCHA_SOLVE|')) {
       scheduleCaptchaSolve(lineTrim)
@@ -2019,6 +2032,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
       if (now - lastStatsLogToUiAt >= 8000) {
         lastStatsLogToUiAt = now
         sendLog(line)
+        if (isDebugBuild && !vpnBootstrapMode) {
+          sendLog(workerProgress.format(sessionTargetWorkers, activeWorkerCount))
+        }
       }
       return
     }
@@ -2464,15 +2480,25 @@ ipcMain.handle('set-standby-api-bases', (_, urls) => {
 })
 
 let hivePublicSlowUntil = 0
+let publicApiPreferredBase = ''
 
-function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000, skipHive = false, shouldSwitchToTunnel = () => false }) {
+function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 20000, skipHive = false, shouldSwitchToTunnel = null }) {
+  const readOnly = /^(GET|HEAD)$/i.test(method)
+  const controller = new AbortController()
+  const superseded = () => shouldSwitchToTunnel?.() === true
+  let completed = false
+  let readinessTimer = null
   const hive = { hiveHost: UPDATE_HOST, hiveIp: SERVER_IP_FALLBACK }
   let bases = getPublicFailoverBases()
   if (skipHive || Date.now() < hivePublicSlowUntil) bases = publicBasesSkippingHive(bases, hive)
+  if (bases.includes(publicApiPreferredBase)) {
+    bases = [publicApiPreferredBase, ...bases.filter(base => base !== publicApiPreferredBase)]
+  }
 
   const runChain = (list, { quietHive = false } = {}) => {
     const tryOne = (index, retrySame = true) => {
-      if (shouldSwitchToTunnel()) return Promise.reject(new Error('Public API request superseded by VPN'))
+      if (completed) return Promise.reject(new Error('Public API request completed'))
+      if (superseded()) return Promise.reject(new Error('Public API request superseded by VPN'))
       if (index >= list.length) {
         return Promise.reject(new Error('All public API bases failed'))
       }
@@ -2499,17 +2525,26 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
         timeout: publicFailoverAttemptTimeoutMs(base, timeout || 20000, hive),
         rejectUnauthorized: false,
         servername: isHttps ? UPDATE_HOST : undefined,
+        signal: controller.signal,
+      }).then(res => {
+        if (readOnly && res.status >= 500) throw new Error(`Public API HTTP ${res.status}`)
+        if (!completed && res.status >= 200 && res.status < 500) publicApiPreferredBase = base
+        return res
       }).catch((err) => {
         // A read started before WG can outlive adapter setup. Its old public
         // route is obsolete: let the caller retry the now-ready tunnel, rather
         // than walking every public address/port on the previous network.
-        if (shouldSwitchToTunnel()) throw err
+        if (completed || superseded()) throw err
+        // Only a failure before TCP/TLS connection proves a mutation was not sent.
+        if (!readOnly && err?.requestDispatched !== false) throw err
         const msg = String(err?.message || err)
         const later = index + 1 < list.length
         if (hiveHop && isSlowPublicHop(msg)) hivePublicSlowUntil = Date.now() + 120_000
         const hideHiveTimeout = quietHive && hiveHop && isSlowPublicHop(msg)
         if (!hideHiveTimeout && shouldLogPublicHopFail(base, msg, hive, later)) {
-          sendLog(`[API] public ${u.hostname} fail: ${msg}`)
+          // An intermediate hop failure is diagnostic evidence, not the outcome
+          // of the API request. The IPC handler reports a final failure only.
+          mirrorMainLog(`[API] ${new Date().toISOString()} ${method} ${String(reqPath || '').split('?')[0]} public ${u.host} fail: ${msg}`)
         }
         if (retrySame && /socket hang up|ECONNRESET/i.test(msg)) {
           return tryOne(index, false)
@@ -2522,7 +2557,20 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
 
   const hiveBases = bases.filter((base) => isHivePublicBase(base, hive))
   const rest = publicBasesSkippingHive(bases, hive)
-  if (!hiveBases.length || !rest.length) return runChain(bases)
+  const finish = promise => promise.finally(() => {
+    completed = true
+    if (readinessTimer) clearInterval(readinessTimer)
+    controller.abort()
+  })
+  // Public sockets started before adapter setup can remain blocked for seconds.
+  // Once WG is ready, abort those reads so the IPC caller can use the live API.
+  // Mutations are never aborted/replayed on a different route.
+  if (readOnly && shouldSwitchToTunnel) {
+    readinessTimer = setInterval(() => {
+      if (superseded()) controller.abort()
+    }, 50)
+  }
+  if (!readOnly || !hiveBases.length || !rest.length) return finish(runChain(bases))
 
   // Улей :443 и сота сразу. Кто ответил первым — тот и есть API. Таймаут Улья не ждём и не пишем.
   const hiveTry = runChain(hiveBases, { quietHive: true }).then(
@@ -2533,7 +2581,7 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
     (res) => ({ ok: true, res }),
     (err) => ({ ok: false, err }),
   )
-  return new Promise((resolve, reject) => {
+  return finish(new Promise((resolve, reject) => {
     let pending = 2
     let failure = null
     const done = (result) => {
@@ -2541,7 +2589,7 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
         resolve(result.res)
         return
       }
-      if (shouldSwitchToTunnel()) {
+      if (superseded()) {
         reject(result.err)
         return
       }
@@ -2551,7 +2599,7 @@ function publicDirectRequest({ method = 'GET', path: reqPath, headers = {}, body
     }
     hiveTry.then(done)
     cellTry.then(done)
-  })
+  }))
 }
 
 function tunnelHttpRequest({ method = 'GET', path: reqPath, headers = {}, body = null, timeout = 8000 }) {
@@ -2579,6 +2627,7 @@ function backendHttpRequest({
   timeout = 20000,
   rejectUnauthorized,
   servername,
+  signal,
 }) {
   return new Promise((resolve, reject) => {
     const path = reqPath.startsWith('/') ? reqPath : `/${reqPath}`
@@ -2612,6 +2661,7 @@ function backendHttpRequest({
       headers: hdrs,
       timeout,
       agent: protocol === 'https' ? httpsAgent : httpAgent,
+      signal,
     }
     if (protocol === 'https') {
       opts.rejectUnauthorized = rejectUnauthorized !== false ? false : true
@@ -2620,6 +2670,12 @@ function backendHttpRequest({
 
     const proto = protocol === 'https' ? https : http
     const req = proto.request(opts, (res) => {
+      // A peer can close after headers/partial JSON. In that case IncomingMessage
+      // emits an error instead of end; leaving it unhandled strands the API call.
+      res.on('error', error => {
+        error.requestDispatched = true
+        reject(error)
+      })
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const loc = res.headers.location
         const nextPath = loc.startsWith('http') ? new URL(loc).pathname + new URL(loc).search : loc
@@ -2634,6 +2690,7 @@ function backendHttpRequest({
           timeout,
           rejectUnauthorized,
           servername,
+          signal,
         }).then(resolve).catch(reject)
         res.resume()
         return
@@ -2647,9 +2704,17 @@ function backendHttpRequest({
         resolve({ status: res.statusCode || 0, data })
       })
     })
-    req.on('error', reject)
+    let requestDispatched = false
+    req.on('socket', socket => {
+      if (req.reusedSocket) requestDispatched = true
+      else socket.once(protocol === 'https' ? 'secureConnect' : 'connect', () => { requestDispatched = true })
+    })
+    req.on('error', error => {
+      error.requestDispatched = requestDispatched
+      reject(error)
+    })
     req.on('timeout', () => {
-      req.destroy(new Error(protocol === 'https' ? 'API timeout' : 'Tunnel API timeout'))
+      req.destroy(new Error(hostname === '10.66.66.1' ? 'Tunnel API timeout' : 'Public API timeout'))
     })
     if (payload != null) req.write(payload)
     req.end()
@@ -2671,148 +2736,175 @@ ipcMain.handle('tunnel-api-request', async (_, payload) => {
     ? Math.max(opts.timeout || 90_000, 90_000)
     : Math.min(opts.timeout || 8000, 8000)
   const readOnly = /^(GET|HEAD)$/i.test(opts.method || 'GET')
-  const recoverPublicRead = async (publicError) => {
-    // Never replay payment/init or other mutations on a new transport: the
-    // public server might have processed a POST before its response was lost.
-    if (!readOnly || !wgApplied || olcrtc2) throw publicError
-    try {
-      const res = await tunnelHttpRequest({ ...opts, timeout: tunnelTimeout })
-      if (res.status >= 200 && res.status < 500) {
-        tunnelApiDown = false
-        tunnelApiRetryAfter = 0
-        return res
-      }
-    } catch { /* preserve the public failure if neither route recovered */ }
-    throw publicError
-  }
-
-  // Во время капчи WG часто снят → public HTTPS ловит ECONNABORTED; ConfigSync/Update не долбим.
-  if (captchaInProgress && !wgApplied) {
-    const err = new Error('API paused during captcha')
-    err.code = 'CAPTCHA_BUSY'
-    throw err
-  }
-  // Сразу после капчи / WG settle — только tunnel, без шума public fallback.
-  if (Date.now() < apiQuietUntil && wgApplied && !tunnelApiDown) {
-    try {
-      const res = await tunnelHttpRequest({
-        ...opts,
-        timeout: olcrtc2 ? tunnelTimeout : Math.min(opts.timeout || 8000, 6000),
-      })
-      if (res.status >= 200 && res.status < 500) return res
-    } catch { /* fall through to normal path */ }
-  }
-
-  const viaPublic = async () => {
-    // Улей :443 в bypass ради WG. С РФ этот обход висит до API timeout.
-    // Пока туннель поднят — только соты, шлюз 10.66.66.1 остаётся основным.
-    await ensurePublicApiBypass(sendLog)
-    return publicDirectRequest({ ...opts, skipHive: true }).catch(recoverPublicRead)
-  }
-
-  if (wgApplied && tunnelApiDown && !olcrtc2) {
-    if (Date.now() < tunnelApiRetryAfter) return viaPublic()
-    tunnelApiDown = false
-  }
-
-  if (wgApplied) {
-    const settling = Date.now() < wgRouteSettleUntil
-    const fragile = wgFullTunnelUpgradeInFlight || wgCredPhase || settling
-    const maxAttempts = fragile ? 4 : 2
-    let lastErr = null
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  try {
+    const recoverPublicRead = async (publicError) => {
+      // Never replay payment/init or other mutations on a new transport: the
+      // public server might have processed a POST before its response was lost.
+      if (!readOnly || !wgApplied || olcrtc2) throw publicError
       try {
-        const res = await tunnelHttpRequest({
-          ...opts,
-          timeout: olcrtc2
-            ? tunnelTimeout
-            : fragile
-              ? Math.min(opts.timeout || 8000, 5000)
-              : tunnelTimeout,
-        })
+        const res = await tunnelHttpRequest({ ...opts, timeout: tunnelTimeout })
         if (res.status >= 200 && res.status < 500) {
-          if (res.status >= 400) {
-            sendLog(`[API] tunnel ${path} → HTTP ${res.status}`)
-          }
+          tunnelApiDown = false
+          tunnelApiRetryAfter = 0
           return res
         }
-        // 5xx — olcrtc2 не уводим на public (БС + второй assign затирает комнату).
-        if (olcrtc2) {
-          sendLog(`[API] tunnel ${path} HTTP ${res.status} — без public fallback`)
+      } catch { /* preserve the public failure if neither route recovered */ }
+      throw publicError
+    }
+
+    // Во время капчи WG часто снят → public HTTPS ловит ECONNABORTED; ConfigSync/Update не долбим.
+    if (captchaInProgress && !wgApplied) {
+      const err = new Error('API paused during captcha')
+      err.code = 'CAPTCHA_BUSY'
+      throw err
+    }
+    // A connected socket may have delivered a mutation even if its response was
+    // lost. Do not let the read retry/settle loop dispatch that mutation again.
+    if (!readOnly) {
+      if (!wgApplied) return await publicDirectRequest(opts)
+      try {
+        const res = await tunnelHttpRequest({ ...opts, timeout: tunnelTimeout })
+        if (olcrtc2 && res.status >= 500) {
           const err = new Error(`Tunnel API HTTP ${res.status}`)
           err.code = 'OLCRTC_TUNNEL_ONLY'
           throw err
         }
-        if (fragile) {
-          await sleep(400 * attempt)
-          continue
-        }
-        if (shouldLogTunnelApiFallback()) {
-          sendLog(`[API] tunnel HTTP ${res.status} — повтор через публичный API`)
-        }
-        return await viaPublic()
-      } catch (e) {
-        lastErr = e
-        if (e?.code === 'OLCRTC_TUNNEL_ONLY') throw e
-        const msg = String(e?.message || e)
-        if (!olcrtc2 && !fragile && isTunnelApiRefused(e)) {
-          tunnelApiDown = true
-          tunnelApiRetryAfter = Date.now() + 30_000
-          return await viaPublic()
-        }
-        // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
-        const transient = /ECONNREFUSED|ECONNRESET|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
-        if (transient && attempt < maxAttempts) {
-          if (!olcrtc2 && !fragile) await ensurePublicApiBypass(sendLog)
-          await sleep(500 * attempt)
-          continue
-        }
-        if (olcrtc2) {
-          sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${msg}`)
-          throw lastErr || e
-        }
-        if (fragile && transient) {
-          sendLog('[API] tunnel ещё поднимается — ждём, без публичного API')
-          await sleep(600 * attempt)
-          continue
-        }
-        if (shouldLogTunnelApiFallback()) {
-          sendLog(`[API] tunnel ${msg} — повтор через публичный API`)
-        }
-        try {
-          return await viaPublic()
-        } catch (pubErr) {
-          const pubMsg = String(pubErr?.message || pubErr)
-          if (/EACCES|ECONNABORTED|ECONNRESET|ETIMEDOUT/i.test(pubMsg) && attempt < maxAttempts) {
-            await ensurePublicApiBypass(sendLog)
-            await sleep(600 * attempt)
-            continue
-          }
-          throw pubErr
-        }
+        return res
+      } catch (error) {
+        if (olcrtc2 || error?.requestDispatched !== false) throw error
+        await ensurePublicApiBypass(sendLog)
+        return await publicDirectRequest({ ...opts, skipHive: true })
       }
     }
-    if (olcrtc2) {
-      sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${lastErr?.message || lastErr}`)
-      throw lastErr || new Error('Tunnel API fail')
-    }
-    if (Date.now() < wgRouteSettleUntil && !tunnelApiDown) {
-      const waitMs = Math.min(wgRouteSettleUntil - Date.now(), 8_000)
-      if (waitMs > 200) await sleep(waitMs)
+    // Сразу после капчи / WG settle — только tunnel, без шума public fallback.
+    if (Date.now() < apiQuietUntil && wgApplied && !tunnelApiDown) {
       try {
         const res = await tunnelHttpRequest({
           ...opts,
-          timeout: Math.min(opts.timeout || 12_000, 12_000),
+          timeout: olcrtc2 ? tunnelTimeout : Math.min(opts.timeout || 8000, 6000),
         })
         if (res.status >= 200 && res.status < 500) return res
-      } catch { /* public ниже */ }
+      } catch { /* fall through to normal path */ }
     }
-    if (shouldLogTunnelApiFallback() && !isTunnelApiRefused(lastErr)) {
-      sendLog(`[API] tunnel ${lastErr?.message || lastErr} — публичный API`)
+
+    const viaPublic = async () => {
+      // Улей :443 в bypass ради WG. С РФ этот обход висит до API timeout.
+      // Пока туннель поднят — только соты, шлюз 10.66.66.1 остаётся основным.
+      await ensurePublicApiBypass(sendLog)
+      return await publicDirectRequest({ ...opts, skipHive: true }).catch(recoverPublicRead)
     }
-    return viaPublic()
+
+    if (wgApplied && tunnelApiDown && !olcrtc2) {
+      if (Date.now() < tunnelApiRetryAfter) return await viaPublic()
+      tunnelApiDown = false
+    }
+
+    if (wgApplied) {
+      const settling = Date.now() < wgRouteSettleUntil
+      const fragile = wgFullTunnelUpgradeInFlight || wgCredPhase || settling
+      const maxAttempts = fragile ? 4 : 2
+      let lastErr = null
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const res = await tunnelHttpRequest({
+            ...opts,
+            timeout: olcrtc2
+              ? tunnelTimeout
+              : fragile
+                ? Math.min(opts.timeout || 8000, 5000)
+                : tunnelTimeout,
+          })
+          if (res.status >= 200 && res.status < 500) {
+            if (res.status >= 400) {
+              sendLog(`[API] tunnel ${path} → HTTP ${res.status}`)
+            }
+            return res
+          }
+          // 5xx — olcrtc2 не уводим на public (БС + второй assign затирает комнату).
+          if (olcrtc2) {
+            sendLog(`[API] tunnel ${path} HTTP ${res.status} — без public fallback`)
+            const err = new Error(`Tunnel API HTTP ${res.status}`)
+            err.code = 'OLCRTC_TUNNEL_ONLY'
+            throw err
+          }
+          if (fragile) {
+            await sleep(400 * attempt)
+            continue
+          }
+          if (shouldLogTunnelApiFallback()) {
+            sendLog(`[API] tunnel HTTP ${res.status} — повтор через публичный API`)
+          }
+          return await viaPublic()
+        } catch (e) {
+          lastErr = e
+          if (e?.code === 'OLCRTC_TUNNEL_ONLY') throw e
+          const msg = String(e?.message || e)
+          if (!olcrtc2 && !fragile && isTunnelApiRefused(e)) {
+            tunnelApiDown = true
+            tunnelApiRetryAfter = Date.now() + 30_000
+            return await viaPublic()
+          }
+          // EACCES/ECONNABORTED — типично при WG reinstall (маршруты/адаптер мигают)
+          const transient = /ECONNREFUSED|ECONNRESET|ECONNABORTED|EACCES|ETIMEDOUT|timeout|Tunnel API/i.test(msg)
+          if (transient && attempt < maxAttempts) {
+            if (!olcrtc2 && !fragile) await ensurePublicApiBypass(sendLog)
+            await sleep(500 * attempt)
+            continue
+          }
+          if (olcrtc2) {
+            sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${msg}`)
+            throw lastErr || e
+          }
+          if (fragile && transient) {
+            sendLog('[API] tunnel ещё поднимается — ждём, без публичного API')
+            await sleep(600 * attempt)
+            continue
+          }
+          if (shouldLogTunnelApiFallback()) {
+            sendLog(`[API] tunnel ${msg} — повтор через публичный API`)
+          }
+          try {
+            return await viaPublic()
+          } catch (pubErr) {
+            const pubMsg = String(pubErr?.message || pubErr)
+            if (/EACCES|ECONNABORTED|ECONNRESET|ETIMEDOUT/i.test(pubMsg) && attempt < maxAttempts) {
+              await ensurePublicApiBypass(sendLog)
+              await sleep(600 * attempt)
+              continue
+            }
+            throw pubErr
+          }
+        }
+      }
+      if (olcrtc2) {
+        sendLog(`[API] tunnel 10.66.66.1 fail (olcrtc2, no public): ${lastErr?.message || lastErr}`)
+        throw lastErr || new Error('Tunnel API fail')
+      }
+      if (Date.now() < wgRouteSettleUntil && !tunnelApiDown) {
+        const waitMs = Math.min(wgRouteSettleUntil - Date.now(), 8_000)
+        if (waitMs > 200) await sleep(waitMs)
+        try {
+          const res = await tunnelHttpRequest({
+            ...opts,
+            timeout: Math.min(opts.timeout || 12_000, 12_000),
+          })
+          if (res.status >= 200 && res.status < 500) return res
+        } catch { /* public ниже */ }
+      }
+      if (shouldLogTunnelApiFallback() && !isTunnelApiRefused(lastErr)) {
+        sendLog(`[API] tunnel ${lastErr?.message || lastErr} — публичный API`)
+      }
+      return await viaPublic()
+    }
+    return await publicDirectRequest({ ...opts, shouldSwitchToTunnel: () => readOnly && !olcrtc2 && wgApplied }).catch(recoverPublicRead)
+  } catch (error) {
+    if (error?.code !== 'CAPTCHA_BUSY') {
+      const method = String(opts.method || 'GET').toUpperCase()
+      const safePath = String(path).split('?')[0]
+      sendLog(`[API] ${method} ${safePath} не выполнен: ${error?.message || error}`)
+    }
+    throw error
   }
-  return publicDirectRequest({ ...opts, shouldSwitchToTunnel: () => readOnly && !olcrtc2 && wgApplied }).catch(recoverPublicRead)
 })
 
 ipcMain.handle('olcrtc2-api-via-socks', async (_, payload) => {
@@ -3203,9 +3295,25 @@ app.whenReady().then(async () => {
     }
   }
 
+  // Show the window before potentially slow firewall commands. The router still
+  // waits for the shared preparation promise before creating its adapter.
   createWindow()
   createTray()
   warmVkExcludeIps()
+
+  // One-shot Firewall allow for site-router (install + current path) so Windows
+  // does not re-prompt on every VPN start. Non-fatal if netsh fails.
+  if (process.platform === 'win32') {
+    try {
+      const resPath = app.isPackaged
+        ? process.resourcesPath
+        : path.join(__dirname, '../../resources')
+      await require('./firewallAllow').ensureSilentVpnFirewallAllow(resPath, sendLog)
+    } catch (e) {
+      sendLog(`[FW] allow rules: ${e?.message || e}`)
+    }
+  }
+
 })
 
 let macQuitFlushDone = false

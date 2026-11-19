@@ -35,7 +35,10 @@ export async function prepareVpnConnectConfig(
   let items: HashItem[] = getSavedHashItems()
   const cachedActive = activeServerHashes(items).length
   const configHashes = (config.vk_hashes || []).map(h => h.trim()).filter(Boolean).length
-  if ((cachedActive >= 4 || configHashes >= 4) && cachedConfigMatchesPreferred(merged)) {
+  // One valid hash can establish the tunnel. Waiting for four here adds public
+  // API timeouts before WDTT can start; ConfigSync refreshes through the VPN.
+  const usableConfig = !!(config.device_id && config.wg_private_key?.trim() && config.server_public_key?.trim() && configHashes > 0)
+  if (((cachedActive >= 4 || configHashes >= 4) || usableConfig) && cachedConfigMatchesPreferred(merged)) {
     const serverHashes = activeServerHashes(items).map(i => i.hash.trim()).filter(Boolean)
     if (serverHashes.length > 0) merged = { ...merged, vk_hashes: serverHashes }
     return withDnsPreset(applyWorkerCountForConnect(merged))

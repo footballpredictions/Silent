@@ -67,13 +67,20 @@ func RunSession(
 	creds *Credentials,
 	deviceID, password string,
 	stats *Stats,
+	relayAttempt int,
 ) (bool, error) {
 	configDelivered := false
 
 	if len(creds.TurnURLs) == 0 {
 		return false, fmt.Errorf("нет TURN URL в учетных данных")
 	}
-	turnConn, endpoint, err := dialUDPTURN(ctx, creds.TurnURLs, sessionID, tp)
+	// Keep the worker/config identity stable, but try the next provider UDP
+	// endpoint after failure instead of repeating a dead DTLS path forever.
+	endpointIndex := sessionID
+	if relayAttempt > 0 {
+		endpointIndex += relayAttempt
+	}
+	turnConn, endpoint, err := dialUDPTURN(ctx, creds.TurnURLs, endpointIndex, tp)
 	if err != nil {
 		return false, err
 	}

@@ -10,9 +10,10 @@ test('public API uses the configured hive IP when nip.io DNS is unavailable, kee
   const end = source.indexOf('\nfunction tunnelHttpRequest(', start)
   const calls = [], logs = []
   const request = vm.runInNewContext(`(${source.slice(start, end)})`, {
-    ...failover, URL,
+    ...failover, URL, AbortController, setInterval, clearInterval,
     UPDATE_HOST: '89-125-188-100.nip.io', SERVER_IP_FALLBACK: '89.125.188.100',
     hivePublicSlowUntil: 0,
+    publicApiPreferredBase: '',
     getPublicFailoverBases: () => ['https://89-125-188-100.nip.io', 'https://89.125.188.100:2083'],
     sendLog: line => logs.push(line),
     async backendHttpRequest(opts) {
@@ -38,9 +39,10 @@ test('real IPC stops obsolete public failover after VPN starts, without waiting 
   const refused = source.match(/function isTunnelApiRefused\(err\) \{[\s\S]*?\n\}/)[0]
   const pending = [], calls = [], logs = []
   const state = {
-    ...failover, URL,
+    ...failover, URL, AbortController, setInterval, clearInterval,
     UPDATE_HOST: '89-125-188-100.nip.io', SERVER_IP_FALLBACK: '89.125.188.100',
     hivePublicSlowUntil: 0,
+    publicApiPreferredBase: '',
     wgApplied: false, tunnelApiDown: false, tunnelApiRetryAfter: 0,
     captchaInProgress: false, apiQuietUntil: 0, wgRouteSettleUntil: 0,
     wgFullTunnelUpgradeInFlight: false, wgCredPhase: false,

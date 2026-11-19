@@ -124,3 +124,35 @@ test('site router logs preserve policy acknowledgements and distinguish recovera
   assert.equal(entries[2].isError, true, 'actual router failures must remain visible')
   assert.equal(mirrored.length, 3)
 })
+
+test('final API failure stays visible and is mirrored before generic transport parsing', () => {
+  const source = fs.readFileSync(require.resolve('../src/main/main.js'), 'utf8')
+  const functionSource = source.match(/function sendLog\(line\) \{[\s\S]*?\n\}/)[0]
+  const entries = [], mirrored = []
+  const send = vm.runInNewContext(`(${functionSource})`, {
+    process: { platform: 'win32' }, noteVkFloodFromLog() {},
+    mirrorMainLog: line => mirrored.push(line), sendWdttLog: entry => entries.push(entry),
+    parseLibclientLine() { throw Error('API outcome must not be swallowed by generic transport parsing') },
+  })
+  send('[API] GET /api/users/me не выполнен: All public API bases failed')
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].isError, true)
+  assert.equal(mirrored.length, 1)
+})
+
+test('worker progress survives transport filtering and a retry summary is not marked as VPN failure', () => {
+  const source = fs.readFileSync(require.resolve('../src/main/main.js'), 'utf8')
+  const functionSource = source.match(/function sendLog\(line\) \{[\s\S]*?\n\}/)[0]
+  const entries = [], mirrored = []
+  const send = vm.runInNewContext(`(${functionSource})`, {
+    process: { platform: 'win32' }, noteVkFloodFromLog() {},
+    mirrorMainLog: line => mirrored.push(line), sendWdttLog: entry => entries.push(entry),
+    parseLibclientLine() { throw Error('worker progress must be handled before filtering individual worker events') },
+  })
+  send('[Workers] Готово=52/63; DTLS=8; причины: DTLS таймаут=3')
+  send('[Workers] Готово=63/63; DTLS=0')
+  assert.equal(entries.length, 2)
+  assert.equal(entries[0].key, entries[1].key, 'completed progress must replace the old incomplete row')
+  assert.equal(entries[0].isError, false)
+  assert.equal(mirrored.length, 2)
+})

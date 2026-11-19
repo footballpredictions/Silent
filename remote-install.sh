@@ -86,18 +86,57 @@ sv_pkg_add() {
 	fi
 }
 
-sv_fetch() {
-	url="$1"
-	out="$2"
+sv_fetch_once() {
+	local url="$1" out="$2" tries
 	if command -v wget >/dev/null 2>&1; then
-		wget -O "$out" "$url" && return 0
-		wget --no-check-certificate -O "$out" "$url" && return 0
+		# GNU wget otherwise retries the same inaccessible host up to twenty times.
+		tries=""
+		case "$(wget --help 2>&1)" in *--tries*) tries='--tries=1' ;; esac
+		wget -O "$out" --timeout=10 $tries "$url"
+		return $?
+	elif command -v uclient-fetch >/dev/null 2>&1; then
+		uclient-fetch -O "$out" --timeout=10 "$url"
+		return $?
 	fi
-	if command -v uclient-fetch >/dev/null 2>&1; then
-		uclient-fetch -O "$out" "$url" && return 0
+	return 1
+}
+
+sv_package_matches() {
+	local file="$1" actual
+	[ -s "$file" ] || return 1
+	case "${SIZE:-}" in ''|*[!0-9]*) return 1 ;; esac
+	actual="$(wc -c < "$file" | tr -d ' ')"
+	[ "$actual" = "$SIZE" ] || return 1
+	printf '%s  %s\n' "$SHA256" "$file" | sha256sum -c - >/dev/null 2>&1
+}
+
+sv_fetch() {
+	local url="$1" out="$2" release=0 mirror filename
+	# Mirror only the precise architecture/version selected by trusted Pages metadata.
+	case "${slot:-}" in aarch64|arm|mipsel|x86_64)
+		if [ -n "${VERSION:-}" ] && [ "${#SHA256}" = 64 ] &&
+			[ "$url" = "https://github.com/silentvpn3/silentvpn3.github.io/releases/download/v$VERSION/silent-vpn-openwrt-$VERSION-$slot.tar.gz" ]; then
+			case "$SHA256" in *[!0-9a-f]*) ;; *) release=1 ;; esac
+		fi ;;
+	esac
+	if sv_fetch_once "$url" "$out"; then
+		if [ "$release" = 0 ] || sv_package_matches "$out"; then return 0; fi
 	fi
+	if [ "$release" = 1 ]; then
+		filename="${url##*/}"
+		for mirror in \
+			"https://89-125-188-100.nip.io:2083/update/openwrt/$filename" \
+			"http://87.58.213.193:9100/api/updates/download/openwrt?arch=$slot" \
+			"http://78.17.74.27:9100/api/updates/download/openwrt?arch=$slot" \
+			"http://192.177.26.38:9100/api/updates/download/openwrt?arch=$slot" \
+			"http://89.37.192.241:9100/api/updates/download/openwrt?arch=$slot" \
+			"https://89-125-188-100.nip.io/update/openwrt/$filename"; do
+			if sv_fetch_once "$mirror" "$out" && sv_package_matches "$out"; then return 0; fi
+		done
+	fi
+	rm -f "$out"
 	echo "Не удалось скачать: $url" >&2
-	exit 1
+	return 1
 }
 
 sv_unpack() {

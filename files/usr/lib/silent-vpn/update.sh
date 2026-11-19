@@ -157,15 +157,19 @@ sv_update_start() {
 }
 
 sv_update_download() {
-	local info="$1" out="$2" arch="$3" base url sha
+	local info="$1" out="$2" arch="$3" base url sha SIZE VERSION SHA256 slot
 	sha="$(sv_json_get "$info" sha256)"
 	for base in $(sv_api_bases); do
-		if wget -qO "$out" --timeout=30 "$base/api/updates/download/openwrt?arch=$arch" &&
+		if sv_fetch_once "$base/api/updates/download/openwrt?arch=$arch" "$out" &&
 			printf '%s  %s\n' "$sha" "$out" | sha256sum -c - >/dev/null 2>&1; then return 0; fi
 	done
 	url="$(sv_json_get "$info" download_url)"
 	case "$url" in https://github.com/silentvpn3/silentvpn3.github.io/releases/download/*) ;; *) return 1 ;; esac
-	wget -qO "$out" --timeout=30 "$url" &&
+	SIZE="$(sv_json_get "$info" size)"
+	VERSION="$(sv_json_get "$info" version)"
+	SHA256="$sha"
+	slot="$arch"
+	sv_fetch "$url" "$out" &&
 		printf '%s  %s\n' "$sha" "$out" | sha256sum -c - >/dev/null 2>&1
 }
 

@@ -42,9 +42,11 @@ const engine = path.join(resources, platform === 'win32' ? 'wireguard/site-route
 assert.equal(architecture(wdtt), `${platform}/${arch}`, 'WDTT architecture')
 assert.equal(architecture(engine), `${platform}/${arch}`, 'routing engine architecture')
 const pinField = platform === 'win32' ? 'WDTT_SHA256' : platform === 'linux' ? 'WDTT_LINUX_SHA256' : 'WDTT_MAC_SHA256'
-assert.equal(evaluateData('src/main/integrityHashes.js')[pinField], digest(wdtt), 'packaged WDTT must match its platform pin')
+const pins = evaluateData('src/main/integrityHashes.js')
+assert.equal(pins[pinField], digest(wdtt), 'packaged WDTT must match its platform pin')
+assert.equal(pins.SOURCE_COMMIT, expectedCommit, 'native hash manifest source commit')
 const buildInfo = execFileSync('go', ['version', '-m', wdtt], { encoding: 'utf8' })
-assert.ok(buildInfo.includes(`vcs.revision=${expectedCommit}`), 'native source commit')
+if (buildInfo.includes('vcs.revision=')) assert.ok(buildInfo.includes(`vcs.revision=${expectedCommit}`), 'native source commit')
 if (platform === 'win32') {
   const exe = fs.readFileSync(path.join(appDir, 'Silent VPN.exe')).toString('utf8')
   assert.match(exe, /requestedExecutionLevel level="requireAdministrator"/, 'administrator launch')

@@ -5,13 +5,20 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 )
 
 func TestUnixPolicySocketPreservesApplicationsAndResolverGuards(t *testing.T) {
-	listener, err := net.Listen("unix", filepath.Join(t.TempDir(), "policy.sock"))
+	// macOS has a short sockaddr_un limit; t.TempDir includes the long test name.
+	directory, err := os.MkdirTemp("/tmp", "svp-policy-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	listener, err := net.Listen("unix", filepath.Join(directory, "policy.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}

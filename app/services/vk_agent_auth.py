@@ -353,7 +353,11 @@ async def validate_token(token: str) -> tuple[bool, str, int | None]:
 
 
 async def test_calls_permission(token: str) -> tuple[bool, str]:
-    """Check calls.start (Android token only)."""
+    """Check creation permission and finish this unpublished test call only.
+
+    Real pool calls are created separately by VkManager: forceFinish invalidates
+    their join hashes and must never be used to clean up those working calls.
+    """
     if (token or "").startswith("vk2."):
         return False, "VK ID token (vk2.a) не поддерживает calls.start"
     try:
@@ -361,7 +365,15 @@ async def test_calls_permission(token: str) -> tuple[bool, str]:
         if "error" in data:
             err = data["error"]
             return False, err.get("error_msg", "calls.start denied")
-        join = data.get("response", {}).get("join_link", "")
+        response = data.get("response") or {}
+        call_id = response.get("call_id")
+        if not isinstance(call_id, str) or len(call_id) != 36:
+            return False, "calls.start без call_id — выход из тестового звонка не подтверждён"
+        finished = await vk_api_call("calls.forceFinish", token, {"call_id": call_id})
+        if finished.get("response") != 1:
+            code = (finished.get("error") or {}).get("error_code", "unknown")
+            return False, f"Не удалось завершить тестовый звонок (VK {code})"
+        join = response.get("join_link", "")
         if join:
             return True, "OK"
         return False, "calls.start без join_link"

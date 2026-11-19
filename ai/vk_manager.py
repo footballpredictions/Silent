@@ -92,7 +92,7 @@ class VkManager:
             err = data["error"]
             code = err.get("error_code", -1)
             msg = err.get("error_msg", "Unknown")
-            if "flood" in msg.lower():
+            if code == 9 or "flood" in msg.lower():
                 self._flood_hit = True
                 self._last_auth_error = msg
             if code in (5, 1116):
@@ -131,7 +131,7 @@ class VkManager:
             return None
         except VkApiError as e:
             logger.error("Failed to create VK call: %s", e)
-            if "flood" in str(e).lower():
+            if e.code == 9 or "flood" in str(e).lower():
                 self._flood_hit = True
             if e.code in (5, 1116):
                 await self.ensure_authenticated(verify_calls=False)
@@ -141,6 +141,13 @@ class VkManager:
             return None
 
     async def probe_active_hashes(self) -> str:
+        from ai.vk_agent_lock import agent_lease
+        async with agent_lease("preview") as acquired:
+            if not acquired:
+                return "liveness: проверка уже занята другим агентом"
+            return await self._probe_active_hashes_unlocked()
+
+    async def _probe_active_hashes_unlocked(self) -> str:
         """Round-robin liveness: anonymous getCallPreview, без calls.start / TURN."""
         from app.services.vk_agent_auth import (
             _setting,
@@ -393,6 +400,13 @@ class VkManager:
         return created
 
     async def fill_all_user_slots(self) -> str:
+        from ai.vk_agent_lock import agent_lease
+        async with agent_lease("issuer") as acquired:
+            if not acquired:
+                return "Создание хешей уже выполняет другой агент"
+            return await self._fill_all_user_slots_unlocked()
+
+    async def _fill_all_user_slots_unlocked(self) -> str:
         from app.services.user_hash_service import list_users_for_monitor
         from app.services.vk_agent_auth import set_flood_cooldown
 
@@ -448,8 +462,14 @@ class VkManager:
 
     async def check_and_heal(self) -> None:
         """Проба живых хешей, затем заполнение пустых и помеченных мёртвыми."""
+        from app.services.vk_agent_auth import set_agent_run_log
+
         probe = await self.probe_active_hashes()
         fill = await self.fill_all_user_slots()
+        await set_agent_run_log(
+            self.db, f"{probe}; {fill}",
+            ok=not fill.startswith("Ошибка") and not self._flood_hit,
+        )
         logger.info("check_and_heal: %s | %s", probe, fill)
 
     async def close(self):

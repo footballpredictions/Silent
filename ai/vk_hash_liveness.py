@@ -143,16 +143,32 @@ def probe_priority(hash_row: Any, now: datetime | None = None) -> tuple[int, str
 def select_probe_batch(rows: list[Any], cursor: str | None, budget: int = PROBE_BUDGET) -> list[Any]:
     if not rows or budget <= 0:
         return []
-    ranked = sorted(rows, key=lambda h: probe_priority(h))
-    pending = [h for h in ranked if int(getattr(h, "last_error_code", 0) or 0) == ERROR_PROBE_PENDING]
-    rest = [h for h in ranked if h not in pending]
-    if cursor:
-        idx = next((i for i, h in enumerate(rest) if str(h.id) == cursor), -1)
+    # Rotate only within equal priority and probe age: a cursor pointing at a
+    # healthy row must not move client-reported failures behind healthy ones.
+    # Age also prevents repeatedly skipped pending rows monopolising the batch.
+    groups: dict[tuple[int, datetime], list[Any]] = {}
+    now = datetime.utcnow()
+    for h in rows:
+        checked = getattr(h, "last_checked", None)
+        age_key = checked.replace(tzinfo=None) if checked else datetime.min
+        groups.setdefault((probe_priority(h, now)[0], age_key), []).append(h)
+    ranked = []
+    for key in sorted(groups):
+        group = sorted(groups[key], key=lambda h: str(h.id))
+        idx = next((i for i, h in enumerate(group) if str(h.id) == cursor), -1)
         if idx >= 0:
-            rest = rest[idx + 1 :] + rest[: idx + 1]
+            group = group[idx + 1:] + group[:idx + 1]
+        ranked.extend(group)
+    # Reserve a turn for reported failures and the routine sweep even when many
+    # pending confirmations keep returning temporary errors.
+    buckets = [[], [], []]
+    for h in ranked:
+        buckets[min(probe_priority(h, now)[0], 2)].append(h)
+    heads = [bucket[0] for bucket in buckets if bucket]
+    ranked = heads + [h for bucket in buckets for h in bucket[1:]]
     out: list[Any] = []
     seen: set[str] = set()
-    for h in pending + rest:
+    for h in ranked:
         hid = str(h.id)
         if hid in seen:
             continue

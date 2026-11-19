@@ -266,9 +266,6 @@ async def list_users_for_monitor(db: AsyncSession) -> list[uuid.UUID]:
     return [row[0] for row in result.fetchall()]
 
 
-FAIL_COUNT_DEACTIVATE = 5
-
-
 def _hash_matches(hint: str, full: str) -> bool:
     hint = (hint or "").strip()
     full = (full or "").strip()
@@ -277,8 +274,6 @@ def _hash_matches(hint: str, full: str) -> bool:
     if hint == full:
         return True
     if len(hint) >= 6 and full.startswith(hint):
-        return True
-    if len(full) >= 6 and hint.startswith(full[: min(len(hint), len(full))]):
         return True
     return False
 
@@ -290,19 +285,19 @@ async def report_hash_failure(
     error_type: str,
     message: str,
 ) -> tuple[bool, str]:
-    """Increment fail_count for matching server hash (client-side tunnel/VK errors)."""
+    """Queue a server probe; client failures alone never invalidate a join link."""
     raw = (hash_hint or "").strip()
     normalized = extract_call_hash(raw) or raw
     if len(normalized) < 6:
         return False, "invalid hash hint"
 
     result = await db.execute(select(VkHash).where(VkHash.user_id == user.id))
-    matched: VkHash | None = None
-    for row in result.scalars().all():
-        hv = (row.hash_value or "").strip()
-        if _hash_matches(normalized, hv):
-            matched = row
-            break
+    rows = list(result.scalars().all())
+    exact = [row for row in rows if normalized == (row.hash_value or "").strip()]
+    matches = exact or [row for row in rows if _hash_matches(normalized, row.hash_value)]
+    if len(matches) > 1:
+        return False, "ambiguous hash hint"
+    matched = matches[0] if matches else None
 
     if matched is None:
         boot = (user.bootstrap_hash or "").strip()
@@ -322,16 +317,8 @@ async def report_hash_failure(
 
     matched.fail_count = int(matched.fail_count or 0) + 1
     matched.last_failed = datetime.utcnow()
-    matched.last_checked = datetime.utcnow()
-    if matched.fail_count >= FAIL_COUNT_DEACTIVATE:
-        matched.is_active = False
-        matched.last_error_code = 1
-        logger.warning(
-            "hash slot %s deactivated (fail_count=%s) user=%s type=%s",
-            matched.slot_index,
-            matched.fail_count,
-            user.id,
-            error_type,
-        )
+    # fail_count raises probe priority. Only two explicit dead preview results
+    # may set error=1 / deactivate; timeout, captcha and TURN failure cannot.
+    # last_checked records a server probe, not an unverified client report.
     await db.commit()
     return True, f"fail_count={matched.fail_count}"

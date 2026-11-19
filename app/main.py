@@ -524,6 +524,7 @@ async def lifespan(app: FastAPI):
     agents_task = None
     try:
         from ai.tunnel_monitor import monitor_loop as vk_tunnel_monitor_loop
+        from ai.vk_hash_monitor import monitor_loop as vk_hash_monitor_loop
         from ai.release_build_scheduler import scheduler_loop as release_build_loop
         from app.services.agent_leader import start_when_leader
         from app.services.hive_capacity import capacity_sampler_loop
@@ -534,6 +535,7 @@ async def lifespan(app: FastAPI):
 
         agent_specs: list = [
             ("vk_tunnel_monitor", vk_tunnel_monitor_loop),
+            ("vk_hash_checker", vk_hash_monitor_loop),
             ("release_build_scheduler", release_build_loop),
             ("hive_capacity_sampler", capacity_sampler_loop),
             ("hive_rebalance", hive_rebalance_loop),

@@ -9,6 +9,10 @@ from app.services.routing_policy_defaults import DIRECT_DOMAINS, VPN_DOMAINS
 
 KEY = "routing_policy_v1"
 MAX_DOMAINS = 2000
+RUSSIAN_DOMAIN_ZONES = frozenset({
+    'ru', 'su', 'xn--p1ai', 'moscow', 'tatar', 'xn--80adxhks', 'xn--80asehdb',
+    'xn--80aswg', 'xn--c1avg', 'xn--d1acj3b', 'xn--p1acf', 'yandex',
+})
 
 
 def normalize_domains(values: list[str]) -> list[str]:
@@ -40,7 +44,7 @@ def normalize_domains(values: list[str]) -> list[str]:
         if len(value) > 253 or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
                                    for label in value.split(".")):
             raise ValueError("Некорректный домен: " + value)
-        if "." not in value and value not in ("ru", "su", "xn--p1ai"):
+        if "." not in value and value not in RUSSIAN_DOMAIN_ZONES:
             raise ValueError("Укажите полный домен: " + value)
         result.add(value)
     return sorted(result)

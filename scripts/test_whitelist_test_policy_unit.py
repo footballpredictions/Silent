@@ -35,7 +35,7 @@ class TestCatalogPolicy(unittest.TestCase):
         self.assertEqual(len({first, second, third}), 3)
 
     def test_manual_direct_updates_are_merged_without_countrywide_rules(self):
-        self.active['direct_domains'] = ['ru', 'su', 'xn--p1ai', 'sweb.ru', 'max.ru']
+        self.active['direct_domains'] = ['ru', 'su', 'xn--p1ai', 'moscow', 'tatar', 'xn--p1acf', 'yandex', 'sweb.ru', 'max.ru']
         before = copy.deepcopy(self.active)
         policy = build_catalog_test_policy(self.catalog, self.active)
         self.assertEqual(policy['direct_domains'], ['max.ru', 'sweb.ru'])

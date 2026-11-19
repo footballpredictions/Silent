@@ -2,7 +2,7 @@
 import hashlib
 import json
 
-from app.services.routing_policy import normalize_domains
+from app.services.routing_policy import RUSSIAN_DOMAIN_ZONES, normalize_domains
 from app.services.whitelist_catalog import AGGREGATE_SUFFIXES
 
 
@@ -19,7 +19,7 @@ def build_catalog_test_policy(catalog: dict, active_policy: dict) -> dict:
         else:
             raise ValueError('InvalidCatalogRule')
     suffix.update(domain for domain in normalize_domains(active_policy['direct_domains'])
-                  if domain not in {'ru', 'su', 'xn--p1ai'})
+                  if domain not in RUSSIAN_DOMAIN_ZONES)
     payload = {
         'schema_version': 1,
         'profile': 'catalog-test',

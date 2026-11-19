@@ -68,6 +68,8 @@ object HashFailureReporter {
 
         val msg = message.take(500)
 
+        if (VkAuthLogPolicy.isTemporaryApiFailure(msg) && type != "hash_dead" && type != "no_connections") return
+
 
 
         if (isCaptchaRelated(msg) || type.contains("captcha", ignoreCase = true)) {

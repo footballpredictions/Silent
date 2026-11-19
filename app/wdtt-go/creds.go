@@ -99,6 +99,8 @@ func vkCallsShouldRetry(err error) bool {
 			return true
 		case vkCallsFailureOKCDN:
 			return vkCallsIsStaleAnonToken(failure.Err)
+		case vkCallsFailureVKAPI:
+			return vkCallsIsInternalServerError(failure.Err)
 		default:
 			return false
 		}
@@ -111,7 +113,7 @@ func vkCallsShouldEscalateCaptcha(err error) bool {
 	if err == nil {
 		return false
 	}
-	if vkCallsIsStaleAnonToken(err) || vkCallsIsFlood(err) {
+	if vkCallsIsStaleAnonToken(err) || vkCallsIsFlood(err) || vkCallsIsInternalServerError(err) {
 		return false
 	}
 	if _, ok := asCallUnavailableError(err); ok {
@@ -124,6 +126,12 @@ func vkCallsShouldEscalateCaptcha(err error) bool {
 // РІРЅСѓС‚СЂРё С‚РѕРіРѕ Р¶Рµ РїСЂРѕС†РµСЃСЃР° (n=63 в†’ С€С‚РѕСЂРј РєР°РїС‡Рё). РҐРѕСЃС‚ РїРµСЂРµР·Р°РїСѓСЃРєР°РµС‚ СЃ n=9 (auto/manual).
 func vkCallsShouldFallbackToLegacy(err error) bool {
 	return false
+}
+
+// VK code 10 is a temporary API-side failure, not a captcha or a dead call.
+func vkCallsIsInternalServerError(err error) bool {
+	var apiErr *vkCallsVKAPIError
+	return errors.As(err, &apiErr) && apiErr.Code == 10
 }
 
 func vkCallsIsFlood(err error) bool {

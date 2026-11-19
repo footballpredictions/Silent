@@ -100,13 +100,7 @@ object WdttTunnelManager {
     }
 
     fun noteFloodEscalateFromLog(line: String) {
-        val m = line.lowercase()
-        if (
-            m.contains("legacy_escalate_captcha") ||
-            m.contains("flood_escalate_captcha") ||
-            m.contains("flood control") ||
-            m.contains("kind=flood")
-        ) {
+        if (VkAuthLogPolicy.shouldEscalateFromLog(line)) {
             floodCount++
             floodEscalatePending = true
         }
@@ -1076,7 +1070,7 @@ object WdttTunnelManager {
                     if (!isBootstrapMode) {
                         Regex("""\[ГРУППА #(\d+)\] Запрос кредов \(хеш: (\S+)""").find(lineTrim)?.let { m ->
                             groupHashPrefix[m.groupValues[1].toIntOrNull() ?: return@let] =
-                                m.groupValues[2].trimEnd('.')
+                                VkAuthLogPolicy.cleanHashPrefix(m.groupValues[2])
                         }
                         Regex("""\[ГРУППА #(\d+)\] Ошибка кредов: (.+)""").find(lineTrim)?.let { m ->
                             if (tunnelReady.value) {
@@ -1369,12 +1363,7 @@ object WdttTunnelManager {
         readConfFile(context, onlyAfterProcessStart = true)
 
     private fun resolveHashForGroup(groupId: Int): String? {
-        groupHashPrefix[groupId]?.let { prefix ->
-            sessionVkHashes.find { it.startsWith(prefix) }?.let { return it }
-            if (prefix.length >= 6) return prefix
-        }
-        if (sessionVkHashes.isEmpty()) return null
-        return sessionVkHashes[(groupId - 1).coerceAtLeast(0) % sessionVkHashes.size]
+        return VkAuthLogPolicy.resolveGroupHash(groupId, groupHashPrefix[groupId], sessionVkHashes)
     }
 
     private fun mobileApiRouteEnabled(): Boolean {

@@ -35,9 +35,9 @@ OTA: загрузка `.apk` на backend VPS → `/opt/silent-vpn/backend/updat
 ## `deploy_release.py` — что делает
 
 1. SFTP: заливает `.apk` в `/opt/silent-vpn/backend/update/android/<filename>`
-2. `docker cp` → `/app/update/android/<filename>` в `backend-api-1`
-3. Пишет `manifest.json` в контейнере
-4. Проверяет `GET /api/updates/check?platform=android&version=0.0.0`
+2. Проверяет bind mount `/app/update`, размер и SHA-256 загруженного файла
+3. Атомарно переключает `manifest.json`, сохраняет прежние APK и неизвестные поля
+4. Читает manifest обратно; API и полное скачивание проверяются после публикации
 
 Аргументы:
 
@@ -47,7 +47,8 @@ python scripts/deploy_release.py "<path-to.apk>" <version>
 python scripts/deploy_release.py "app\build\outputs\apk\release\app-release.apk" 1.0.130
 ```
 
-Имя файла на сервере: `{basename}-{version}.apk` (например `app-release-1.0.130.apk`).
+Имя файла на сервере: `{basename}-{version}.apk`; уже присутствующий номер версии
+не добавляется повторно. Другой файл с тем же именем не перезаписывается.
 
 ---
 

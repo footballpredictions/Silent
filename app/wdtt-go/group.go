@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-
 const (
 	defaultCycleSecs = 36000
 )
@@ -73,28 +72,43 @@ func WorkerGroup(
 	log.Printf("[ГРУППА #%d] Запрос кредов (хеш: %s...)", groupID, shortHash)
 
 	credStreamID := groupID * 100
-	user, pass, turnURLs, err := GetCreds(ctx, hash, credStreamID)
-	var creds *Credentials
-	if err == nil {
-		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
-	} else {
-		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
-		if signalReady != nil {
+	var handoffOnce sync.Once
+	handoff := func(success bool) {
+		handoffOnce.Do(func() {
+			if signalReady == nil {
+				return
+			}
+			delay := time.Duration(groupHandoffMs) * time.Millisecond
+			if !success {
+				delay /= 2
+			}
 			go func() {
-				time.Sleep(time.Duration(groupHandoffMs/2) * time.Millisecond)
+				time.Sleep(delay)
 				safeCloseChan(signalReady)
-				log.Printf("[ГРУППА #%d] Эстафета следующей группе (креды не получены)", groupID)
+				log.Printf("[ГРУППА #%d] Передача эстафеты следующей группе (креды=%t)", groupID, success)
 			}()
+		})
+	}
+	creds, err := acquireGroupCredentials(ctx, groupID, func(ctx context.Context) (*Credentials, error) {
+		user, pass, urls, err := GetCreds(ctx, hash, credStreamID)
+		if err != nil {
+			return nil, err
 		}
+		return &Credentials{User: user, Pass: pass, TurnURLs: urls, CacheStreamID: credStreamID}, nil
+	}, func() { handoff(false) })
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
+		handoff(false)
 		return
 	}
 
 	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров", groupID, creds.TurnURLs, len(workerIDs))
 	if _, err := selectUDPEndpoint(creds.TurnURLs, 0, tp.Host, tp.Port); err != nil {
 		log.Printf("[ГРУППА #%d] %v", groupID, err)
-		if signalReady != nil {
-			safeCloseChan(signalReady)
-		}
+		handoff(false)
 		return
 	}
 
@@ -131,13 +145,7 @@ func WorkerGroup(
 	}
 
 	// Сигнализируем следующей группе (как reference proxy-turn-vk-android: 2 с форы)
-	if signalReady != nil {
-		go func() {
-			time.Sleep(time.Duration(groupHandoffMs) * time.Millisecond)
-			safeCloseChan(signalReady)
-			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
-		}()
-	}
+	handoff(true)
 
 	allocateTicker := newAllocateGate()
 
@@ -323,5 +331,3 @@ type Credentials struct {
 	TurnURLs      []string
 	CacheStreamID int
 }
-
-

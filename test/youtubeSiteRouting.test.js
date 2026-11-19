@@ -4,7 +4,7 @@ const dns = require('node:dns').promises
 const sites = require('../src/main/apps/siteBypass')
 const router = require('../src/main/vpn/browserRouter')
 
-test('YouTube live browser policy includes video and image hosts in both modes and removes them with the rule', async () => {
+test('YouTube live browser policy includes video and image hosts in both modes and removes them with the rule', { skip: process.platform !== 'win32' }, async () => {
   const original = dns.Resolver
   const addresses = { 'youtube.com': '192.0.2.1', 'i.ytimg.com': '192.0.2.2', 'yt3.ggpht.com': '192.0.2.3' }
   dns.Resolver = class {

@@ -1,7 +1,7 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 
-test('browser site allowlist never installs physical routes shared by applications', async () => {
+test('browser site allowlist never installs physical routes shared by applications', { skip: process.platform !== 'win32' }, async () => {
   const wg = require('../src/main/vpn/wireguard')
   const saved = { ...wg }
   const modulePath = require.resolve('../src/main/apps/siteBypass')

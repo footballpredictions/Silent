@@ -80,7 +80,7 @@ test('browser snapshots preserve remaining cached sites on DNS failure and drop 
   } finally { dns.Resolver = originalResolver }
 })
 
-test('live domain rules use VPN DNS rather than the pre-connect system resolver', async () => {
+test('live domain rules use VPN DNS rather than the pre-connect system resolver', { skip: process.platform !== 'win32' }, async () => {
   const originalResolver = dns.Resolver
   let selectedServers
   dns.Resolver = class {

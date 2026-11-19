@@ -36,7 +36,7 @@ describe('normalizeDnsValue', () => {
   })
 })
 
-describe('Windows IPv6 tunnel (Gemini leak)', () => {
+describe('Windows IPv6 tunnel (Gemini leak)', { skip: process.platform !== 'win32' }, () => {
   it('AllowedIPs остаётся IPv4 /1+/1 (blackhole отдельно)', () => {
     const allowed = buildAllowedIPsForWindows([], () => {})
     assert.equal(allowed, '0.0.0.0/1, 128.0.0.0/1')

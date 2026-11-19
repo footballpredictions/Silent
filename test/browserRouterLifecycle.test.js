@@ -56,7 +56,7 @@ function fixture() {
 
 const options = { conf: 'private test configuration', gateway: { ifIndex: 47 }, resourcesPath: 'C:\\app\\resources', initialPolicy: { whitelist: true, targets: [], domains: [], excluded: [] } }
 
-test('native lifecycle: live site/app updates merge, failure preserves old policy, stop is clean', async () => {
+test('native lifecycle: live site/app updates merge, failure preserves old policy, stop is clean', { skip: process.platform !== 'win32' }, async () => {
   const f = fixture()
   let failures = 0
   f.router.setFailureHandler(() => failures++)

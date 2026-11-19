@@ -47,12 +47,13 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Test shared desktop source and native modules
         run: |
-          npm test
           python3 -m unittest discover -s scripts -p 'test_deploy_release.py'
           (cd wdtt-go && go test ./... && go vet ./...)
           (cd site-router && go test ./... && go vet ./...)
       - name: Build release DMG
         run: bash build-mac.sh
+      - name: Test desktop source with the built native resources
+        run: npm test
       - name: Verify the exact app inside the DMG
         run: |
           set -euo pipefail

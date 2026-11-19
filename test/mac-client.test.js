@@ -268,7 +268,7 @@ describe('darwin wireguard contract matches Windows/Linux', () => {
     assert.match(go, /cc := chan<- string\(configCh\)/)
     assert.doesNotMatch(go, /isFirst\s*:=\s*\(g == 0\)/)
   })
-  it('bundled mac wdtt-client contains IP_BOUND_IF', () => {
+  it('bundled mac wdtt-client contains IP_BOUND_IF', { skip: process.platform !== 'darwin' }, () => {
     const fs = require('fs')
     const path = require('path')
     const bin = path.join(__dirname, '../resources/mac/wdtt-client')

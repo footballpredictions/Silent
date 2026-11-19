@@ -668,15 +668,8 @@ async def is_flood_cooldown(db: AsyncSession) -> tuple[bool, str | None]:
 
 
 async def set_agent_enabled(db: AsyncSession, enabled: bool) -> None:
-    from app.models import AppSetting
-    key = "vk_agent_enabled"
-    result = await db.execute(select(AppSetting).where(AppSetting.key == key))
-    s = result.scalar_one_or_none()
-    if s:
-        s.value = "true" if enabled else "false"
-    else:
-        db.add(AppSetting(key=key, value="true" if enabled else "false"))
-    await db.commit()
+    from app.services.vk_agent_runtime import set_enabled
+    await set_enabled(db, None, enabled)
 
 
 async def get_auth_status(db: AsyncSession) -> dict:

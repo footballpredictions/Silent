@@ -1242,6 +1242,50 @@ async def vk_panel_status(
     return status
 
 
+@router.get("/vk/agents/status")
+async def vk_agents_status(
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vk_agent_runtime import agents_status
+    return await agents_status(db)
+
+
+class VkAgentControlRequest(BaseModel):
+    enabled: bool
+
+
+@router.patch("/vk/agents/{role}")
+async def vk_agent_control(
+    role: Literal["issuer", "checker"],
+    req: VkAgentControlRequest,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vk_agent_runtime import set_enabled, agents_status
+    await set_enabled(db, role, req.enabled)
+    return await agents_status(db)
+
+
+@router.post("/vk/agents/{role}/run")
+async def vk_agent_run_once(
+    role: Literal["issuer", "checker"],
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(get_admin_credentials),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.vk_agent_runtime import agents_status, run_once
+    status = (await agents_status(db))["agents"][role]
+    if not status["enabled"]:
+        raise HTTPException(status_code=400, detail="Сначала включите этого агента")
+    if status["state"] == "cooldown":
+        raise HTTPException(status_code=429, detail="Действует пауза VK. Повторите после её завершения.")
+    if status["state"] in ("running", "stopping"):
+        raise HTTPException(status_code=409, detail="Агент уже выполняет цикл")
+    background_tasks.add_task(run_once, role)
+    return {"success": True, "message": "Запрос на запуск принят"}
+
+
 @router.post("/vk/bot-auth/start")
 async def vk_bot_auth_start(
     request: Request,

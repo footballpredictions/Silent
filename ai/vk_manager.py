@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.models import VkHash
 from app.services.vk_agent_auth import resolve_agent_token, validate_token, VK_API_VERSION, VK_USER_AGENT, vk_api_call
@@ -23,41 +23,17 @@ MAX_HASHES = 4
 
 
 async def agent_heal_background(*, fill_only: bool = False) -> None:
-    """Создание/проверка хешей в фоне (connect не ждёт — иначе 504 от nginx).
-
-    fill_only: только calls.start (кнопка «Снять паузу») — без пачки preview,
-    иначе liveness снова ловит error 9 и ставит паузу.
-    """
+    """Legacy admin action delegates to the independently controlled workers."""
     from app.database import AsyncSessionLocal
-    from app.services.vk_agent_auth import set_agent_run_log, is_flood_cooldown
-
+    from ai.vk_hash_monitor import run_probe_cycle
+    from ai.tunnel_monitor import run_heal_cycle
     try:
         async with AsyncSessionLocal() as db:
-            flood, until = await is_flood_cooldown(db)
-            if flood:
-                msg = f"Пропуск: VK flood control до {until}. Новые звонки не создаём."
-                await set_agent_run_log(db, msg, ok=False)
-                logger.warning(msg)
-                return
-            manager = VkManager(db)
-            try:
-                parts: list[str] = []
-                if not fill_only:
-                    parts.append(await manager.probe_active_hashes())
-                parts.append(await manager.fill_all_user_slots())
-                summary = "; ".join(parts)
-                await set_agent_run_log(db, summary, ok="ошиб" not in summary.lower() and "flood" not in summary.lower())
-                logger.info("Background agent heal: %s", summary)
-            finally:
-                await manager.close()
-    except Exception as e:
-        logger.exception("Background agent heal failed: %s", e)
-        try:
-            async with AsyncSessionLocal() as db:
-                from app.services.vk_agent_auth import set_agent_run_log
-                await set_agent_run_log(db, f"Ошибка агента: {e}", ok=False)
-        except Exception:
-            pass
+            if not fill_only:
+                await run_probe_cycle(db)
+            await run_heal_cycle(db, full_fill=True)
+    except Exception:
+        logger.exception("Background VK agent cycle failed")
 
 
 class VkApiError(Exception):
@@ -73,6 +49,7 @@ class VkManager:
         self._token: Optional[str] = None
         self._last_auth_error: str = ""
         self._flood_hit: bool = False
+        self._probe_client = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -152,7 +129,6 @@ class VkManager:
         from app.services.vk_agent_auth import (
             _setting,
             _set_setting,
-            is_flood_cooldown,
         )
         from ai.vk_hash_liveness import (
             JoinHashProber,
@@ -166,14 +142,11 @@ class VkManager:
             SETTING_LAST_MARKED,
             SETTING_LAST_MSG,
             SETTING_PROBE_UNTIL,
+            SETTING_PROBE_INTERVAL,
             PROBE_BACKOFF_MINUTES,
             apply_probe_kind,
             select_probe_batch,
         )
-
-        flood, until = await is_flood_cooldown(self.db)
-        if flood:
-            return f"liveness пропуск: issuer flood до {until}"
 
         probe_until_raw = await _setting(self.db, SETTING_PROBE_UNTIL)
         if probe_until_raw:
@@ -197,18 +170,29 @@ class VkManager:
         if not batch:
             return "liveness: нет активных хешей"
 
-        session = await self._get_session()
-        prober = JoinHashProber(session)
+        interval_raw = await _setting(self.db, SETTING_PROBE_INTERVAL)
+        try:
+            interval = max(PROBE_SLEEP_SEC, min(120.0, float(interval_raw or (30 if probe_until_raw else PROBE_SLEEP_SEC))))
+        except ValueError:
+            interval = PROBE_SLEEP_SEC
+        if self._probe_client is None:
+            prober = JoinHashProber(await self._get_session())
+        else:
+            prober = self._probe_client
+            prober.begin_batch()
         now = datetime.utcnow()
         alive = dead = pending = marked = skipped = 0
         probed = 0
         last_id = cursor or ""
         preview_flood = False
+        from app.services.vk_agent_runtime import record_activity, record_probe_progress
+        await record_activity(self.db, "checker", state="running", progress={"attempted": 0, "budget": len(batch), "successful": 0})
 
         for h in batch:
             if prober.flood:
                 break
-            kind = await prober.probe(h.hash_value)
+            probed_hash = h.hash_value
+            kind = await prober.probe(probed_hash)
             probed += 1
             if kind == KIND_FLOOD or prober.flood:
                 # Анонимный preview (app 8093730) ≠ calls.start. Не ставим паузу issuer.
@@ -217,6 +201,11 @@ class VkManager:
                     "%Y-%m-%d %H:%M:%S UTC"
                 )
                 await _set_setting(self.db, SETTING_PROBE_UNTIL, backoff)
+                # Respect VK throttling: slow future requests instead of retrying
+                # the same burst after every cooldown. Never rotate identities.
+                await _set_setting(self.db, SETTING_PROBE_INTERVAL, str(min(120.0, max(30.0, interval * 2))))
+                await _set_setting(self.db, "vk_hash_probe_limit_stage", getattr(prober, "flood_stage", None) or "unknown")
+                await record_probe_progress(self.db, attempted=probed, budget=len(batch), successful=alive+pending+marked, outcome="flood")
                 break
             state = {
                 "last_error_code": int(getattr(h, "last_error_code", 0) or 0),
@@ -224,19 +213,28 @@ class VkManager:
                 "fail_count": int(h.fail_count or 0),
             }
             action = apply_probe_kind(state, kind)
-            h.last_checked = now
-            h.last_error_code = int(state["last_error_code"])
-            h.is_active = bool(state["is_active"])
-            h.fail_count = int(state["fail_count"])
+            checked_at = datetime.utcnow()
+            values = {"last_checked": checked_at, "last_error_code": int(state["last_error_code"]),
+                      "is_active": bool(state["is_active"]), "fail_count": int(state["fail_count"])}
+            if action in ("pending", "deactivated"):
+                values["last_failed"] = checked_at
+            changed = await self.db.execute(update(VkHash).where(
+                VkHash.id == h.id, VkHash.hash_value == probed_hash, VkHash.is_active == True,  # noqa: E712
+            ).values(**values).execution_options(synchronize_session="fetch"))
+            if changed.rowcount != 1:
+                # A concurrent replacement must not inherit its predecessor's result.
+                skipped += 1
+                last_id = str(h.id)
+                await record_probe_progress(self.db, attempted=probed, budget=len(batch), successful=alive+pending+marked, outcome="skip")
+                await asyncio.sleep(interval)
+                continue
             if action == "alive":
                 alive += 1
             elif action == "pending":
                 pending += 1
-                h.last_failed = now
             elif action == "deactivated":
                 marked += 1
                 dead += 1
-                h.last_failed = now
                 logger.warning(
                     "hash liveness dead slot=%s user=%s hash=%s…",
                     h.slot_index,
@@ -246,10 +244,11 @@ class VkManager:
             else:
                 skipped += 1
             last_id = str(h.id)
-            await asyncio.sleep(PROBE_SLEEP_SEC)
+            await record_probe_progress(self.db, attempted=probed, budget=len(batch), successful=alive+pending+marked, outcome=action)
+            await asyncio.sleep(interval)
 
         await self.db.commit()
-        ts = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         summary = (
             f"liveness: {probed}/{len(batch)} проб alive={alive} pending={pending} "
             f"marked_dead={marked} skip={skipped}"
@@ -389,6 +388,8 @@ class VkManager:
         for slot in range(MAX_HASHES):
             if slot in healthy_slots or self._flood_hit:
                 continue
+            from app.services.vk_agent_runtime import record_activity
+            await record_activity(self.db, "issuer", state="running")
             hash_val, msg = await self.create_hash_for_user_slot(user_id, slot)
             if hash_val:
                 created += 1

@@ -28,6 +28,9 @@ class SplitTests(unittest.IsolatedAsyncioTestCase):
         self.patches = [
             patch("ai.vk_agent_lock.agent_lease", lease),
             patch("app.services.vk_agent_auth.is_flood_cooldown", AsyncMock(return_value=(False, None))),
+            patch("app.services.vk_agent_runtime.role_enabled", AsyncMock(return_value=True)),
+            patch("app.services.vk_agent_runtime.settings_snapshot", AsyncMock(return_value={})),
+            patch("app.services.vk_agent_runtime.record_activity", AsyncMock()),
         ]
         for item in self.patches:
             item.start()
@@ -50,7 +53,7 @@ class SplitTests(unittest.IsolatedAsyncioTestCase):
         manager.close.assert_awaited_once()
 
     async def test_disabled_checker_does_not_access_vk(self):
-        with patch("app.services.vk_agent_auth.is_agent_enabled", AsyncMock(return_value=False)), \
+        with patch("app.services.vk_agent_runtime.role_enabled", AsyncMock(return_value=False)), \
              patch.object(vk_hash_monitor, "VkManager") as manager:
             await vk_hash_monitor.run_probe_cycle(MagicMock())
         manager.assert_not_called()

@@ -49,6 +49,7 @@ SETTING_LAST_ALIVE = "vk_hash_probe_last_alive"
 SETTING_LAST_DEAD = "vk_hash_probe_last_dead"
 SETTING_LAST_MARKED = "vk_hash_probe_last_marked"
 SETTING_PROBE_UNTIL = "vk_hash_probe_until"
+SETTING_PROBE_INTERVAL = "vk_hash_probe_interval_seconds"
 
 
 def is_call_dead_message(msg: str) -> bool:
@@ -99,7 +100,7 @@ def classify_preview_payload(data: dict[str, Any] | None) -> str:
     resp = data.get("response")
     if isinstance(resp, dict) and resp.get("user_id") is not None:
         return KIND_ALIVE
-    if "response" in data:
+    if isinstance(resp, dict) and resp:
         return KIND_ALIVE
     return KIND_SKIP
 
@@ -209,6 +210,12 @@ class JoinHashProber:
         self._device_id = str(uuid.uuid4())
         self._name = "SilentProbe"
         self.flood = False
+        self.flood_stage: str | None = None
+
+    def begin_batch(self):
+        """Keep the valid token/device across batches; reset only the last result."""
+        self.flood = False
+        self.flood_stage = None
 
     async def _post(self, url: str) -> dict[str, Any]:
         async with self._session.post(url, data=b"", timeout=aiohttp.ClientTimeout(total=12)) as resp:
@@ -233,6 +240,7 @@ class JoinHashProber:
             code, msg = _vk_error_from(last)
             if is_flood_message(code, msg):
                 self.flood = True
+                self.flood_stage = "anonymous_token"
                 raise RuntimeError("vk flood")
             tok = _extract_anonym_token(last)
             if tok:
@@ -280,5 +288,6 @@ class JoinHashProber:
                 continue
             if kind == KIND_FLOOD:
                 self.flood = True
+                self.flood_stage = "preview"
             return kind
         return KIND_SKIP

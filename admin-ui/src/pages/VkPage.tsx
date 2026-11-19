@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { Loader2, Trash2, Plus } from 'lucide-react'
+import VkAgentsPanel from '../components/VkAgentsPanel'
 
 type Status = {
   vk_linked: boolean
@@ -28,13 +29,6 @@ type Status = {
 
 const STATUS_CACHE_KEY = 'silent_vk_status_cache'
 
-function formatMskFromUtc(raw: string | null | undefined): string | null {
-  if (!raw) return null
-  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/)
-  if (!m) return raw
-  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]))
-  return d.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' МСК'
-}
 
 function readCachedStatus(): Status | null {
   try {
@@ -381,45 +375,13 @@ export default function VkPage({ token }: { token: string }) {
     return status?.auth_error || '✗ Нет рабочего токена'
   }
 
-  const agentStatusLine = () => {
-    if (statusLoading && !status) return 'Загрузка…'
-    const floodMsk = status?.agent_flood_until_msk || formatMskFromUtc(status?.agent_flood_until)
-    if (status?.agent_flood_cooldown) {
-      return `⏸ Пауза создания хешей (VK flood на calls.start) до ${floodMsk ?? '—'}`
-    }
-    if (status?.agent_connected) {
-      const need = status.users_needing_hashes ?? 0
-      const dead = status.hashes_dead ?? 0
-      const pending = status.hashes_probe_pending ?? 0
-      const budget = status.probe_budget ?? 8
-      let base = `✓ Агент работает · ${status.hashes_per_user ?? status.hashes_active} хешей · liveness ${budget}/цикл`
-      if (dead > 0) base += ` · ${dead} слотов с ошибкой 1`
-      if (pending > 0) base += ` · ${pending} ждут повторной пробы`
-      return need > 0 ? `${base} · ${need} пользов. без полного набора (4/4)` : base
-    }
-    if (status?.agent_enabled && status?.calls_ok) {
-      return `⏳ Агент включён, создаются хеши… (${status.hashes_active} уже есть). Подождите 1–3 мин и обновите страницу.`
-    }
-    if (status?.agent_enabled) {
-      return '⚠ Агент включён, но токен VK/calls не OK'
-    }
-    if (status?.calls_ok) {
-      return 'Токен готов — нажмите «Подключить агента»'
-    }
-    return 'Сначала войдите через VK Звонки (шаг 1)'
-  }
 
   return (
-    <div className="space-y-6 max-w-xl">
-      <div>
-        <h1 className="text-lg font-bold">VK — серверный AI-агент</h1>
-        <p className="text-[#666] text-sm mt-1">
-          Сервер создаёт до 4 хешей VK-звонков на каждого пользователя и следит, чтобы они не умирали.
-        </p>
-      </div>
-
+    <div className="space-y-6 max-w-4xl">
       {msg && <p className="text-sm text-green-400 px-1">{msg}</p>}
       {err && <p className="text-sm text-red-400 px-1">{err}</p>}
+
+      <VkAgentsPanel token={token} />
 
       <section className="bg-[#111] border border-[#222] rounded-2xl overflow-hidden">
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[#222] bg-[#0d0d0d]">
@@ -495,122 +457,17 @@ export default function VkPage({ token }: { token: string }) {
         </div>
       </section>
 
-      <section className="bg-[#111] border border-[#222] rounded-2xl overflow-hidden">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-[#222] bg-[#0d0d0d]">
-          <span className="w-7 h-7 rounded-full bg-white text-black text-sm font-bold flex items-center justify-center">2</span>
-          <h2 className="font-semibold text-sm">AI-агент — авто-хеши</h2>
+      <details className="rounded-xl border border-[#2a2a2a] bg-[#111] p-4">
+        <summary className="cursor-pointer text-sm text-[#ccc]">Дополнительные операции с хешами</summary>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button type="button" onClick={connectAgent} disabled={connectLoading || !status?.calls_ok} className="border border-[#333] rounded-lg px-3 py-2 text-sm disabled:opacity-40">Включить обоих агентов</button>
+          <button type="button" onClick={disconnectAgent} disabled={connectLoading} className="border border-[#333] rounded-lg px-3 py-2 text-sm disabled:opacity-40">Остановить обоих агентов</button>
+          <button type="button" onClick={restoreHashes} disabled={syncLoading} className="border border-[#333] rounded-lg px-3 py-2 text-sm disabled:opacity-40">Восстановить скрытые хеши</button>
+          <button type="button" onClick={syncHashes} disabled={syncLoading || !status?.calls_ok} className="border border-[#333] rounded-lg px-3 py-2 text-sm disabled:opacity-40">Создать недостающие хеши</button>
+          {status?.agent_flood_cooldown && <button type="button" onClick={clearFlood} disabled={syncLoading} className="border border-[#333] rounded-lg px-3 py-2 text-sm disabled:opacity-40">Снять паузу основного агента</button>}
+          <button type="button" onClick={cleanupBootstrap} className="border border-[#333] rounded-lg px-3 py-2 text-sm">Очистить bootstrap-пользователя</button>
         </div>
-        <div className="p-5 space-y-3">
-          <p className="text-xs text-[#666] leading-relaxed">
-            Агент каждые ~15 мин проверяет живые join-хеши (анонимный preview, без TURN) и заполняет
-            пустые и мёртвые слоты (ошибка 1). Протухший anonym_token на клиенте — не поломка слота.
-          </p>
-          <p
-            className={`text-sm ${
-              status?.agent_flood_cooldown
-                ? 'text-amber-400'
-                : status?.agent_connected
-                  ? 'text-green-400'
-                  : status?.agent_enabled
-                    ? 'text-amber-400/90'
-                    : 'text-[#888]'
-            }`}
-          >
-            {agentStatusLine()}
-          </p>
-          {status?.agent_flood_cooldown && (
-            <p className="text-[11px] text-[#666] leading-relaxed">
-              Это пауза **нашего** сервера после VK error 9 на создании звонков (`calls.start`), не блокировка аккаунта.
-              Проверка живых хешей (preview) эту паузу больше не ставит. «Снять паузу» сразу создаёт недостающие хеши, без пачки проб.
-            </p>
-          )}
-          {status?.agent_last_message && (
-            <p className="text-[11px] text-[#555] leading-relaxed border border-[#222] rounded-lg px-3 py-2 bg-[#0a0a0a]">
-              <span className="text-[#777]">Последний запуск</span>{' '}
-              {status.agent_last_run ? `(${status.agent_last_run}): ` : ': '}
-              {status.agent_last_message}
-            </p>
-          )}
-          {status?.probe_last_message && (
-            <p className="text-[11px] text-[#555] leading-relaxed border border-[#222] rounded-lg px-3 py-2 bg-[#0a0a0a]">
-              <span className="text-[#777]">Liveness</span>{' '}
-              {status.probe_last_run ? `(${status.probe_last_run}): ` : ': '}
-              {status.probe_last_message}
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {!status?.agent_enabled ? (
-              <button
-                onClick={connectAgent}
-                disabled={connectLoading || !status?.calls_ok}
-                className="bg-white text-black px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-[#e5e5e5] disabled:opacity-40 inline-flex items-center gap-2 min-w-[180px] justify-center"
-              >
-                {connectLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Подключаем…
-                  </>
-                ) : (
-                  'Подключить агента'
-                )}
-              </button>
-            ) : (
-              <>
-                <button
-                  onClick={disconnectAgent}
-                  disabled={connectLoading}
-                  className="border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-red-500 hover:text-red-400 inline-flex items-center gap-2"
-                >
-                  {connectLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Отключить агента
-                </button>
-                {status?.agent_flood_cooldown && status?.calls_ok && (
-                  <button
-                    type="button"
-                    onClick={clearFlood}
-                    disabled={syncLoading}
-                    className="bg-amber-500/20 border border-amber-500/40 px-4 py-2.5 rounded-xl text-sm text-amber-300 hover:bg-amber-500/30 inline-flex items-center gap-2 disabled:opacity-40"
-                  >
-                    {syncLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                    Снять паузу и создать хеши
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={restoreHashes}
-                  disabled={syncLoading}
-                  title="Вернуть хеши, которые агент ошибочно скрыл (is_active=false)"
-                  className="border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-amber-500 hover:text-amber-400 inline-flex items-center gap-2 disabled:opacity-40"
-                >
-                  Восстановить скрытые
-                </button>
-                <button
-                  type="button"
-                  onClick={syncHashes}
-                  disabled={syncLoading || !status?.calls_ok || status?.agent_flood_cooldown}
-                  className="border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-white hover:text-white inline-flex items-center gap-2 disabled:opacity-40"
-                >
-                  {syncLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Создать хеши сейчас
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              onClick={() => load()}
-              className="border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-[#555]"
-            >
-              Обновить статус
-            </button>
-            <button
-              onClick={cleanupBootstrap}
-              className="border border-[#333] px-4 py-2.5 rounded-xl text-sm text-[#aaa] hover:border-red-500 hover:text-red-400 inline-flex items-center gap-1"
-            >
-              <Trash2 className="w-3.5 h-3.5" /> bootstrap-user
-            </button>
-          </div>
-        </div>
-      </section>
+      </details>
 
       <section className="bg-[#111] border border-[#222] rounded-2xl overflow-hidden">
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[#222] bg-[#0d0d0d]">

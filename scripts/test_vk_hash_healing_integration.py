@@ -98,6 +98,71 @@ class HealingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("занята", result)
         self.manager._get_session.assert_not_awaited()
 
+    async def test_continuous_checker_reuses_valid_anonymous_token_between_batches(self):
+        import asyncio
+        from ai import vk_hash_monitor
+        self.db.add(AppSetting(key='vk_agent_enabled', value='true'))
+        await self.db.commit()
+        calls = []
+        batches = 0
+        async def post(prober, url):
+            if '/auth.getAnonymToken' in url:
+                calls.append('anonymous_token')
+                return {'response': {'token': 'test-valid-token'}}
+            calls.append('preview')
+            return {'response': {'user_id': 1}}
+        @asynccontextmanager
+        async def session(): yield self.db
+        async def sleep(delay):
+            nonlocal batches
+            if delay == vk_hash_monitor.BATCH_PAUSE_SECONDS:
+                batches += 1
+                if batches == 2:
+                    raise asyncio.CancelledError()
+        with patch.object(vk_hash_monitor, 'AsyncSessionLocal', session), \
+             patch.object(live.JoinHashProber, '_post', post), \
+             patch('ai.vk_hash_monitor.asyncio.sleep', sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                await vk_hash_monitor.monitor_loop()
+        self.assertEqual(calls.count('preview'), 8)
+        self.assertEqual(calls.count('anonymous_token'), 1,
+                         'A valid anonymous token must survive the next scheduled batch')
+        from app.services.vk_agent_runtime import agents_status
+        status = await agents_status(self.db)
+        self.assertEqual(status['agents']['checker']['totals']['successful'], 8)
+
+    async def test_preview_of_old_hash_cannot_mark_replacement_suspicious(self):
+        db = self.db
+        row = self.rows[0]
+        class Prober:
+            flood = False
+            def __init__(self, session): pass
+            async def probe(self, value):
+                if value == 'fixture_hash_0':
+                    row.hash_value = 'new_replacement_fixture'
+                    await db.commit()
+                    return live.KIND_DEAD
+                return live.KIND_ALIVE
+        with patch.object(live, 'JoinHashProber', Prober):
+            await self.manager.probe_active_hashes()
+        self.assertEqual(row.hash_value, 'new_replacement_fixture')
+        self.assertEqual(row.last_error_code, 0)
+        self.assertTrue(row.is_active)
+
+    async def test_cached_token_refreshes_only_when_vk_reports_expired(self):
+        prober = live.JoinHashProber(None)
+        prober._post = AsyncMock(side_effect=[
+            {'response': {'token': 'fixture-old-token'}}, {'response': {'user_id': 1}},
+            {'error': {'error_code': 100, 'error_msg': 'anonym_token.outdated'}},
+            {'response': {'token': 'fixture-fresh-token'}}, {'response': {'user_id': 1}},
+        ])
+        self.assertEqual(await prober.probe('fixture_hash_0'), live.KIND_ALIVE)
+        identity = prober._device_id
+        prober.begin_batch()
+        self.assertEqual(await prober.probe('fixture_hash_1'), live.KIND_ALIVE)
+        self.assertEqual(prober._device_id, identity)
+        self.assertEqual(sum('/auth.getAnonymToken' in call.args[0] for call in prober._post.await_args_list), 2)
+
     async def test_client_reports_request_probe_but_cannot_kill_a_hash(self):
         for _ in range(6):
             ok, _ = await report_hash_failure(self.db, self.user, self.rows[0].hash_value,
@@ -129,6 +194,8 @@ class HealingTest(unittest.IsolatedAsyncioTestCase):
         pause = await self.db.get(AppSetting, live.SETTING_PROBE_UNTIL)
         self.assertIsNotNone(pause)
         self.assertTrue(all(h.is_active for h in self.rows))
+        interval = await self.db.get(AppSetting, live.SETTING_PROBE_INTERVAL)
+        self.assertGreaterEqual(float(interval.value), 30)
 
     async def test_pending_then_alive_recovers_without_replacement(self):
         await self.cycle(live.KIND_DEAD)

@@ -15,11 +15,14 @@ STARTUP_DELAY_SECONDS = 10
 
 
 async def run_heal_cycle(db, *, full_fill: bool):
-    from app.services.vk_agent_auth import is_agent_enabled, set_agent_run_log, set_flood_cooldown, is_flood_cooldown
+    from app.services.vk_agent_runtime import tracked_cycle
+    return await tracked_cycle(db, "issuer", lambda: _heal(db, full_fill=full_fill), delay=QUEUE_POLL_SECONDS)
+
+
+async def _heal(db, *, full_fill: bool):
+    from app.services.vk_agent_auth import set_agent_run_log, set_flood_cooldown, is_flood_cooldown
     from ai.vk_agent_lock import agent_lease
 
-    if not await is_agent_enabled(db):
-        return
     flood, _ = await is_flood_cooldown(db)
     if flood:
         return
@@ -42,7 +45,7 @@ async def run_heal_cycle(db, *, full_fill: bool):
                     return
                 if not await manager.authenticate(verify_calls=False):
                     await set_agent_run_log(db, "Ошибка авторизации VK: замена отложена", ok=False)
-                    return
+                    return "Ошибка авторизации VK: замена отложена"
                 created = 0
                 for uid in user_ids:
                     created += await manager.fill_user_empty_slots(uid)

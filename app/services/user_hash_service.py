@@ -208,10 +208,10 @@ async def cleanup_bootstrap_devices(db: AsyncSession, device_fingerprint: str) -
 
 async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int:
     """Create missing server slots (0–3) via AI agent when enabled."""
-    from app.services.vk_agent_auth import is_agent_enabled
+    from app.services.vk_agent_runtime import role_enabled
     from ai.vk_manager import VkManager
 
-    if not await is_agent_enabled(db):
+    if not await role_enabled(db, "issuer"):
         return 0
 
     active = await count_active_server_hashes(db, user_id)

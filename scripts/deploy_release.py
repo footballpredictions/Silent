@@ -28,14 +28,14 @@ def merge_manifest(existing: dict, entry: dict, platform: str, arch: str | None 
         return result
     if arch not in ("x64", "arm64"):
         raise ValueError("Mac OTA requires x64 or arm64")
-    arches = dict(existing.get("arches") or {})
+    arches = dict(existing.get("files") or {})
     if not arches and existing.get("filename"):
         arches["arm64" if "arm64" in existing["filename"].lower() else "x64"] = {
-            key: existing[key] for key in ("version", "filename", "size", "sha256", "uploaded_at") if key in existing
+            key: existing[key] for key in ("version", "filename", "size", "sha256", "uploaded_at", "github_download_url") if key in existing
         }
     arches[arch] = dict(entry)
     result.update(arches.get("x64", entry))
-    result["arches"] = arches
+    result["files"] = arches
     return result
 
 
@@ -101,6 +101,7 @@ def main() -> None:
             sftp.posix_rename(part, destination)
         manifest_path = posixpath.join(directory, "manifest.json")
         entry = {"version": args.version, "filename": filename, "size": size, "sha256": digest,
+                 "github_download_url": f"https://github.com/silentvpn3/silentvpn3.github.io/releases/download/v{args.version}/{filename}",
                  "uploaded_at": datetime.now(timezone.utc).isoformat()}
         manifest = merge_manifest(read_manifest(sftp, manifest_path), entry, args.platform, args.arch)
         part = posixpath.join(directory, ".manifest-" + uuid.uuid4().hex + ".tmp")

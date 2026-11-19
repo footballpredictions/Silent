@@ -180,7 +180,7 @@ sv_update_archive_headers() {
 		$0 !~ /^silent-vpn\// || $0 ~ /(^|\/)\.\.(\/|$)/ {bad=1}
 		END {exit bad}' || return 1
 	[ "$(tar -xOzf "$archive" silent-vpn/ARCH 2>/dev/null)" = "$slot" ] || return 1
-	[ "$(tar -xOzf "$archive" silent-vpn/VERSION 2>/dev/null)" = "$version" ] || return 1
+	[ "$(tar -xOzf "$archive" silent-vpn/VERSION 2>/dev/null | tr -d '\r')" = "$version" ] || return 1
 	printf '%s\n' "$names" | grep -qx 'silent-vpn/install.sh' || return 1
 	printf '%s\n' "$names" | grep -qx "silent-vpn/files/usr/lib/silent-vpn/wdtt/wdtt-client.$slot"
 }
@@ -190,7 +190,8 @@ sv_update_archive() {
 	sv_update_archive_headers "$archive" "$slot" "$version" || return 1
 	sv_unpack "$archive" "$stage" || return 1
 	[ "$(cat "$stage/silent-vpn/ARCH" 2>/dev/null)" = "$slot" ] || return 1
-	[ "$(cat "$stage/silent-vpn/VERSION" 2>/dev/null)" = "$version" ] || return 1
+	[ "$(cat "$stage/silent-vpn/VERSION" 2>/dev/null | tr -d '\r')" = "$version" ] || return 1
+	printf '%s\n' "$version" > "$stage/silent-vpn/VERSION"
 	[ -s "$stage/silent-vpn/install.sh" ] &&
 		[ -s "$stage/silent-vpn/files/usr/lib/silent-vpn/wdtt/wdtt-client.$slot" ]
 }

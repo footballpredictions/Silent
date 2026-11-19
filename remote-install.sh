@@ -238,10 +238,15 @@ if [ -f "$WORKDIR/ARCH" ] && [ "$(cat "$WORKDIR/ARCH")" != "$slot" ]; then
 	exit 1
 fi
 
-if [ -n "${VERSION:-}" ] && [ "$(cat "$WORKDIR/VERSION" 2>/dev/null)" != "$VERSION" ]; then
+PACKAGE_VERSION="$(cat "$WORKDIR/VERSION" 2>/dev/null | tr -d '\r')"
+if [ -n "${VERSION:-}" ] && [ "$PACKAGE_VERSION" != "$VERSION" ]; then
 	echo "Версия архива не совпадает с опубликованной $VERSION." >&2
 	exit 1
 fi
+
+# Older signed-by-checksum archives built on Windows contain VERSION with CRLF.
+# Preserve exact version validation and install canonical LF metadata for UCI/API.
+printf '%s\n' "$PACKAGE_VERSION" > "$WORKDIR/VERSION"
 
 if [ ! -f "$WORKDIR/files/usr/lib/silent-vpn/wdtt/wdtt-client.$slot" ]; then
 	echo "Нет модуля обхода для архитектуры $slot." >&2

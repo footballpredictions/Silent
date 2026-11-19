@@ -86,7 +86,7 @@ def write_tarball(root: Path, dest: Path, arch: str | None = None) -> Path:
             # A Windows checkout may have CRLF even when Git stores LF.
             # Normalize shell scripts, sourced helpers and DNS domain lists;
             # native binaries must keep their original bytes.
-            if src.suffix in {".sh", ".domains"} or data.startswith(b"#!"):
+            if src.name == "VERSION" or src.suffix in {".sh", ".domains"} or data.startswith(b"#!"):
                 data = data.replace(b"\r\n", b"\n")
             info = tar.gettarinfo(str(src), arcname)
             info.size = len(data)
@@ -100,7 +100,7 @@ def write_tarball(root: Path, dest: Path, arch: str | None = None) -> Path:
             digest = hashlib.sha256()
             for source, name in iter_release_files(root):
                 content = source.read_bytes()
-                if source.suffix in {".sh", ".domains"} or content.startswith(b"#!"):
+                if source.name == "VERSION" or source.suffix in {".sh", ".domains"} or content.startswith(b"#!"):
                     content = content.replace(b"\r\n", b"\n")
                 digest.update(name.encode() + b"\0" + hashlib.sha256(content).digest())
             metadata = {"schema_version": 1, "arch": arch, "version": read_version(root), "build_id": digest.hexdigest()}

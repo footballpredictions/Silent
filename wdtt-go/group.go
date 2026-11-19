@@ -84,19 +84,33 @@ func WorkerGroup(
 	log.Printf("[ГРУППА #%d] Запрос кредов (хеш: %s...)", groupID, shortHash)
 
 	credStreamID := groupID * 100
-	user, pass, turnURLs, err := GetCreds(ctx, hash, credStreamID)
-	var creds *Credentials
-	if err == nil {
-		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
-	} else {
-		log.Printf("[ГРУППА #%d] Ошибка кредов: %v — пропуск группы (%d воркеров)", groupID, err, len(workerIDs))
-		if ramp != nil && groupID > ramp.bootGroups {
-			ramp.passToNext(groupID-ramp.bootGroups-1, false)
-		} else if ramp != nil {
-			passCascade(signalReady, groupID, false, 1*time.Second)
-		} else {
-			passCascade(signalReady, groupID, false, 1*time.Second)
+	var handoffOnce sync.Once
+	handoff := func(success bool) {
+		handoffOnce.Do(func() {
+			if ramp != nil && groupID > ramp.bootGroups {
+				ramp.passToNext(groupID-ramp.bootGroups-1, success)
+			} else {
+				delay := waveHandoffDelay
+				if !success {
+					delay = time.Second
+				}
+				passCascade(signalReady, groupID, success, delay)
+			}
+		})
+	}
+	creds, err := acquireGroupCredentials(ctx, groupID, func(ctx context.Context) (*Credentials, error) {
+		user, pass, urls, err := GetCreds(ctx, hash, credStreamID)
+		if err != nil {
+			return nil, err
 		}
+		return &Credentials{User: user, Pass: pass, TurnURLs: urls, CacheStreamID: credStreamID}, nil
+	}, func() { handoff(false) })
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("[ГРУППА #%d] Ошибка кредов: %v — пропуск группы (%d воркеров)", groupID, err, len(workerIDs))
+		handoff(false)
 		return
 	}
 
@@ -135,11 +149,7 @@ func WorkerGroup(
 	}
 
 	// Boot: эстафета волне (не каждой группе); post-boot — рамп.
-	if ramp != nil && groupID > ramp.bootGroups {
-		ramp.passToNext(groupID-ramp.bootGroups-1, true)
-	} else {
-		passCascade(signalReady, groupID, true, waveHandoffDelay)
-	}
+	handoff(true)
 
 	allocateTicker := newAllocateGate()
 

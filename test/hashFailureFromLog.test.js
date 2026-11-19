@@ -16,6 +16,26 @@ function ctx(ready = false) {
 }
 
 describe('hashFailureFromLog', () => {
+  it('does not report the logged VK internal error as a broken hash', () => {
+    const state = ctx(true)
+    parseHashFailureFromLine('[ГРУППА #7] Запрос кредов (хеш: abcdef12...)', state)
+    const got = parseHashFailureFromLine('[ГРУППА #7] Ошибка кредов: step=step3 messages.getAnonymCallToken kind=vk_api: error_code=10 Internal server error — пропуск группы (9 воркеров)', state)
+    assert.equal(got, null)
+  })
+
+  it('resolves the truncated log prefix to a complete known hash', () => {
+    const state = ctx(true)
+    parseHashFailureFromLine('[ГРУППА #7] Запрос кредов (хеш: abcdef12...)', state)
+    const got = parseHashFailureFromLine('[ГРУППА #7] Ошибка кредов: call not found', state)
+    assert.equal(got.hash, 'abcdef1234567890hashslot0')
+  })
+
+  it('does not send an unknown truncated prefix to the backend', () => {
+    const state = ctx(true)
+    parseHashFailureFromLine('[ГРУППА #7] Запрос кредов (хеш: unknown1...)', state)
+    assert.equal(parseHashFailureFromLine('[ГРУППА #7] Ошибка кредов: call not found', state), null)
+  })
+
   it('does not report anonym_token.outdated', () => {
     assert.equal(isStaleAnonymToken('anonym_token.outdated'), true)
     assert.equal(isTransientHashError('LEGACY_ESCALATE anonym_token.outdated'), true)

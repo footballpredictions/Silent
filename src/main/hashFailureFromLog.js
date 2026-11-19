@@ -39,11 +39,17 @@ function isCallDeadMessage(message) {
     m.includes('conversation not found')
 }
 
+function isTemporaryVkInternalError(message) {
+  const m = String(message || '').toLowerCase()
+  return /\berror_code["']?\s*[:=]\s*10\b/.test(m) || (m.includes('error 10') && m.includes('internal'))
+}
+
 function isTransientHashError(message) {
   const m = String(message || '').toLowerCase()
   if (!m) return true
   if (isStaleAnonymToken(m)) return true
   if (isCallDeadMessage(m)) return false
+  if (isTemporaryVkInternalError(m)) return true
   if (isCaptchaRelated(m)) return true
   if (m.includes('i/o timeout') || m.includes('context deadline exceeded')) return true
   if (m.includes('connection refused') || m.includes('connection reset')) return true
@@ -59,9 +65,8 @@ function isTransientHashError(message) {
 function resolveHashForGroup(groupId, groupHashPrefix, sessionVkHashes) {
   const prefix = groupHashPrefix.get(groupId)
   if (prefix) {
-    const full = sessionVkHashes.find(h => h.startsWith(prefix))
-    if (full) return full
-    if (prefix.length >= 6) return prefix
+    const matches = sessionVkHashes.filter(h => h.startsWith(prefix))
+    return matches.length === 1 ? matches[0] : null
   }
   if (!sessionVkHashes.length) return null
   const idx = Math.max(0, groupId - 1) % sessionVkHashes.length
@@ -75,6 +80,7 @@ function finalizeFailure(hash, errorType, message) {
   const msg = String(message || '').slice(0, 500)
 
   if (isStaleAnonymToken(msg)) return null
+  if (isTemporaryVkInternalError(msg) && !isCallDeadMessage(msg)) return null
 
   if (isCaptchaRelated(msg) || type.toLowerCase().includes('captcha')) {
     if (!isPersistentCaptcha(h)) return null
@@ -94,14 +100,12 @@ function hashFromDeadLine(lineTrim, ctx) {
   if (stream) {
     const gid = Math.floor(parseInt(stream[1], 10) / 100)
     if (gid > 0) {
-      const hash = resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
-      if (hash) return hash
+      return resolveHashForGroup(gid, ctx.groupHashPrefix, ctx.sessionVkHashes)
     }
   }
   const group = lineTrim.match(/\[ГРУППА #(\d+)\]/)
   if (group) {
-    const hash = resolveHashForGroup(parseInt(group[1], 10), ctx.groupHashPrefix, ctx.sessionVkHashes)
-    if (hash) return hash
+    return resolveHashForGroup(parseInt(group[1], 10), ctx.groupHashPrefix, ctx.sessionVkHashes)
   }
   return ctx.sessionVkHashes[0] || null
 }
@@ -116,7 +120,7 @@ function parseHashFailureFromLine(line, ctx) {
   const groupHash = lineTrim.match(/\[ГРУППА #(\d+)\] Запрос кредов \(хеш: (\S+)/)
   if (groupHash) {
     const gid = parseInt(groupHash[1], 10)
-    ctx.groupHashPrefix.set(gid, groupHash[2].replace(/\.$/, ''))
+    ctx.groupHashPrefix.set(gid, groupHash[2].replace(/[.…)]+$/, ''))
     return null
   }
 

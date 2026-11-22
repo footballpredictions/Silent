@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { Loader2, Trash2, Plus } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
 import VkAgentsPanel from '../components/VkAgentsPanel'
 
 type Status = {
@@ -47,7 +48,11 @@ type HashRow = {
   fail_count: number
 }
 
-type UserRow = { id: string; email: string }
+type UserRow = { id: string; email: string; display_id?: string }
+
+function matchesUser(user: UserRow, query: string) {
+  return user.email.toLowerCase().includes(query) || user.display_id?.toLowerCase().includes(query)
+}
 
 export default function VkPage({ token }: { token: string }) {
   const [status, setStatus] = useState<Status | null>(() => readCachedStatus())
@@ -55,6 +60,9 @@ export default function VkPage({ token }: { token: string }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [hashes, setHashes] = useState<HashRow[]>([])
   const [hashUserId, setHashUserId] = useState('')
+  const [userQuery, setUserQuery] = useState('')
+  const selectedHashUser = useRef('')
+  const hashRequest = useRef(0)
   const [authUrl, setAuthUrl] = useState('')
   const [showPasteHint, setShowPasteHint] = useState(false)
   const [oauthPaste, setOauthPaste] = useState('')
@@ -72,6 +80,7 @@ export default function VkPage({ token }: { token: string }) {
   const authH = { Authorization: `Bearer ${token}` }
   const maxSlots = status?.max_hashes ?? 4
   const slotIndexes = Array.from({ length: maxSlots }, (_, i) => i)
+  const matchingUsers = users.filter(user => matchesUser(user, userQuery.trim().toLowerCase()))
   const jsonH = { ...authH, 'Content-Type': 'application/json' }
 
   const parseApi = async (res: Response) => {
@@ -92,14 +101,32 @@ export default function VkPage({ token }: { token: string }) {
     }
   }
 
+  const selectHashUser = (userId: string) => {
+    if (selectedHashUser.current === userId) return
+    selectedHashUser.current = userId
+    hashRequest.current += 1
+    setHashes([])
+    setHashUserId(userId)
+  }
+
+  const searchHashUsers = (query: string) => {
+    setUserQuery(query)
+    const selected = users.find(user => user.id === selectedHashUser.current)
+    if (selected && !matchesUser(selected, query.trim().toLowerCase())) selectHashUser('')
+  }
+
   const loadHashes = async (userId: string) => {
-    if (!userId) {
-      setHashes([])
-      return
+    if (!userId || selectedHashUser.current !== userId) return
+    const request = ++hashRequest.current
+    try {
+      const res = await fetch(`/api/admin/vk/hashes?user_id=${encodeURIComponent(userId)}`, { headers: authH })
+      const { ok, data } = await parseApi(res)
+      if (request !== hashRequest.current) return
+      if (ok && Array.isArray(data)) setHashes(data)
+      else setErr(String(data.detail || 'Не удалось загрузить хеши пользователя'))
+    } catch {
+      if (request === hashRequest.current) setErr('Не удалось загрузить хеши пользователя')
     }
-    const res = await fetch(`/api/admin/vk/hashes?user_id=${userId}`, { headers: authH })
-    const { ok, data } = await parseApi(res)
-    if (ok) setHashes(data as unknown as HashRow[])
   }
 
   const load = async () => {
@@ -122,11 +149,13 @@ export default function VkPage({ token }: { token: string }) {
       if (u.ok) {
         const list = ((u.data as unknown as UserRow[]) || []).filter(x => !x.email.includes('bootstrap'))
         setUsers(list)
-        if (list.length === 1) {
-          setHashUserId(list[0].id)
-          await loadHashes(list[0].id)
-        } else if (hashUserId) {
-          await loadHashes(hashUserId)
+        const selected = selectedHashUser.current
+        if (list.length === 1 && !selected) {
+          selectHashUser(list[0].id)
+        } else if (list.some(user => user.id === selected)) {
+          await loadHashes(selected)
+        } else {
+          selectHashUser('')
         }
       }
     } catch {
@@ -476,16 +505,22 @@ export default function VkPage({ token }: { token: string }) {
         </div>
         <div className="p-5 space-y-4">
           {users.length > 1 && (
-            <select
-              value={hashUserId}
-              onChange={e => setHashUserId(e.target.value)}
-              className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white"
-            >
-              <option value="">— пользователь —</option>
-              {users.map(u => (
-                <option key={u.id} value={u.id}>{u.email}</option>
-              ))}
-            </select>
+            <div className="space-y-2">
+              <SearchInput value={userQuery} onChange={searchHashUsers} placeholder="Поиск по email или ID" />
+              <select
+                aria-label="Пользователь"
+                value={hashUserId}
+                onChange={e => selectHashUser(e.target.value)}
+                disabled={matchingUsers.length === 0}
+                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white disabled:opacity-50"
+              >
+                <option value="">— пользователь —</option>
+                {matchingUsers.map(u => (
+                  <option key={u.id} value={u.id}>{u.email}</option>
+                ))}
+              </select>
+              {matchingUsers.length === 0 && <p role="status" className="text-xs text-[#888]">Пользователи не найдены</p>}
+            </div>
           )}
           {users.length === 1 && (
             <p className="text-xs text-[#555]">{users[0].email}</p>
@@ -528,7 +563,7 @@ export default function VkPage({ token }: { token: string }) {
               value={manualHash}
               onChange={e => setManualHash(e.target.value)}
               placeholder="Ссылка vk.com/call/join/… или хеш"
-              className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white font-mono"
+              className="min-w-0 flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white font-mono"
             />
             <button
               type="submit"

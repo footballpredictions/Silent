@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta
+from time import time
 from typing import Any
 from urllib.parse import quote
 
@@ -28,6 +29,7 @@ ERROR_PROBE_PENDING = 2
 PROBE_BUDGET = 8
 PROBE_SLEEP_SEC = 8.0
 PROBE_BACKOFF_MINUTES = 20
+PROBE_RECOVERY_SUCCESSES = 16
 STALE_HOURS = 6
 
 VK_CONNECT_CLIENT_ID = "8093730"
@@ -50,6 +52,7 @@ SETTING_LAST_DEAD = "vk_hash_probe_last_dead"
 SETTING_LAST_MARKED = "vk_hash_probe_last_marked"
 SETTING_PROBE_UNTIL = "vk_hash_probe_until"
 SETTING_PROBE_INTERVAL = "vk_hash_probe_interval_seconds"
+SETTING_PROBE_RECOVERY = "vk_hash_probe_recovery_streak"
 
 
 def is_call_dead_message(msg: str) -> bool:
@@ -58,14 +61,13 @@ def is_call_dead_message(msg: str) -> bool:
 
 
 def is_stale_anonym_token(msg: str) -> bool:
-    low = (msg or "").lower()
-    return "anonym_token.outdated" in low or (
-        "anonym_token" in low and "outdated" in low
-    )
+    low = (msg or "").lower().replace("-", "_").replace(" ", "_")
+    token_error = "anonym_token" in low or "anonymous_token" in low
+    return token_error and any(marker in low for marker in ("outdated", "expired", "invalid"))
 
 
 def is_flood_message(code: int, msg: str) -> bool:
-    if code == 9:
+    if code in (6, 9, 29):
         return True
     low = (msg or "").lower()
     return "flood control" in low or "too many requests" in low
@@ -98,9 +100,7 @@ def classify_preview_payload(data: dict[str, Any] | None) -> str:
         msg = str(err.get("error_msg") or "")
         return classify_vk_api_error(code, msg)
     resp = data.get("response")
-    if isinstance(resp, dict) and resp.get("user_id") is not None:
-        return KIND_ALIVE
-    if isinstance(resp, dict) and resp:
+    if isinstance(resp, dict) and (resp.get("call_id") or resp.get("user_id") is not None):
         return KIND_ALIVE
     return KIND_SKIP
 
@@ -202,11 +202,12 @@ def _extract_anonym_token(data: dict[str, Any] | None) -> str | None:
 
 
 class JoinHashProber:
-    """Один anonym token на пачку хешей; TURN не трогаем."""
+    """Reuse the same anonymous credentials until VK's expiry, across batches."""
 
     def __init__(self, session: aiohttp.ClientSession):
         self._session = session
         self._token: str | None = None
+        self._token_expires_at = 0
         self._device_id = str(uuid.uuid4())
         self._name = "SilentProbe"
         self.flood = False
@@ -219,6 +220,8 @@ class JoinHashProber:
 
     async def _post(self, url: str) -> dict[str, Any]:
         async with self._session.post(url, data=b"", timeout=aiohttp.ClientTimeout(total=12)) as resp:
+            if resp.status == 429:
+                return {"error": {"error_code": 6}}
             data = await resp.json(content_type=None)
             return data if isinstance(data, dict) else {}
 
@@ -245,6 +248,12 @@ class JoinHashProber:
             tok = _extract_anonym_token(last)
             if tok:
                 self._token = tok
+                payload = last.get("response")
+                expiry = payload.get("expired_at") if isinstance(payload, dict) else None
+                try:
+                    self._token_expires_at = int(expiry or 0)
+                except (TypeError, ValueError, OverflowError):
+                    self._token_expires_at = 0
                 return tok
         raise RuntimeError("no anonym token")
 
@@ -257,7 +266,7 @@ class JoinHashProber:
             if self.flood:
                 return KIND_FLOOD
             try:
-                if not self._token:
+                if not self._token or (self._token_expires_at and time() >= self._token_expires_at - 30):
                     await self._refresh_anonym_token()
             except RuntimeError:
                 return KIND_FLOOD if self.flood else KIND_SKIP
@@ -282,7 +291,7 @@ class JoinHashProber:
                 return KIND_SKIP
 
             kind = classify_preview_payload(last)
-            code, msg = _vk_error_from(last)
+            _, msg = _vk_error_from(last)
             if is_stale_anonym_token(msg) and attempt == 0:
                 self._token = None
                 continue

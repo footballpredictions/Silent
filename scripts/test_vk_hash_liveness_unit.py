@@ -27,6 +27,7 @@ from ai.vk_hash_liveness import (  # noqa: E402
 
 def test_outdated_is_not_dead():
     assert is_stale_anonym_token("PARAM : error.webrtc.auth.anonym_token.outdated")
+    assert is_stale_anonym_token("Invalid anonymous token")
     assert not is_call_dead_message("anonym_token.outdated")
     assert classify_vk_api_error(100, "PARAM : error.webrtc.auth.anonym_token.outdated") == KIND_SKIP
 
@@ -40,15 +41,17 @@ def test_call_not_found_is_dead():
 
 def test_preview_alive():
     assert classify_preview_payload({"response": {"user_id": 1}}) == KIND_ALIVE
+    assert classify_preview_payload({"response": {"call_id": "fixture"}}) == KIND_ALIVE
 
 
 def test_empty_response_does_not_count_as_success():
-    for response in (None, False, 0, [], {}, ""):
+    for response in (None, False, 0, [], {}, "", {"status": "ok"}):
         assert classify_preview_payload({"response": response}) == KIND_SKIP
 
 
 def test_flood():
-    assert classify_vk_api_error(9, "Flood control") == KIND_FLOOD
+    for code in (6, 9, 29):
+        assert classify_vk_api_error(code, "") == KIND_FLOOD
 
 
 def test_apply_two_dead_marks_error_1():

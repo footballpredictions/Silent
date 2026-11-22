@@ -98,6 +98,73 @@ class HealingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("занята", result)
         self.manager._get_session.assert_not_awaited()
 
+    async def test_participant_exit_is_enabled_only_for_configured_email(self):
+        from ai.vk_room_exit import PILOT_EMAIL_SETTING
+        ordinary = User(email="ordinary@example.invalid", password_hash="test-only")
+        self.db.add_all([ordinary, AppSetting(key=PILOT_EMAIL_SETTING, value=self.user.email.upper())])
+        await self.db.commit()
+        await self.manager.create_hash_for_user_slot(ordinary.id, 0)
+        await self.manager.create_hash_for_user_slot(self.user.id, 0)
+        first, second = self.manager.create_call.await_args_list
+        self.assertEqual(first.kwargs, {})
+        self.assertEqual(second.kwargs, {"pilot_leave": True})
+
+    async def test_rollout_exits_new_calls_for_ordinary_users_and_legacy_slots(self):
+        from ai.vk_room_exit import LEAVE_NEW_CALLS_SETTING
+        self.db.add(AppSetting(key=LEAVE_NEW_CALLS_SETTING, value="1"))
+        await self.db.commit()
+        del self.manager.create_call
+        room_id = "11111111-2222-3333-4444-555555555555"
+        rpc = AsyncMock(side_effect=[
+            {"call_id": room_id, "join_link": f"https://vk.com/call/join/{value}",
+             "ok_join_link": "fixture_join-code"}
+            for value in ("new_user_hash", "new_shared_hash")
+        ])
+        participant = SimpleNamespace(authorize=AsyncMock(), leave=AsyncMock())
+        with patch.object(self.manager, "_vk_request", rpc), \
+             patch("ai.vk_manager.VkRoomParticipant", return_value=participant):
+            first, _ = await self.manager.create_hash_for_user_slot(self.user.id, 0)
+            second, _ = await self.manager.create_hash_for_slot(0)
+        self.assertEqual((first, second), ("new_user_hash", "new_shared_hash"))
+        self.assertEqual(self.rows[0].hash_value, first)
+        self.assertEqual(self.rows[1].hash_value, "fixture_hash_1")
+        self.assertEqual([call.args[-1] for call in participant.leave.await_args_list], [first, second])
+
+    async def test_pilot_does_not_replace_slot_when_exit_fails(self):
+        from ai.vk_room_exit import PILOT_EMAIL_SETTING, VkRoomExitError
+        self.db.add(AppSetting(key=PILOT_EMAIL_SETTING, value=self.user.email))
+        await self.db.commit()
+        original = self.rows[0].hash_value
+        del self.manager.create_call
+        room_id = '11111111-2222-3333-4444-555555555555'
+        rpc = AsyncMock(side_effect=[
+            {'call_id': room_id, 'join_link': 'https://vk.com/call/join/new_fixture_hash'},
+            1,
+        ])
+        participant = SimpleNamespace(authorize=AsyncMock(), leave=AsyncMock(side_effect=VkRoomExitError('test failure')))
+        with patch.object(self.manager, '_vk_request', rpc), \
+             patch('ai.vk_manager.VkRoomParticipant', return_value=participant):
+            created, _ = await self.manager.create_hash_for_user_slot(self.user.id, 0)
+            self.assertIsNone(created)
+            self.assertEqual(self.rows[0].hash_value, original)
+            again, _ = await self.manager.create_hash_for_user_slot(self.user.id, 0)
+            self.assertIsNone(again)
+        self.assertEqual(rpc.await_count, 2)
+        self.assertEqual(rpc.await_args.args, ('calls.forceFinish', {'call_id': room_id}))
+
+    async def test_pilot_uses_the_provider_bare_join_code(self):
+        from ai.vk_room_exit import VkRoomParticipant
+        room_id = '11111111-2222-3333-4444-555555555555'
+        participant = VkRoomParticipant(None, AsyncMock(return_value={"items": []}))
+        participant._session_key = "fixture-session"
+        participant._request = AsyncMock(side_effect=[{"id": room_id}, {}])
+        participant._probe = SimpleNamespace(probe=AsyncMock(return_value=live.KIND_ALIVE))
+        await participant.leave(room_id, "fixture_join-code", "fixture_hash")
+        joined, left = participant._request.await_args_list
+        self.assertEqual(joined.kwargs["joinLink"], "fixture_join-code")
+        self.assertEqual(left.kwargs["reason"], "HUNGUP")
+        participant._probe.probe.assert_awaited_once_with("fixture_hash")
+
     async def test_continuous_checker_reuses_valid_anonymous_token_between_batches(self):
         import asyncio
         from ai import vk_hash_monitor
@@ -162,6 +229,34 @@ class HealingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await prober.probe('fixture_hash_1'), live.KIND_ALIVE)
         self.assertEqual(prober._device_id, identity)
         self.assertEqual(sum('/auth.getAnonymToken' in call.args[0] for call in prober._post.await_args_list), 2)
+
+    async def test_cached_token_is_renewed_at_vk_expiry_before_next_preview(self):
+        prober = live.JoinHashProber(None)
+        prober._post = AsyncMock(side_effect=[
+            {'response': {'token': 'first', 'expired_at': 2000}}, {'response': {'user_id': 1}},
+            {'response': {'token': 'second', 'expired_at': 4000}}, {'response': {'user_id': 1}},
+        ])
+        with patch.object(live, 'time', return_value=1000, create=True) as clock:
+            self.assertEqual(await prober.probe('fixture_hash_0'), live.KIND_ALIVE)
+            clock.return_value = 2001
+            prober.begin_batch()
+            self.assertEqual(await prober.probe('fixture_hash_1'), live.KIND_ALIVE)
+        methods = [call.args[0].split('/method/')[1].split('?')[0] for call in prober._post.await_args_list]
+        self.assertEqual(methods, ['auth.getAnonymToken', 'messages.getCallPreview'] * 2)
+
+    async def test_preview_pacing_recovers_after_confirmed_replies(self):
+        self.db.add(AppSetting(key=live.SETTING_PROBE_INTERVAL, value='120'))
+        await self.db.commit()
+        for _ in range(3):
+            await self.cycle(live.KIND_ALIVE)
+        await self.cycle(live.KIND_SKIP)
+        for _ in range(3):
+            await self.cycle(live.KIND_ALIVE)
+        interval = await self.db.get(AppSetting, live.SETTING_PROBE_INTERVAL)
+        self.assertEqual(float(interval.value), 120, 'a skipped batch breaks the recovery streak')
+        await self.cycle(live.KIND_ALIVE)
+        await self.db.refresh(interval)
+        self.assertEqual(float(interval.value), 60, '16 confirmed replies restore pace by one step')
 
     async def test_client_reports_request_probe_but_cannot_kill_a_hash(self):
         for _ in range(6):

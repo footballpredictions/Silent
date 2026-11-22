@@ -14,8 +14,9 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
-from app.models import VkHash
-from app.services.vk_agent_auth import resolve_agent_token, validate_token, VK_API_VERSION, VK_USER_AGENT, vk_api_call
+from app.models import User, VkHash
+from app.services.vk_agent_auth import _setting, resolve_agent_token, validate_token, VK_API_VERSION, VK_USER_AGENT, vk_api_call
+from ai.vk_room_exit import LEAVE_NEW_CALLS_SETTING, PILOT_EMAIL_SETTING, VkRoomExitError, VkRoomParticipant
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class VkManager:
         self._last_auth_error: str = ""
         self._flood_hit: bool = False
         self._probe_client = None
+        self._room_participant: VkRoomParticipant | None = None
+        self._room_exit_failed = False
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -74,6 +77,7 @@ class VkManager:
                 self._last_auth_error = msg
             if code in (5, 1116):
                 self._token = None
+                self._room_participant = None
             raise VkApiError(code, msg)
         return data.get("response", {})
 
@@ -83,6 +87,7 @@ class VkManager:
             if ok:
                 return True, msg
             self._token = None
+            self._room_participant = None
 
         token, msg = await resolve_agent_token(self.db, verify_calls=verify_calls)
         if token:
@@ -95,18 +100,51 @@ class VkManager:
         ok, _ = await self.ensure_authenticated(verify_calls=verify_calls)
         return ok
 
-    async def create_call(self) -> Optional[str]:
+    async def create_call(self, *, pilot_leave: bool = False) -> Optional[str]:
         """Create a new VK group call and return its hash."""
+        leave_enabled = pilot_leave
         try:
+            if not leave_enabled:
+                leave_enabled = await _setting(self.db, LEAVE_NEW_CALLS_SETTING) == "1"
+            if leave_enabled:
+                if self._room_exit_failed:
+                    return None
+                if self._room_participant is None:
+                    self._room_participant = VkRoomParticipant(await self._get_session(), self._vk_request)
+                await self._room_participant.authorize()
             resp = await self._vk_request("calls.start", {})
             join_link = resp.get("join_link", "")
             hash_val = self._extract_hash(join_link)
+            if leave_enabled and self._room_participant is not None:
+                call_id = str(resp.get("call_id") or "")
+                try:
+                    if not hash_val or not call_id:
+                        raise VkRoomExitError("VK не вернул ссылку или ID нового звонка")
+                    await self._room_participant.leave(call_id, resp.get("ok_join_link") or "", hash_val)
+                    logger.info("VK issuer: participant exited and fresh preview succeeded")
+                except Exception:
+                    if call_id:
+                        try:
+                            # Only a newly created room that has never been published.
+                            await self._vk_request("calls.forceFinish", {"call_id": call_id})
+                        except Exception:
+                            logger.warning("VK issuer: could not clean up an unpublished call")
+                    raise
             if hash_val:
                 logger.info("Created VK call, hash: %s...", hash_val[:12])
                 return hash_val
             logger.error("Could not extract hash from join_link: %s", join_link)
             return None
+        except VkRoomExitError as e:
+            self._room_exit_failed = True
+            self._last_auth_error = str(e)
+            logger.warning("VK issuer: %s", e)
+            return None
         except VkApiError as e:
+            if leave_enabled:
+                self._room_exit_failed = True
+                if not self._last_auth_error:
+                    self._last_auth_error = f"VK не выполнил операцию со звонком (код {e.code})"
             logger.error("Failed to create VK call: %s", e)
             if e.code == 9 or "flood" in str(e).lower():
                 self._flood_hit = True
@@ -114,6 +152,11 @@ class VkManager:
                 await self.ensure_authenticated(verify_calls=False)
             return None
         except Exception as e:
+            if leave_enabled:
+                self._room_exit_failed = True
+                self._last_auth_error = "Не удалось подтвердить выход из нового звонка VK"
+                logger.warning("VK issuer: %s", type(e).__name__)
+                return None
             logger.error("Unexpected error creating VK call: %s", e)
             return None
 
@@ -135,6 +178,7 @@ class VkManager:
             KIND_FLOOD,
             PROBE_BUDGET,
             PROBE_SLEEP_SEC,
+            PROBE_RECOVERY_SUCCESSES,
             SETTING_CURSOR,
             SETTING_LAST,
             SETTING_LAST_ALIVE,
@@ -143,6 +187,7 @@ class VkManager:
             SETTING_LAST_MSG,
             SETTING_PROBE_UNTIL,
             SETTING_PROBE_INTERVAL,
+            SETTING_PROBE_RECOVERY,
             PROBE_BACKOFF_MINUTES,
             apply_probe_kind,
             select_probe_batch,
@@ -180,8 +225,7 @@ class VkManager:
         else:
             prober = self._probe_client
             prober.begin_batch()
-        now = datetime.utcnow()
-        alive = dead = pending = marked = skipped = 0
+        alive = pending = marked = skipped = 0
         probed = 0
         last_id = cursor or ""
         preview_flood = False
@@ -234,7 +278,6 @@ class VkManager:
                 pending += 1
             elif action == "deactivated":
                 marked += 1
-                dead += 1
                 logger.warning(
                     "hash liveness dead slot=%s user=%s hash=%s…",
                     h.slot_index,
@@ -248,6 +291,17 @@ class VkManager:
             await asyncio.sleep(interval)
 
         await self.db.commit()
+        if interval > PROBE_SLEEP_SEC:
+            recovery_raw = await _setting(self.db, SETTING_PROBE_RECOVERY) or "0"
+            previous_streak = int(recovery_raw) if recovery_raw.isascii() and recovery_raw.isdecimal() else 0
+            # A complete batch with a VK verdict for every link is a signal to
+            # gradually recover, even if a verdict found an expired call.
+            streak = previous_streak + probed if alive + pending + marked == len(batch) else 0
+            if streak >= PROBE_RECOVERY_SUCCESSES:
+                await _set_setting(self.db, SETTING_PROBE_RECOVERY, "0")
+                await _set_setting(self.db, SETTING_PROBE_INTERVAL, str(max(PROBE_SLEEP_SEC, interval / 2)))
+            elif previous_streak != streak:
+                await _set_setting(self.db, SETTING_PROBE_RECOVERY, str(streak))
         ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         summary = (
             f"liveness: {probed}/{len(batch)} проб alive={alive} pending={pending} "
@@ -314,7 +368,12 @@ class VkManager:
         ok, err = await self.ensure_authenticated()
         if not ok:
             return None, err
-        hash_val = await self.create_call()
+        pilot_email = await _setting(self.db, PILOT_EMAIL_SETTING)
+        pilot_leave = False
+        if pilot_email:
+            email = await self.db.scalar(select(User.email).where(User.id == user_id))
+            pilot_leave = bool(email and email.casefold() == pilot_email.strip().casefold())
+        hash_val = await self.create_call(pilot_leave=True) if pilot_leave else await self.create_call()
         if not hash_val:
             return None, self._last_auth_error or "calls.start не вернул хеш"
         link = f"https://vk.com/call/join/{hash_val}"

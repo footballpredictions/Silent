@@ -525,6 +525,7 @@ async def get_capacity_profile(
     *,
     load: dict | None = None,
     online_count: int | None = None,
+    queen_load_hint: dict | None = None,
 ) -> CapacityProfile:
     if online_count is None:
         from app.services.hive_service import count_online_on_cell
@@ -553,7 +554,9 @@ async def get_capacity_profile(
 
         queen = await get_queen_cell(db)
         if queen and queen.id != cell.id:
-            _, queen_load = queen_accepting_new_vpn()
+            queen_load = queen_load_hint
+            if queen_load is None:
+                _, queen_load = queen_accepting_new_vpn()
             queen_hw = _hardware_from_load(queen_load, queen)
             queen_samples = await fetch_recent_samples(db, queen.id)
             queen_profile = compute_max_online_from_samples(queen_samples, hardware=queen_hw)

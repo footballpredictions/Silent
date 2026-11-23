@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Hexagon, Plus, RefreshCw, Trash2, Wifi, WifiOff, Crown, Loader2, Cpu, HardDrive, Activity, Server } from 'lucide-react'
 import HiveAvailabilityPanel from '../components/HiveAvailabilityPanel'
 
@@ -102,8 +102,8 @@ const capModeLabel: Record<string, string> = {
 interface HiveSummary {
   cells_total: number
   cells_active: number
-  total_online_vpn: number
-  total_online_all?: number
+  total_online_vpn: number | null
+  total_online_all?: number | null
   worker_cells: number
   queen_accepting_vpn: boolean
   queen_load: CellLoad
@@ -132,7 +132,10 @@ interface HiveIncident {
   checks?: string[]
 }
 
-function fmtBandwidth(mbps: number): string {
+type HiveSection = 'cells' | 'summary' | 'incidents'
+
+function fmtBandwidth(mbps?: number | null): string {
+  if (mbps == null) return '—'
   if (mbps >= 1) return `${mbps.toFixed(1)} Мбит/с`
   if (mbps >= 0.001) return `${(mbps * 1000).toFixed(0)} Кбит/с`
   return '0'
@@ -180,7 +183,7 @@ function CellHardwareLine({ cell }: { cell: HiveCell }) {
     return (
       <p className="text-xs text-[#888] mt-1 flex items-center gap-1">
         <Server className="w-3 h-3 shrink-0" />
-        характеристики сервера: обновление…
+        Характеристики сервера недоступны
       </p>
     )
   }
@@ -206,7 +209,7 @@ function CellLoadGrid({ cell, cpuThreshold, memThreshold, bwThreshold }: {
         <HardDrive className="w-3.5 h-3.5" /> RAM {load.memory_percent}%
       </span>
       <span className={`flex items-center gap-1.5 ${(load.network_util_percent ?? 0) >= bwThreshold ? 'text-amber-300' : ''}`}>
-        <Activity className="w-3.5 h-3.5" /> Канал {(load.network_util_percent ?? 0).toFixed(1)}%
+        <Activity className="w-3.5 h-3.5" /> Канал {load.network_util_percent == null ? '—' : `${load.network_util_percent.toFixed(1)}%`}
       </span>
     </div>
   )
@@ -331,39 +334,78 @@ export default function HivePage({ token }: { token: string }) {
   const [egress, setEgress] = useState<Record<string, EgressInfo>>({})
   const [egressBusy, setEgressBusy] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
+  const [availabilityOpen, setAvailabilityOpen] = useState(false)
   const [incidentsOpen, setIncidentsOpen] = useState(false)
   const [form, setForm] = useState({ host: '', password: '', name: '' })
   const [metricsAt, setMetricsAt] = useState<Date | null>(null)
   const [incidents, setIncidents] = useState<HiveIncident[]>([])
   const [incidentsSeenAt, setIncidentsSeenAt] = useState<string | null>(null)
+  const [sectionErrors, setSectionErrors] = useState<Partial<Record<HiveSection, boolean>>>({})
+  const [incidentsLoaded, setIncidentsLoaded] = useState(false)
+  const pending = useRef<Partial<Record<HiveSection, AbortController>>>({})
 
-  const load = useCallback(async (silent = false) => {
-    if (!silent) setError(null)
-    const [cellsRes, sumRes, incidentsRes] = await Promise.all([
-      fetch('/api/admin/hive/cells', { headers: { Authorization: `Bearer ${token}` } }),
-      fetch('/api/admin/hive/summary', { headers: { Authorization: `Bearer ${token}` } }),
-      fetch('/api/admin/hive/incidents?limit=120', { headers: { Authorization: `Bearer ${token}` } }),
-    ])
-    if (!cellsRes.ok) {
-      setError('Не удалось загрузить соты')
-      setLoading(false)
-      return
+  const readSection = useCallback(async <T,>(key: HiveSection, path: string, apply: (data: T) => void, force = false) => {
+    if (pending.current[key] && !force) return
+    pending.current[key]?.abort()
+    const controller = new AbortController()
+    pending.current[key] = controller
+    const timeout = setTimeout(() => controller.abort(), 12_000)
+    try {
+      const res = await fetch(`/api/admin/hive/${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new Error(String(res.status))
+      const data = await res.json() as T
+      if (pending.current[key] !== controller) return
+      apply(data)
+      setSectionErrors(prev => prev[key] ? { ...prev, [key]: false } : prev)
+    } catch {
+      if (pending.current[key] === controller) {
+        setSectionErrors(prev => prev[key] ? prev : { ...prev, [key]: true })
+      }
+    } finally {
+      clearTimeout(timeout)
+      if (pending.current[key] === controller) {
+        delete pending.current[key]
+        if (key === 'cells') setLoading(false)
+      }
     }
-    setCells(await cellsRes.json())
-    if (sumRes.ok) setSummary(await sumRes.json())
-    if (incidentsRes.ok) {
-      const data = await incidentsRes.json().catch(() => ({}))
-      setIncidents(Array.isArray(data.items) ? data.items : [])
-      setIncidentsSeenAt(typeof data.last_seen_at === 'string' ? data.last_seen_at : null)
-    }
-    setMetricsAt(new Date())
-    setLoading(false)
   }, [token])
 
-  useEffect(() => { load() }, [load])
+  const loadCells = useCallback((force = false) => readSection<HiveCell[]>('cells', 'cells', data => {
+    if (!Array.isArray(data)) throw new Error('Invalid cells response')
+    setCells(data)
+    setMetricsAt(new Date())
+  }, force), [readSection])
+  const loadSummary = useCallback((force = false) => readSection<HiveSummary>('summary', 'summary', setSummary, force), [readSection])
+  const loadIncidents = useCallback((force = false) => readSection<{ items: HiveIncident[], last_seen_at?: string }>(
+    'incidents', 'incidents?limit=120', data => {
+      if (!Array.isArray(data.items)) throw new Error('Invalid incidents response')
+      setIncidents(data.items)
+      setIncidentsLoaded(true)
+      const seenAt = data.last_seen_at
+      if (seenAt) setIncidentsSeenAt(previous => !previous || Date.parse(seenAt) > Date.parse(previous) ? seenAt : previous)
+    }, force,
+  ), [readSection])
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setError(null)
+    await Promise.all([loadCells(true), loadSummary(true), loadIncidents(true)])
+  }, [loadCells, loadSummary, loadIncidents])
+
+  useEffect(() => {
+    void load()
+    return () => {
+      const active = pending.current
+      pending.current = {}
+      Object.values(active).forEach(request => request.abort())
+    }
+  }, [load])
 
   useEffect(() => {
     if (!incidentsOpen) return
+    void loadIncidents()
     const markSeen = async () => {
       const res = await fetch('/api/admin/hive/incidents/seen', {
         method: 'POST',
@@ -373,26 +415,21 @@ export default function HivePage({ token }: { token: string }) {
       const data = await res.json().catch(() => ({}))
       if (typeof data.seen_at === 'string') setIncidentsSeenAt(data.seen_at)
     }
-    void markSeen()
-  }, [token, incidentsOpen])
+    void markSeen().catch(() => {})
+  }, [token, incidentsOpen, loadIncidents])
 
   useEffect(() => {
-    const t = setInterval(() => { load(true) }, 10000)
-    return () => clearInterval(t)
-  }, [load])
+    const sumTimer = setInterval(loadSummary, 30_000)
+    const logTimer = setInterval(loadIncidents, incidentsOpen ? 20_000 : 60_000)
+    return () => { clearInterval(sumTimer); clearInterval(logTimer) }
+  }, [loadSummary, loadIncidents, incidentsOpen])
 
+  const provisioning = cells.some(c => c.status === 'provisioning' || c.profiles?.state === 'running'
+    || /^(Профиль для ИИ: настройка|Профиль для ИИ: откат)/.test(c.last_error || ''))
   useEffect(() => {
-    const provisioning = cells.some(
-      c =>
-        c.status === 'provisioning' ||
-        c.profiles?.state === 'running' ||
-        (c.last_error || '').startsWith('Профиль для ИИ: настройка') ||
-        (c.last_error || '').startsWith('Профиль для ИИ: откат'),
-    )
-    if (!provisioning) return
-    const t = setInterval(() => { load(true) }, 4000)
+    const t = setInterval(loadCells, provisioning ? 4_000 : 10_000)
     return () => clearInterval(t)
-  }, [cells, load])
+  }, [loadCells, provisioning])
 
   const connectAuto = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -522,7 +559,6 @@ export default function HivePage({ token }: { token: string }) {
     if (busy === 'incidents') return
     setBusy('incidents')
     setError(null)
-    setIncidents([])
     try {
       const res = await fetch('/api/admin/hive/incidents/clear', {
         method: 'POST',
@@ -530,19 +566,11 @@ export default function HivePage({ token }: { token: string }) {
       })
       if (!res.ok) {
         setError('Не удалось очистить инциденты')
-        await load(true)
         return
       }
-      const listRes = await fetch('/api/admin/hive/incidents?limit=120', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (listRes.ok) {
-        const data = await listRes.json().catch(() => ({}))
-        setIncidents(Array.isArray(data.items) ? data.items : [])
-      }
+      await loadIncidents(true)
     } catch {
       setError('Не удалось очистить инциденты')
-      await load(true)
     } finally {
       setBusy(null)
     }
@@ -552,6 +580,7 @@ export default function HivePage({ token }: { token: string }) {
   const unknownOnline = cells.filter(c => c.online_status === 'unknown')
   const staleOnline = cells.filter(c => c.online_status === 'stale')
   const activeCells = cells.filter(c => c.status === 'active').length
+  const incidentErrors = incidents.filter(item => item.severity === 'error' || item.severity === 'critical').length
   const actionClass = 'text-xs px-3 py-2 rounded-lg border border-[#333] bg-[#1a1a1a] hover:bg-[#222] disabled:opacity-50'
 
   return (
@@ -604,15 +633,18 @@ export default function HivePage({ token }: { token: string }) {
       )}
 
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 bg-[#111] border border-[#222] rounded-xl px-4 py-3 text-sm">
-        <p><span className="text-[#888]">Онлайн</span> <strong className="ml-2 tabular-nums">{loading ? '…' : unknownOnline.length ? '—' : hiveOnline}</strong></p>
-        <p><span className="text-[#888]">Серверы в работе</span> <strong className="ml-2 tabular-nums">{loading ? '…' : `${activeCells} / ${cells.length}`}</strong></p>
-        {metricsAt && <span className="sm:ml-auto text-xs text-[#888]">Обновлено {metricsAt.toLocaleTimeString('ru')}</span>}
+        <p><span className="text-[#888]">Онлайн</span> <strong className="ml-2 tabular-nums">{loading ? '…' : sectionErrors.cells || unknownOnline.length ? '—' : hiveOnline}</strong></p>
+        <p><span className="text-[#888]">Включено узлов</span> <strong className="ml-2 tabular-nums">{loading ? '…' : !metricsAt ? '—' : `${activeCells} / ${cells.length}`}</strong></p>
+        {metricsAt && <span className="sm:ml-auto text-xs text-[#888]">{sectionErrors.cells ? 'Последние данные' : 'Список обновлён'} {metricsAt.toLocaleTimeString('ru')}</span>}
       </div>
-      {unknownOnline.length > 0 ? <p role="status" className="text-xs text-amber-300">Онлайн не подтверждён: {unknownOnline.map(c => c.name).join(', ')}.</p> : staleOnline.length > 0 && <p role="status" className="text-xs text-amber-300">Последнее измерение: {staleOnline.map(c => c.name).join(', ')}. Ожидаем свежие данные.</p>}
+      {sectionErrors.summary && <p role="status" className="text-xs text-amber-300">Сводка нагрузки временно недоступна.</p>}
+      {sectionErrors.cells ? <p role="status" className="text-xs text-amber-300">Не удалось обновить список сот.</p>
+        : unknownOnline.length > 0 ? <p role="status" className="text-xs text-amber-300">Онлайн не подтверждён у узлов: {unknownOnline.map(c => c.name).join(', ')}.</p>
+        : staleOnline.length > 0 && <p role="status" className="text-xs text-amber-300">Онлайн по последним измерениям: {staleOnline.map(c => c.name).join(', ')}.</p>}
       {summary?.all_cells_full && <p role="status" className="text-sm text-amber-300">Соты заполнены — добавьте сервер.</p>}
       {summary?.queen_load?.build_running && <p className="text-sm text-blue-300">На Улье идёт сборка обновления.</p>}
 
-      {loading ? <p className="text-[#888] text-sm">Загрузка серверов…</p> : cells.length === 0 ? (
+      {loading ? <p className="text-[#888] text-sm">Загрузка серверов…</p> : cells.length === 0 ? !sectionErrors.cells && (
         <p className="text-sm text-[#aaa]">Серверов пока нет. Добавьте первую соту.</p>
       ) : (
         <div className="space-y-3">
@@ -628,15 +660,12 @@ export default function HivePage({ token }: { token: string }) {
                   <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs">
                     <span className={cell.status === 'active' ? 'text-emerald-400' : cell.status === 'error' || cell.status === 'offline' ? 'text-red-400' : 'text-amber-300'}>{statusLabel[cell.status] || cell.status}</span>
                     {cell.admin_only && <span className="text-violet-300">Только админ</span>}
-                    {(cell.profiles?.ai ?? cell.ai_exit) && <span className="text-sky-300">Для ИИ</span>}
-                    {cell.profiles?.gaming && <span className="text-emerald-300">Игровой</span>}
                   </div>
                   <p className="text-xs text-[#888] font-mono mt-2 break-all">{cell.public_ip}:{cell.wdtt_port}</p>
                 </div>
                 <div className="text-right shrink-0">
                   <p className={`text-xl font-semibold tabular-nums ${cell.online_status !== 'unknown' && cell.online_count >= cell.max_online ? 'text-amber-300' : ''}`}>{cell.online_status === 'unknown' ? '—' : cell.online_count}<span className="text-xs font-normal text-[#888]"> / {cell.max_online}</span></p>
                   <p className="text-xs text-[#888] mt-0.5">онлайн / лимит</p>
-                  {cell.online_status === 'stale' && <p className="text-xs text-amber-300 mt-1">Предыдущее измерение</p>}
                 </div>
               </div>
               <CellLoadGrid cell={cell} cpuThreshold={summary?.cpu_threshold ?? 80} memThreshold={summary?.mem_threshold ?? 85} bwThreshold={summary?.bandwidth_threshold ?? 90} />
@@ -658,15 +687,15 @@ export default function HivePage({ token }: { token: string }) {
               {cell.profiles?.state === 'running' && <p role="status" className="text-sm text-sky-300 mt-3 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin shrink-0" />Настройка профилей…</p>}
               {cell.profiles?.state === 'error' && <p role="alert" className="text-sm text-red-300 mt-3">{cell.profiles.rolled_back ? 'Профиль не переключён. ' : 'Применение не подтверждено. '}{cell.profiles.error || 'Не удалось применить профиль. Повторите попытку.'}</p>}
               {!cell.is_queen && !cell.has_ssh_password && <p className="text-xs text-amber-300 mt-2">Для настройки профилей сохраните SSH-пароль через автоподключение.</p>}
-              {cell.last_error && <p className={`text-xs mt-3 whitespace-pre-wrap break-words ${cell.last_error.startsWith('Профиль для ИИ:') ? 'text-sky-300' : 'text-red-400'}`}>{cell.last_error}</p>}
+              {cell.last_error && !((cell.profiles?.state === 'running' || cell.profiles?.state === 'error') && cell.last_error.startsWith('Профиль для ИИ:')) && <p className={`text-xs mt-3 whitespace-pre-wrap break-words ${cell.last_error.startsWith('Профиль для ИИ:') ? 'text-sky-300' : 'text-red-400'}`}>{cell.last_error}</p>}
 
               <details className="mt-4 border-t border-[#222] pt-3">
                 <summary className="text-xs text-[#aaa] cursor-pointer hover:text-white py-1">Настройки и характеристики</summary>
                 <div className="mt-3 space-y-3">
                   <CellHardwareLine cell={cell} />
                   <p className="text-xs text-[#888]">Назначено устройств: {cell.assigned_devices}{cell.capacity?.mode ? ` · лимит: ${capModeLabel[cell.capacity.mode] || cell.capacity.mode}` : ''}</p>
-                  {cell.load && <p className="text-xs text-[#888]">Трафик: ↓ {fmtBandwidth(cell.load.network_mbps_rx ?? 0)} · ↑ {fmtBandwidth(cell.load.network_mbps_tx ?? 0)}</p>}
-                  {typeof cell.load?.wg_peers_total === 'number' && <p className="text-xs text-[#888]">WG: {cell.load.wg_peers_total} ключей · {cell.load.wg_peers_live_3m ?? 0} онлайн · {cell.load.wg_peers_never_hs ?? 0} без подключения{typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}{(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · очищено ${cell.load.wg_gc_last_removed}` : ''}</p>}
+                  {cell.load && (cell.load.network_mbps_rx != null || cell.load.network_mbps_tx != null) && <p className="text-xs text-[#888]">Трафик: ↓ {fmtBandwidth(cell.load.network_mbps_rx)} · ↑ {fmtBandwidth(cell.load.network_mbps_tx)}</p>}
+                  {typeof cell.load?.wg_peers_total === 'number' && <p className="text-xs text-[#888]">WG: {cell.load.wg_peers_total} ключей{cell.load.wg_peers_live_3m != null ? ` · ${cell.load.wg_peers_live_3m} недавних рукопожатий` : ''}{cell.load.wg_peers_never_hs != null ? ` · ${cell.load.wg_peers_never_hs} без подключения` : ''}{typeof cell.load.wg_peers_live_known === 'number' ? ` · свои ${cell.load.wg_peers_live_known}` : ''}{(cell.load.wg_gc_last_removed ?? 0) > 0 ? ` · очищено ${cell.load.wg_gc_last_removed}` : ''}</p>}
                   {!cell.is_queen && (
                     <>
                       <div className="flex flex-wrap gap-2">
@@ -686,23 +715,24 @@ export default function HivePage({ token }: { token: string }) {
         </div>
       )}
 
-      <details className="bg-[#111] border border-[#222] rounded-xl">
+      <details className="bg-[#111] border border-[#222] rounded-xl" onToggle={e => setAvailabilityOpen(e.currentTarget.open)}>
         <summary className="p-4 text-sm font-medium cursor-pointer hover:text-[#ccc]">Доступность серверов</summary>
-        <HiveAvailabilityPanel token={token} />
+        {availabilityOpen && <HiveAvailabilityPanel token={token} />}
       </details>
       <details className="bg-[#111] border border-[#222] rounded-xl" onToggle={e => setIncidentsOpen(e.currentTarget.open)}>
-        <summary className="p-4 text-sm font-medium cursor-pointer hover:text-[#ccc]">Инциденты <span className={incidents.length ? 'text-amber-300 ml-2' : 'text-[#888] ml-2'}>{incidents.length || 'Нет ошибок'}</span></summary>
+        <summary className="p-4 text-sm font-medium cursor-pointer hover:text-[#ccc]">Инциденты <span className={incidentErrors ? 'text-red-400 ml-2' : 'text-[#888] ml-2'}>{incidentsLoaded ? `${incidents.length} событий · ${incidentErrors} ошибок` : ''}</span></summary>
         <div className="px-4 pb-4 space-y-3">
           <div className="flex flex-wrap justify-between items-center gap-3">
             <p className="text-xs text-[#888]">{incidentsSeenAt ? `Просмотрено ${new Date(incidentsSeenAt).toLocaleString('ru-RU')}` : 'Журнал событий'}</p>
             <button type="button" onClick={clearIncidents} disabled={busy === 'incidents' || incidents.length === 0} className={`${actionClass} text-[#ccc]`}>{busy === 'incidents' ? 'Удаляю…' : 'Очистить журнал'}</button>
           </div>
-          {incidents.length === 0 ? <p className="text-xs text-[#888]">Инцидентов нет.</p> : (
+          {sectionErrors.incidents && <p className="text-xs text-amber-300" role="status">Не удалось обновить журнал.</p>}
+          {incidents.length === 0 ? incidentsLoaded && !sectionErrors.incidents && <p className="text-xs text-[#888]">Журнал пуст.</p> : (
             <div className="max-h-80 overflow-auto space-y-2">
               {incidents.map((it, idx) => (
                 <div key={`${it.ts}-${idx}`} className="bg-[#0a0a0a] border border-[#242424] rounded-lg px-3 py-2">
                   <div className="flex flex-wrap items-center gap-2 text-xs text-[#888]">
-                    <span className={it.severity === 'error' ? 'text-red-400' : 'text-amber-300'}>{it.severity === 'error' ? 'Ошибка' : 'Предупреждение'}</span>
+                    <span className={it.severity === 'error' || it.severity === 'critical' ? 'text-red-400' : it.severity === 'warning' ? 'text-amber-300' : 'text-[#888]'}>{it.severity === 'error' ? 'Ошибка' : it.severity === 'critical' ? 'Критическая ошибка' : it.severity === 'warning' ? 'Предупреждение' : 'Событие'}</span>
                     <span>{new Date(it.ts).toLocaleString('ru-RU')}</span>
                     {(it.cell_name || it.cell_ip) && <span>{it.cell_name || it.cell_ip}</span>}
                   </div>

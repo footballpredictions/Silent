@@ -52,7 +52,7 @@ def load_stress_score(load: dict | None) -> float:
     )
 
 
-def queen_accepting_new_vpn(*, load: dict | None = None) -> tuple[bool, dict]:
+def queen_accepting_new_vpn(*, load: dict | None = None, track_recovery: bool = True) -> tuple[bool, dict]:
     """
     Улей принимает новые VPN-сессии?
     False → направлять новых на соты (если есть).
@@ -62,20 +62,22 @@ def queen_accepting_new_vpn(*, load: dict | None = None) -> tuple[bool, dict]:
 
     if is_build_running():
         snap = load or read_host_load(cpu_interval=0.1)
-        _queen_was_overloaded = False
-        _queen_cool_since = None
+        if track_recovery:
+            _queen_was_overloaded = False
+            _queen_cool_since = None
         return True, {**snap, "build_running": True, "vpn_overloaded": False}
 
     snap = load or read_host_load()
     overloaded = is_vpn_overloaded(snap)
-    if overloaded:
-        _queen_was_overloaded = True
-        _queen_cool_since = None
-    elif is_vpn_cooled(snap):
-        if _queen_cool_since is None:
-            _queen_cool_since = time.monotonic()
-    else:
-        _queen_cool_since = None
+    if track_recovery:
+        if overloaded:
+            _queen_was_overloaded = True
+            _queen_cool_since = None
+        elif is_vpn_cooled(snap):
+            if _queen_cool_since is None:
+                _queen_cool_since = time.monotonic()
+        else:
+            _queen_cool_since = None
 
     return not overloaded, {
         **snap,

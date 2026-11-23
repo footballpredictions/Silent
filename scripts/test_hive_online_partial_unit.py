@@ -1,12 +1,12 @@
 """Real collection -> assembly -> shared dashboard read with missing node status."""
 import asyncio
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -51,7 +51,7 @@ class CollectionTests(unittest.IsolatedAsyncioTestCase):
         async def online(_): return self.counts, sum(self.counts.values())
         async def olc(*_): return {}
         async def assigned(*_): return 1
-        async def capacity(*_, **kw): return SimpleNamespace(to_dict=lambda: {'max_online': 100})
+        async def capacity(*_, **kw): return SimpleNamespace(max_online=100, to_dict=lambda: {'max_online': 100})
         async def fetch(cell, **kw):
             return None if cell.id in self.failed else {'wg_peers_live_3m': self.loads[cell.id]}
         self.stack = ExitStack()
@@ -120,6 +120,30 @@ class CollectionTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.collect()
         self.assertIsNone(await svc.cached_vpn_online_shown_shared())
         self.assertEqual(rows[1]['online_status'], 'unknown')
+
+    async def test_hive_summary_keeps_unknown_and_does_not_write_routing(self):
+        from app.api import hive
+
+        self.failed.add(self.cells[1].id)
+        await self.collect()
+        db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(scalar_one=lambda: 5)))
+
+        @asynccontextmanager
+        async def session():
+            yield db
+
+        with (
+            patch.object(hive, "AsyncSessionLocal", session),
+            patch.object(svc, "_list_assignable_cells", AsyncMock(return_value=self.cells)),
+            patch.object(svc, "queen_accepting_new_vpn", return_value=(True, {})),
+            patch.object(svc, "ensure_queen_cell", AsyncMock(side_effect=AssertionError("summary must not configure queen"))),
+            patch.object(svc, "sync_olcrtc_cells_no_wdtt_spill", AsyncMock(side_effect=AssertionError("summary must not write routing"))),
+        ):
+            summary = await hive.hive_summary(True)
+        self.assertIsNone(summary["total_online_vpn"])
+        self.assertIsNone(summary["total_online_all"])
+        self.assertEqual(summary["online_status"], "unknown")
+        self.assertEqual(summary["online_unknown_nodes"], ["Cell1"])
 
     async def test_queen_measurement_failure_has_same_bounded_fallback(self):
         await self.collect()

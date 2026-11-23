@@ -35,6 +35,10 @@ SETTING_EXTERNAL = "availability_agent_external_enabled"
 SETTING_LAST_RUN = "availability_agent_last_run"
 SETTING_LAST_STATUS = "availability_agent_last_status"
 SETTING_REFRESH = "availability_agent_refresh_requested"
+SETTING_MANUAL_REFRESH = "availability_manual_requested"
+SETTING_RUN = "availability_current_run"
+SETTING_LAST_MANUAL = "availability_last_manual_run"
+RUN_STALE_SEC = 600
 # Память о том, о чём уже сообщали в «Инциденты»: иначе одна и та же блокировка
 # писалась бы в журнал каждый цикл и вытесняла остальные события.
 SETTING_INCIDENT_STATE = "availability_agent_incident_state"
@@ -175,21 +179,24 @@ async def mark_run(status: str) -> None:
         logger.warning("availability: не удалось записать метку запуска: %s", e)
 
 
-async def request_refresh() -> str:
+async def request_refresh(*, manual: bool = False) -> str | None:
     """Общая очередь воркеров: новые подключения объединяются в один прогон."""
     token = uuid.uuid4().hex
     async with AsyncSessionLocal() as db:
-        await db.execute(text(
+        result = await db.execute(text(
             "INSERT INTO app_settings (key, value) VALUES (:key, :value) "
-            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP"
-        ), {"key": SETTING_REFRESH, "value": token})
+            + ("ON CONFLICT (key) DO NOTHING RETURNING value" if manual else
+               "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP")
+        ), {"key": SETTING_MANUAL_REFRESH if manual else SETTING_REFRESH, "value": token})
+        if manual:
+            token = result.scalar_one_or_none()
         await db.commit()
     return token
 
 
-async def pending_refresh() -> str | None:
+async def pending_refresh(*, manual: bool = False) -> str | None:
     async with AsyncSessionLocal() as db:
-        return await _get(db, SETTING_REFRESH)
+        return await _get(db, SETTING_MANUAL_REFRESH if manual else SETTING_REFRESH)
 
 
 async def finish_refresh(token: str) -> None:
@@ -197,6 +204,41 @@ async def finish_refresh(token: str) -> None:
     async with AsyncSessionLocal() as db:
         await db.execute(text("DELETE FROM app_settings WHERE key = :key AND value = :value"),
                          {"key": SETTING_REFRESH, "value": token})
+        await db.commit()
+
+
+async def availability_run_state(db: AsyncSession) -> dict[str, Any]:
+    keys = (SETTING_RUN, SETTING_LAST_MANUAL, SETTING_MANUAL_REFRESH, SETTING_REFRESH)
+    values = dict((await db.execute(select(AppSetting.key, AppSetting.value).where(
+        AppSetting.key.in_(keys)
+    ))).all())
+    run = json.loads(values.get(SETTING_RUN, "null"))
+    last_manual = json.loads(values.get(SETTING_LAST_MANUAL, "null"))
+    if run and run["state"] == "running":
+        if (_utc_now() - datetime.fromisoformat(run["started_at"])).total_seconds() > RUN_STALE_SEC:
+            run = {**run, "state": "interrupted"}
+    pending = values.get(SETTING_MANUAL_REFRESH)
+    active = bool(run and run["state"] == "running")
+    return {
+        "running": bool(pending or values.get(SETTING_REFRESH) or active),
+        "run": run,
+        "queued_request_id": None if active and run["id"] == pending else pending,
+        "last_manual_run": last_manual,
+    }
+
+
+async def record_availability_run(run: dict[str, Any], *, clear_manual: bool = False) -> None:
+    payload = json.dumps(run)
+    async with AsyncSessionLocal() as db:
+        keys = (SETTING_RUN, SETTING_LAST_MANUAL) if clear_manual else (SETTING_RUN,)
+        for key in keys:
+            await db.execute(text(
+                "INSERT INTO app_settings (key, value) VALUES (:key, :value) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP"
+            ), {"key": key, "value": payload})
+        if clear_manual:
+            await db.execute(text("DELETE FROM app_settings WHERE key = :key AND value = :value"),
+                             {"key": SETTING_MANUAL_REFRESH, "value": run["id"]})
         await db.commit()
 
 

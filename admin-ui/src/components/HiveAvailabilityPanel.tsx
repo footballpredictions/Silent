@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Radar, ShieldAlert, ShieldCheck, Play, Loader2, ChevronDown, ChevronRight,
+  ShieldAlert, ShieldCheck, Play, Loader2, ChevronDown, ChevronRight,
   Copy, Check, Activity,
 } from 'lucide-react'
 
@@ -139,6 +139,22 @@ type AgentSettings = {
   world_nodes: number
   last_run: string | null
   last_status: string | null
+}
+
+type AvailabilityRun = {
+  id: string
+  state: 'running' | 'completed' | 'failed' | 'interrupted'
+  source: 'manual' | 'scheduled' | 'provision'
+  report_ts?: string
+}
+
+type AvailabilitySnapshot = {
+  run?: AvailabilityRun
+  last_manual_run?: AvailabilityRun
+  queued_request_id?: string
+  running?: boolean
+  report?: Report
+  settings?: AgentSettings
 }
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -493,76 +509,103 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
   const [report, setReport] = useState<Report | null>(null)
   const [settings, setSettings] = useState<AgentSettings | null>(null)
   const [showTargets, setShowTargets] = useState(false)
-  const [running, setRunning] = useState(false)
+  const [runState, setRunState] = useState<AvailabilitySnapshot | null>(null)
+  const [requestId, setRequestId] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pollError, setPollError] = useState(false)
 
-  const load = useCallback(async () => {
-    const res = await fetch('/api/admin/hive/availability', { headers: authHeaders })
-    if (!res.ok) {
-      setError('Не удалось получить отчёт о доступности')
-      return null
-    }
-    const data = await res.json().catch(() => ({}))
-    setReport(data.report || null)
-    setSettings(data.settings || null)
-    setError(null)
-    return data as { report?: Report | null; settings?: AgentSettings | null; running?: boolean }
+  const load = useCallback(async (statusOnly: boolean, signal: AbortSignal): Promise<AvailabilitySnapshot> => {
+    const res = await fetch(`/api/admin/hive/availability${statusOnly ? '?status_only=true' : ''}`, {
+      headers: authHeaders, signal, cache: 'no-store',
+    })
+    if (!res.ok) throw new Error(String(res.status))
+    return res.json()
   }, [authHeaders])
 
-  useEffect(() => { void load() }, [load])
-
   useEffect(() => {
-    // Агент считает раз в 30 мин — чаще опрашивать нет смысла, это лишние запросы.
-    const t = setInterval(() => { void load() }, 180000)
-    return () => clearInterval(t)
-  }, [load])
+    const lifecycle = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
+    let first = true
+    let reportTs = ''
+    let lastFull = 0
+    let fast = Boolean(requestId)
+    const started = Date.now()
+    const tick = async () => {
+      const signal = AbortSignal.any([lifecycle.signal, AbortSignal.timeout(10_000)])
+      try {
+        const full = first || Date.now() - lastFull > 180_000
+        let snap = await load(!full, signal)
+        const terminal = requestId === snap.last_manual_run?.id ? snap.last_manual_run : undefined
+        const nextReport = snap.run?.report_ts || terminal?.report_ts
+        if (!full && nextReport && nextReport !== reportTs) snap = await load(false, signal)
+        if (lifecycle.signal.aborted) return
+        setRunState(snap)
+        if (snap.report) {
+          setReport(snap.report)
+          reportTs = snap.report.ts
+        }
+        if (snap.settings) setSettings(snap.settings)
+        if (full || snap.settings) lastFull = Date.now()
+        first = false
+        setPollError(false)
+        fast = Boolean(requestId || snap.running)
+        if (terminal?.state === 'failed' || terminal?.state === 'completed') {
+          if (terminal.state === 'failed') setError('Проверка завершилась с ошибкой. Показан последний отчёт.')
+          setRequestId(null)
+          return
+        }
+      } catch {
+        if (lifecycle.signal.aborted) return
+        setPollError(true)
+      }
+      if (requestId && Date.now() - started > 240_000) {
+        setError('Сервер ещё не сообщил итог этой проверки. Последний отчёт показан ниже.')
+        setRequestId(null)
+        return
+      }
+      timer = setTimeout(tick, fast ? 2_500 : 20_000)
+    }
+    void tick()
+    return () => { lifecycle.abort(); clearTimeout(timer) }
+  }, [load, requestId])
 
   const runNow = async () => {
-    setRunning(true)
+    setSubmitting(true)
     setError(null)
-    const prevRun = settings?.last_run || null
     try {
-      const res = await fetch('/api/admin/hive/availability/run', { method: 'POST', headers: authHeaders })
+      const res = await fetch('/api/admin/hive/availability/run', {
+        method: 'POST', headers: authHeaders, signal: AbortSignal.timeout(10_000),
+      })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         setError(typeof data.detail === 'string' ? data.detail : 'Не удалось запустить проверку')
         return
       }
-      // Проверка на сервере ~1–2 мин — не ждём HTTP, опрашиваем готовый отчёт.
-      for (let i = 0; i < 90; i++) {
-        await new Promise(r => setTimeout(r, 2000))
-        const snap = await load()
-        if (!snap) continue
-        const last = snap.settings?.last_run || null
-        const done = !snap.running && last && last !== prevRun
-        if (done) return
-        // Если флаг running сбросился на другом воркере — берём свежий отчёт по ts.
-        if (!snap.running && snap.report?.ts) {
-          const ageMs = Date.now() - new Date(snap.report.ts).getTime()
-          if (ageMs >= 0 && ageMs < 180_000) return
-        }
+      if (typeof data.request_id !== 'string') {
+        setError('Сервер принял запрос. Статус появится при следующем обновлении.')
+        return
       }
-      setError('Проверка ещё идёт или ответ задерживается — обновите страницу через минуту')
+      setRequestId(data.request_id)
     } catch {
-      setError('Связь оборвалась. Если проверка уже шла — отчёт появится сам, обновите через минуту')
-      await load()
+      setError('Не удалось получить подтверждение запуска проверки.')
     } finally {
-      setRunning(false)
+      setSubmitting(false)
     }
   }
 
   const patchSettings = async (patch: Partial<AgentSettings>) => {
-    const res = await fetch('/api/admin/hive/availability/settings', {
-      method: 'PUT',
-      headers: jsonHeaders,
-      body: JSON.stringify(patch),
-    })
-    if (!res.ok) {
+    try {
+      const res = await fetch('/api/admin/hive/availability/settings', {
+        method: 'PUT', headers: jsonHeaders, body: JSON.stringify(patch), signal: AbortSignal.timeout(10_000),
+      })
+      if (!res.ok) throw new Error(String(res.status))
+      const data = await res.json()
+      if (data.settings) setSettings(data.settings)
+      setError(null)
+    } catch {
       setError('Не удалось сохранить настройки агента')
-      return
     }
-    const data = await res.json().catch(() => ({}))
-    if (data.settings) setSettings(data.settings)
   }
 
   const problems = (report?.verdicts || []).filter(v => v.kind !== 'ok')
@@ -574,42 +617,40 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
     : partialCoverage ? { ...STATUS_META.unknown, label: 'Часть проверок не подтверждена' }
     : STATUS_META[status] || STATUS_META.unknown
   const ruNodes = report?.vantage?.ru_nodes || []
+  const running = runState?.run?.state === 'running'
+  const waiting = submitting || Boolean(requestId || runState?.running)
+  const runLabel = running ? (runState?.run?.source === 'scheduled' ? 'Плановая проверка…' : 'Проверяю…')
+    : waiting ? 'В очереди…' : 'Проверить сейчас'
+  const stale = report && settings && Date.now() - Date.parse(report.ts) > (settings.interval_sec * 2 + 120) * 1000
 
   return (
     <div className="px-4 pb-4 md:px-5 md:pb-5">
-      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
-        <div>
-          <h2 className="font-medium flex items-center gap-2">
-            <Radar className="w-4 h-4 text-[#888]" />
-            Проверка доступности
-          </h2>
-
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={`text-xs px-2.5 py-1 rounded-lg border ${meta.cls}`}>
-            {status === 'ok' && !partialCoverage ? (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className={`text-xs px-2.5 py-1 rounded-lg border ${stale ? STATUS_META.unknown.cls : meta.cls}`}>
+            {status === 'ok' && !partialCoverage && !stale ? (
               <ShieldCheck className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
             ) : (
               <ShieldAlert className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
             )}
-            {meta.label}
+            {stale ? 'Отчёт устарел' : meta.label}
           </span>
           <button
             type="button"
             onClick={runNow}
-            disabled={running}
+            disabled={waiting || runState == null}
             className="text-xs px-3 py-1.5 rounded-lg border border-[#333] bg-[#1a1a1a] text-[#ddd] cursor-pointer transition duration-100 hover:text-white hover:border-[#555] hover:bg-[#222] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {running ? (
-              <><Loader2 className="w-3.5 h-3.5 inline mr-1 animate-spin" /> Проверяю…</>
+            {waiting ? (
+              <><Loader2 className="w-3.5 h-3.5 inline mr-1 animate-spin" /> {runLabel}</>
             ) : (
-              <><Play className="w-3.5 h-3.5 inline mr-1 -mt-0.5" /> Проверить сейчас</>
+              <><Play className="w-3.5 h-3.5 inline mr-1 -mt-0.5" /> {runLabel}</>
             )}
           </button>
-        </div>
       </div>
 
-      <p className="text-xs text-[#aaa] mt-3">Проверяются IP и API из доступных сетей. Полная VPN-сессия с передачей данных этой проверкой не подтверждается.</p>
+      <p className="text-xs text-[#aaa] mt-3">Внешние пробы проверяют IP и API. Доступность VPN по UDP требует отдельного измерения из РФ.</p>
+      {waiting && report && <p className="text-xs text-[#888] mt-2" role="status">Показан предыдущий отчёт.</p>}
+      {runState?.run?.state === 'interrupted' && !waiting && <p className="text-xs text-amber-300 mt-2" role="status">Последняя проверка прервалась.</p>}
 
       {settings && (
         <details className="mt-3 text-xs text-[#888]">
@@ -655,11 +696,6 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
               {[2, 3, 4, 5, 6, 8].map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </span>
-          {settings.last_run && (
-            <span className="text-[#888]">
-              Последний прогон: {new Date(settings.last_run).toLocaleString('ru-RU')}
-            </span>
-          )}
           </div>
         </details>
       )}
@@ -669,6 +705,7 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
           {error}
         </div>
       )}
+      {pollError && <p className="text-xs text-amber-300 mt-2" role="status">Не удалось обновить статус проверки.</p>}
 
       {report ? (
         <>
@@ -696,11 +733,7 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
               </p>
               {problems.map((v, i) => <VerdictCard key={`${v.target}-${v.kind}-${i}`} verdict={v} />)}
             </div>
-          ) : (
-            <p className="mt-3 text-xs text-emerald-400/90">
-              Блокировок не обнаружено — все проверенные каналы видны из РФ.
-            </p>
-          )}
+          ) : null}
 
           <button
             type="button"
@@ -718,7 +751,7 @@ export default function HiveAvailabilityPanel({ token }: { token: string }) {
         </>
       ) : (
         <p className="mt-3 text-xs text-[#888]">
-          Проверок пока нет.
+          {runState && !pollError ? 'Отчёта пока нет.' : !pollError ? 'Загрузка отчёта…' : ''}
         </p>
       )}
 

@@ -1123,37 +1123,44 @@ async def apply_agent_handshake_to_cell(cell: HiveCell, data: dict) -> None:
 
 
 async def get_hive_summary_extra(db: AsyncSession) -> dict:
-    await sync_olcrtc_cells_no_wdtt_spill(db)
-    accepting, queen_load = queen_accepting_new_vpn()
-    all_workers = [c for c in await _list_assignable_cells(db) if not c.is_queen]
+    accepting, queen_load = await asyncio.to_thread(queen_accepting_new_vpn, track_recovery=False)
     assignable = await _list_assignable_cells(db)
-    online_map, total_online = await connected_devices_by_cell(db)
-    total_online_olcrtc = 0
-    total_capacity = 0
-    full_cells = 0
-    all_cells = [c for c in assignable]
-    olcrtc_map = await olcrtc_online_by_cell(db, [c.id for c in all_cells])
-    for cell in assignable:
-        online = int(online_map.get(cell.id) or 0)
-        olc_online = int(olcrtc_map.get(cell.id, 0))
-        cell_load = queen_load if cell.is_queen else None
-        cap = await max_online_for_cell(db, cell, load=cell_load)
-        total_capacity += cap
-        if online >= cap:
-            full_cells += 1
-    wdtt_nodes = len(assignable)
+    all_workers = [c for c in assignable if not c.is_queen]
     from app.services import hive_online_snapshot
 
-    shown = await vpn_online_shown_total(db, soft=True)
+    try:
+        snapshot = await hive_online_snapshot.read(_get_shown_redis())
+    except Exception:
+        snapshot = hive_online_snapshot.cached()
+    shown = snapshot["total"] if snapshot else None
+    online = {node["id"]: node["count"] for node in (snapshot or {}).get("nodes", [])
+              if node["state"] != "unknown"}
+    total_capacity = 0
+    full_cells = 0
+    queen_capacity = None
+    for cell in assignable:
+        count = online.get(str(cell.id))
+        cell_load = queen_load if cell.is_queen else None
+        capacity = await get_capacity_profile(db, cell, load=cell_load,
+                                              online_count=count or 0, queen_load_hint=queen_load)
+        cap = capacity.max_online
+        if cell.is_queen:
+            queen_capacity = capacity.to_dict()
+        total_capacity += cap
+        if count is not None and cap > 0 and count >= cap:
+            full_cells += 1
+    wdtt_nodes = len(assignable)
+
     return {
         "queen_load": queen_load,
         "queen_accepting_vpn": accepting,
+        "queen_capacity": queen_capacity,
         "worker_cells": len(all_workers),
         "olcrtc_cells": 0,
         "total_online_vpn": shown,
-        "total_online_olcrtc": total_online_olcrtc,
+        "total_online_olcrtc": 0,
         "total_online_all": shown,
-        **hive_online_snapshot.metadata(),
+        **(hive_online_snapshot.metadata(snapshot) if snapshot else {"online_status": "unknown"}),
         "total_capacity_online": total_capacity,
         "full_cells": full_cells,
         "all_cells_full": wdtt_nodes > 0 and full_cells >= wdtt_nodes,

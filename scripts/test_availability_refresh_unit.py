@@ -7,7 +7,7 @@ import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -152,6 +152,34 @@ async def test_refresh_survives_workers_and_new_requests():
             assert await store.pending_refresh() == new, "старая проверка стерла новую соту"
             await store.finish_refresh(new)
             assert await store.pending_refresh() is None
+            provision = await store.request_refresh()
+            manual = await store.request_refresh(manual=True)
+            assert manual and manual != provision
+            assert await store.request_refresh(manual=True) is None
+            async with DB() as db:
+                queued = await store.availability_run_state(db)
+            assert queued["queued_request_id"] == manual and queued["run"] is None
+            run = {"id": manual, "source": "manual", "state": "running",
+                   "started_at": datetime.now(timezone.utc).isoformat()}
+            await store.record_availability_run(run)
+            async with DB() as db:
+                active = await store.availability_run_state(db)
+            assert active["running"] and active["run"]["id"] == manual and active["queued_request_id"] is None
+            await store.record_availability_run({**run, "state": "completed",
+                                                 "report_ts": run["started_at"]}, clear_manual=True)
+            assert await store.pending_refresh() == provision
+            assert await store.pending_refresh(manual=True) is None
+            await store.finish_refresh(provision)
+            await store.record_availability_run({**run, "id": "scheduled", "source": "scheduled"})
+            async with DB() as db:
+                active = await store.availability_run_state(db)
+            assert active["running"] and active["run"]["id"] == "scheduled"
+            assert active["last_manual_run"]["id"] == manual
+            await store.record_availability_run({**run, "id": "abandoned", "source": "scheduled",
+                "started_at": (datetime.now(timezone.utc) - timedelta(seconds=store.RUN_STALE_SEC + 1)).isoformat()})
+            async with DB() as db:
+                inactive = await store.availability_run_state(db)
+            assert not inactive["running"] and inactive["run"]["state"] == "interrupted"
     finally:
         engine.dispose()
 

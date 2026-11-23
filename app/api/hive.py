@@ -511,12 +511,10 @@ async def hive_summary(
     _: bool = Depends(get_admin_credentials),
 ):
     async with AsyncSessionLocal() as db:
-        await hive_service.ensure_queen_cell(db)
-        # GET не должен двигать устройства: админка поллит /summary каждые 10 с.
+        # Сводка читает общий снимок. Опрос страницы не меняет политику сот.
         # Не звать list_cells_with_stats — это HTTP к сотам; CPU сот уже в /cells.
         rebalance = {"moved": 0, "blocked": 0, "hardware": 0, "returned": 0}
         extra = await hive_service.get_hive_summary_extra(db)
-        queen = await hive_service.get_queen_cell(db)
         cells_total = int(
             (await db.execute(select(func.count()).select_from(HiveCell))).scalar_one() or 0
         )
@@ -528,19 +526,12 @@ async def hive_summary(
             ).scalar_one()
             or 0
         )
-        queen_capacity = None
-        if queen:
-            from app.services.hive_capacity import get_capacity_profile
-
-            queen_capacity = (
-                await get_capacity_profile(db, queen, load=extra.get("queen_load"))
-            ).to_dict()
-        total_online_vpn = int(extra.get("total_online_vpn") or 0)
         return {
             "cells_total": cells_total,
             "cells_active": cells_active,
-            "total_online_vpn": total_online_vpn,
-            "total_online_all": int(extra.get("total_online_all") or total_online_vpn),
+            "total_online_vpn": extra.get("total_online_vpn"),
+            "total_online_all": extra.get("total_online_all"),
+            **{key: value for key, value in extra.items() if key.startswith("online_")},
             "worker_cells": extra["worker_cells"],
             "queen_load": extra["queen_load"],
             "queen_accepting_vpn": extra["queen_accepting_vpn"],
@@ -554,7 +545,7 @@ async def hive_summary(
             "rebalanced_blocked": rebalance["blocked"],
             "rebalanced_hardware": rebalance.get("hardware", 0),
             "rebalanced_returned": rebalance.get("returned", 0),
-            "queen_capacity": queen_capacity,
+            "queen_capacity": extra["queen_capacity"],
         }
 
 
@@ -589,15 +580,19 @@ async def mark_hive_incidents_seen(
 async def hive_availability(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
+    status_only: bool = False,
 ):
     """Последний отчёт агента доступности: блокировки и готовые решения."""
     from app.services import availability_store
 
+    state = await availability_store.availability_run_state(db)
+    if status_only:
+        return state
     report = await availability_store.load_latest_report()
     cfg = await availability_store.load_settings(db)
     if report:
         cfg["last_status"] = report.get("status") or cfg["last_status"]
-    return {"report": report, "settings": cfg, "running": bool(await availability_store.pending_refresh())}
+    return {"report": report, "settings": cfg, **state}
 
 
 @router.get("/availability/history")
@@ -626,10 +621,10 @@ async def hive_availability_run(
 ):
     """Запустить проверку в фоне (пробы ~1–2 мин — не держим HTTP до конца)."""
     from app.services import availability_store
-    if await availability_store.pending_refresh():
+    request_id = await availability_store.request_refresh(manual=True)
+    if request_id is None:
         raise HTTPException(status_code=409, detail="Проверка уже выполняется")
-    await availability_store.request_refresh()
-    return {"ok": True, "started": True, "running": True}
+    return {"ok": True, "started": True, "running": True, "request_id": request_id}
 
 
 @router.put("/availability/settings")

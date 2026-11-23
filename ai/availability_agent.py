@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from uuid import uuid4
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -718,11 +719,31 @@ async def _wait_for_next_check(interval: float) -> None:
     deadline = time.monotonic() + interval
     while time.monotonic() < deadline:
         try:
-            if await store.pending_refresh():
+            if await store.pending_refresh(manual=True) or await store.pending_refresh():
                 return
         except Exception as e:
             logger.warning("availability: очередь проб недоступна: %s", e)
         await asyncio.sleep(min(10, max(0, deadline - time.monotonic())))
+
+
+async def _run_tracked_check(refresh: str | None, *, manual: bool) -> AvailabilityReport:
+    run = {"id": refresh or uuid4().hex, "source": "manual" if manual else "provision" if refresh else "scheduled",
+           "state": "running", "started_at": _utc_now_iso()}
+    await store.record_availability_run(run)
+    try:
+        report = await run_availability_check(incidents=not bool(refresh), allow_port_changes=not bool(refresh))
+    except Exception:
+        await store.record_availability_run(
+            {**run, "state": "failed", "finished_at": _utc_now_iso()}, clear_manual=manual,
+        )
+        raise
+    await store.record_availability_run(
+        {**run, "state": "completed", "finished_at": _utc_now_iso(), "report_ts": report.ts},
+        clear_manual=manual,
+    )
+    if refresh and not manual:
+        await store.finish_refresh(refresh)
+    return report
 
 
 async def availability_loop() -> None:
@@ -736,7 +757,8 @@ async def availability_loop() -> None:
             async with AsyncSessionLocal() as db:
                 cfg = await store.load_settings(db)
             interval = int(cfg["interval_sec"])
-            refresh = await store.pending_refresh()
+            manual = await store.pending_refresh(manual=True)
+            refresh = manual or await store.pending_refresh()
             if not cfg["enabled"] and not refresh:
                 logger.debug("availability: агент выключен в настройках — цикл пропущен")
             else:
@@ -746,11 +768,7 @@ async def availability_loop() -> None:
                     if refresh:
                         await asyncio.sleep(60)
                 else:
-                    report = await run_availability_check(
-                        incidents=not bool(refresh), allow_port_changes=not bool(refresh)
-                    )
-                    if refresh:
-                        await store.finish_refresh(refresh)
+                    report = await _run_tracked_check(refresh, manual=bool(manual))
                     failures = 0
                     logger.info(
                         "availability: %s — %s (за %.1f с)",

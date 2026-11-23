@@ -186,7 +186,7 @@ func getVKCredsViaVKCallsHost(ctx context.Context, link string, streamID int, ap
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
 		// LAN bind + public DNS: VK Auth не уходит в WG / ISP poison.
-		tlsclient.WithDialer(newVkDirectDialer()),
+		vkAuthDialOption(),
 	)
 	if err != nil {
 		return "", "", nil, newVKCallsFailure("setup", vkCallsFailureSetup, fmt.Errorf("create tls client: %w", err))

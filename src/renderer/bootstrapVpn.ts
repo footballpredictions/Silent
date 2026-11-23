@@ -230,6 +230,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
         await electron.vpnDisconnect?.({ fast: true })
         continue
       }
+      void electron.vpnConnectionDiagnostics?.().catch(() => null)
       notifyStatus(res.error)
       return false
     }
@@ -268,6 +269,7 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
     break
   }
 
+  void electron.vpnConnectionDiagnostics?.().catch(() => null)
   notifyStatus(s.bootstrapFail)
   return false
 }

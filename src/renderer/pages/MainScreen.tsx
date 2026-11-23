@@ -657,6 +657,7 @@ export default function MainScreen({
         if (userWantsVpnRef.current && connectInFlightRef.current) return
         // Туннель упал сам: выключение с тумблера сбрасывает флаг раньше, до vpnDisconnect.
         if (userWantsVpnRef.current) {
+          void api_.vpnConnectionDiagnostics?.().catch(() => null)
           const upAt = tunnelUpAtRef.current
           void reportReachabilityFailure(
             upAt
@@ -697,6 +698,7 @@ export default function MainScreen({
         snakeHoldRef.current = null
       }
       if (userWantsVpnRef.current) {
+        void api_.vpnConnectionDiagnostics?.().catch(() => null)
         void reportReachabilityFailure({ stage: 'handshake', detail: String(msg || '').slice(0, 400) })
       }
       tunnelUpAtRef.current = 0
@@ -1050,6 +1052,7 @@ export default function MainScreen({
       }
       if (!config) {
         pushLog('Main', 'no VPN config', 'E')
+        void (window as any).electronAPI?.vpnConnectionDiagnostics?.().catch(() => null)
         resetVpnUi()
         alert('Не удалось получить настройки VPN. Временный VK-канал недоступен — повторите подключение.')
         return
@@ -1150,6 +1153,7 @@ export default function MainScreen({
           }
         }
         if (res?.error) {
+          void (window as any).electronAPI?.vpnConnectionDiagnostics?.().catch(() => null)
           resetVpnUi()
           alert(res.error)
           return
@@ -1166,6 +1170,7 @@ export default function MainScreen({
           fetchProfile()
           return
         }
+        void (window as any).electronAPI?.vpnConnectionDiagnostics?.().catch(() => null)
         resetVpnUi()
         stopOlcrtcHeartbeatLoop({ leave: true })
         alert('olcrtc-туннель не поднялся (проверьте srv в админке и бинарники olcrtc/sing-box)')
@@ -1198,6 +1203,7 @@ export default function MainScreen({
             await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
             continue
           }
+          void (window as any).electronAPI?.vpnConnectionDiagnostics?.().catch(() => null)
           resetVpnUi()
           alert(res.error)
           return
@@ -1232,6 +1238,7 @@ export default function MainScreen({
         }
 
         pushLog('Main', 'connect timeout', 'E')
+        void (window as any).electronAPI?.vpnConnectionDiagnostics?.().catch(() => null)
         resetVpnUi()
         const onMac = /Mac/i.test(navigator.platform) || /Mac OS/i.test(navigator.userAgent)
         alert(onMac
@@ -1248,6 +1255,7 @@ export default function MainScreen({
     } catch (err: any) {
       if (connectGen !== connectGenRef.current) return
       pushLog('Main', `vpnConnect failed: ${err?.message || err}`, 'E')
+      void (window as any).electronAPI?.vpnConnectionDiagnostics?.().catch(() => null)
       resetVpnUi()
     } finally {
       if (connectGen === connectGenRef.current) {

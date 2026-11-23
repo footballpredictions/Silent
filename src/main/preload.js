@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vpnConnect: (config) => ipcRenderer.invoke('vpn-connect', config),
   vpnDisconnect: (opts) => ipcRenderer.invoke('vpn-disconnect', opts),
   vpnIsReady: () => ipcRenderer.invoke('vpn-is-ready'),
+  vpnConnectionDiagnostics: () => ipcRenderer.invoke('vpn-connection-diagnostics'),
   vpnReadConfig: () => ipcRenderer.invoke('vpn-read-config'),
   consumeFloodEscalate: () => ipcRenderer.invoke('vpn-consume-flood-escalate'),
   onVpnLog: (cb) => ipcRenderer.on('vpn-log', (_, line) => cb(line)),

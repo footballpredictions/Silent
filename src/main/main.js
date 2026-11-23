@@ -69,6 +69,7 @@ const { verifyWdttIntegrity, softTamperHints } = require('./integrity')
 const { otaPlatform, wdttBinaryName, killOrphanWdttCmd } = require('./otaPlatform')
 const { effectiveConnectWorkers, WORKERS_PER_GROUP } = require('./workerLimits')
 const workerProgress = require('./workerProgress').createWorkerProgress()
+const { getWindowsConnectionHints } = require('./vpn/connectionDiagnostics')
 const {
   beginOlcrtcSession,
   stopOlcrtcSession,
@@ -2369,6 +2370,20 @@ ipcMain.handle('vpn-is-ready', async () => ({
   wg: !!wgApplied,
   installing: !!wgInstallInFlight,
 }))
+
+let connectionDiagnosticsPending = false
+ipcMain.handle('vpn-connection-diagnostics', async () => {
+  if (process.platform !== 'win32' || connectionDiagnosticsPending || isVpnReadyForUi()) return
+  connectionDiagnosticsPending = true
+  try {
+    const hints = await getWindowsConnectionHints({ wireGuardApplied: wgApplied || wgInstallInFlight })
+    if (!isVpnReadyForUi()) {
+      for (const hint of hints) sendLog(`[VPN] Диагностика: ${hint}`)
+    }
+  } finally {
+    connectionDiagnosticsPending = false
+  }
+})
 
 ipcMain.handle('vpn-consume-flood-escalate', async () => consumeVkFloodEscalate())
 

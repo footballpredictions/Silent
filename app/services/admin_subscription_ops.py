@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from sqlalchemy import select, func, or_, cast, String as SAString
+from sqlalchemy import select, func, or_, case, cast, String as SAString
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User, Payment, Subscription
@@ -18,6 +18,8 @@ from app.services.subscription_service import (
     TRIAL_PLAN,
 )
 from app.services.subscription_kinds import (
+    DEFAULT_MAX_DEVICES,
+    FIVE_DEVICE_MAX,
     REFERRAL_PLAN,
     normalize_subscription_filter,
 )
@@ -120,12 +122,17 @@ def _user_ids_best_kind(*kinds: str):
     return parts[0].union(*parts[1:])
 
 
-def _user_ids_best_paid_plan(plan_type: str):
+def _user_ids_best_paid_plan(plan_type: str, devices: int | None = None):
     """Купившие с живым этим планом (amount>0), даже если сверху длиннее реф.бонус.
 
     monthly включает и monthly_5 (тот же срок, другой лимит устройств).
     """
-    variants = (plan_type, f"{plan_type}_5")
+    five_device_plan = f"{plan_type}_5"
+    variants = (plan_type, five_device_plan)
+    if devices == DEFAULT_MAX_DEVICES:
+        variants = (plan_type,)
+    elif devices == FIVE_DEVICE_MAX:
+        variants = (five_device_plan,)
     return (
         select(Subscription.user_id)
         .where(
@@ -136,6 +143,45 @@ def _user_ids_best_paid_plan(plan_type: str):
         )
         .distinct()
     )
+
+
+def _plan_device_limit(plan_type):
+    return case(
+        (func.lower(func.trim(plan_type)).endswith("_5", autoescape=True), FIVE_DEVICE_MAX),
+        else_=DEFAULT_MAX_DEVICES,
+    )
+
+
+def _user_device_limit(*, global_test: bool, include_expired: bool):
+    plan = select(Subscription.plan_type).where(Subscription.user_id == User.id)
+    if include_expired:
+        # У кого доступ закончился, смотрим последний приобретённый или выданный тариф.
+        plan = plan.where(Subscription.plan_type.notin_((TEST_PLAN, TRIAL_PLAN, REFERRAL_PLAN)))
+        plan = plan.order_by(Subscription.started_at.desc())
+    else:
+        in_test_mode = User.test_mode_personal.is_(True)
+        if global_test:
+            in_test_mode = or_(in_test_mode, User.test_mode_excluded.is_(False))
+        plan = plan.where(
+            Subscription.status == "active",
+            Subscription.expires_at > datetime.utcnow(),
+            or_(Subscription.plan_type != TEST_PLAN, in_test_mode),
+        ).order_by(Subscription.expires_at.desc())
+    return case(
+        (User.device_limit_override.in_((DEFAULT_MAX_DEVICES, FIVE_DEVICE_MAX)), User.device_limit_override),
+        else_=_plan_device_limit(plan.limit(1).correlate(User).scalar_subquery()),
+    )
+
+
+def _orphan_payment_conditions(devices: int | None):
+    conditions = [
+        Payment.status == "completed",
+        Payment.subscription_applied.is_(False),
+        Payment.support_code.is_not(None),
+    ]
+    if devices is not None:
+        conditions.append(_plan_device_limit(Payment.plan_type) == devices)
+    return conditions
 
 
 def _vpn_access_clause(*, global_test: bool, admin_email: str):
@@ -345,16 +391,12 @@ async def activate_subscription_by_payment_id(db: AsyncSession, payment_id: str)
     return {"status": "activated", "expires_at": sub.expires_at}
 
 
-async def list_orphan_payments(db: AsyncSession, limit: int = 30) -> list[dict]:
+async def list_orphan_payments(db: AsyncSession, limit: int = 30, *, devices: int | None = None) -> list[dict]:
     """Оплаты completed без subscription_applied — кандидаты в поддержку."""
     result = await db.execute(
         select(Payment, User)
         .join(User, User.id == Payment.user_id)
-        .where(
-            Payment.status == "completed",
-            Payment.subscription_applied.is_(False),
-            Payment.support_code.is_not(None),
-        )
+        .where(*_orphan_payment_conditions(devices))
         .order_by(Payment.completed_at.desc().nullslast(), Payment.created_at.desc())
         .limit(limit)
     )
@@ -378,6 +420,7 @@ async def list_subscription_users(
     page: int = 1,
     page_size: int = 50,
     filter_mode: str = "all",
+    devices: int | None = None,
 ) -> dict:
     from app.services.test_mode_settings import is_registration_test_mode_enabled
     from app.config import settings
@@ -407,6 +450,14 @@ async def list_subscription_users(
 
     access = _vpn_access_clause(global_test=global_test, admin_email=admin_email)
     mode = normalize_subscription_filter(filter_mode)
+    paid_duration = mode in ("monthly", "two_months", "quarterly")
+
+    if devices is not None and not paid_duration and mode != "unpaid":
+        base = base.where(
+            User.is_admin.is_(False),
+            func.lower(User.email) != admin_email,
+            _user_device_limit(global_test=global_test, include_expired=mode == "inactive") == devices,
+        )
 
     if mode == "with_sub":
         # Покупки + выданные + любой живой реф.бонус (invitee и пригласивший)
@@ -418,13 +469,8 @@ async def list_subscription_users(
                 ),
             )
         )
-    elif mode == "monthly":
-        # Только если сейчас (best) купленный 1 мес.; старые покупки / реф / выдача — нет
-        base = base.where(User.id.in_(_user_ids_best_paid_plan("monthly")))
-    elif mode == "two_months":
-        base = base.where(User.id.in_(_user_ids_best_paid_plan("two_months")))
-    elif mode == "quarterly":
-        base = base.where(User.id.in_(_user_ids_best_paid_plan("quarterly")))
+    elif paid_duration:
+        base = base.where(User.id.in_(_user_ids_best_paid_plan(mode, devices)))
     elif mode == "granted":
         # Как «Выданные» на дашборде: best live = admin grant (не referral_bonus)
         base = base.where(User.id.in_(_user_ids_best_kind("granted")))
@@ -433,11 +479,7 @@ async def list_subscription_users(
     elif mode == "unpaid":
         unpaid_subq = (
             select(Payment.user_id)
-            .where(
-                Payment.status == "completed",
-                Payment.subscription_applied.is_(False),
-                Payment.support_code.is_not(None),
-            )
+            .where(*_orphan_payment_conditions(devices))
             .distinct()
         )
         base = base.where(User.id.in_(unpaid_subq))

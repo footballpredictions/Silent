@@ -583,6 +583,7 @@ async def list_subscription_users_endpoint(
             "all|with_sub|monthly|two_months|quarterly|granted|inactive|unpaid|referrals|trial"
         ),
     ),
+    devices: Literal["3", "5"] | None = Query(None, description="Лимит устройств"),
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
@@ -594,20 +595,27 @@ async def list_subscription_users_endpoint(
 
     mode = normalize_subscription_filter(filter)
     return await list_subscription_users(
-        db, q=q, page=page, page_size=page_size, filter_mode=mode
+        db,
+        q=q,
+        page=page,
+        page_size=page_size,
+        filter_mode=mode,
+        devices=int(devices) if devices is not None else None,
     )
 
 
 @router.get("/subscriptions/orphan-payments")
 async def list_orphan_payments_endpoint(
     limit: int = Query(30, ge=1, le=100),
+    devices: Literal["3", "5"] | None = Query(None, description="Лимит устройств"),
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
     """Оплаты completed без выданной подписки."""
     from app.services.admin_subscription_ops import list_orphan_payments
 
-    return {"items": await list_orphan_payments(db, limit=limit)}
+    items = await list_orphan_payments(db, limit=limit, devices=int(devices) if devices is not None else None)
+    return {"items": items}
 
 
 @router.get("/subscriptions/by-code/{code}")
@@ -985,7 +993,7 @@ async def grant_user_subscription(
     _: bool = Depends(get_admin_credentials),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ручная выдача подписки (three_days / monthly / two_months / quarterly / half_year / yearly / unlimited)."""
+    """Ручная выдача подписки, в том числе месячных тарифов на 5 устройств."""
     import uuid
     from app.services.subscription_service import grant_manual_subscription
 

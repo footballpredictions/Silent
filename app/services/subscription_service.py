@@ -13,6 +13,7 @@ from app.services.subscription_kinds import (
     TRIAL_PLAN,
     TEST_PLAN,
     REFERRAL_PLAN,
+    FIVE_DEVICE_PLAN_IDS,
     admin_grant_expires_at,
     is_active_trial_row,
     devices_for_plan,
@@ -494,7 +495,7 @@ async def require_active_subscription(user: User, db: AsyncSession) -> None:
         )
 
 
-GRANTABLE_PLANS = frozenset({
+GRANTABLE_PLANS = FIVE_DEVICE_PLAN_IDS | {
     "three_days",
     "monthly",
     "two_months",
@@ -502,7 +503,7 @@ GRANTABLE_PLANS = frozenset({
     "half_year",
     "yearly",
     "unlimited",
-})
+}
 
 
 async def dashboard_subscription_breakdown(db: AsyncSession) -> dict[str, int]:
@@ -599,7 +600,7 @@ async def grant_manual_subscription(
     if plan_type not in GRANTABLE_PLANS:
         raise HTTPException(
             status_code=400,
-            detail="plan_type: three_days, monthly, two_months, quarterly, half_year, yearly или unlimited",
+            detail=f"plan_type: {', '.join(sorted(GRANTABLE_PLANS))}",
         )
     if is_user_admin(user):
         raise HTTPException(status_code=400, detail="Администратору подписка не нужна")

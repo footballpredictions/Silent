@@ -111,6 +111,74 @@ async function run(browser, scenario) {
   }
 }
 
+async function runDeviceFilters(browser, width) {
+  const page = await browser.newPage({ viewport: { width, height: 900 } })
+  const requests = []
+  const users = ['3', '5'].map(tier => ({
+    id: tier, display_id: tier, email: `tier${tier}@example.test`,
+    is_verified: true, is_active: true, is_admin: false, in_test_mode: false,
+    subscription: { active: true, plan: tier === '5' ? 'monthly_5' : 'monthly' },
+  }))
+  await page.addInitScript(() => localStorage.setItem('admin_token', 'local-test-token'))
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const { pathname, searchParams } = new URL(request.url())
+    const devices = searchParams.get('devices')
+    const shown = users.filter(user => !devices || user.id === devices)
+    let data = {}
+    if (pathname.endsWith('/subscriptions/users')) {
+      requests.push(Object.fromEntries(searchParams))
+      data = { items: shown, total: shown.length, pages: 1 }
+    } else if (pathname.endsWith('/orphan-payments')) {
+      data = { items: shown.map(user => ({ user, payment: {
+        id: user.id, support_code: `pending-${user.id}`, amount: 300,
+        plan_type: user.subscription.plan,
+      } })) }
+    } else if (pathname.endsWith('/grant-subscription')) {
+      assert.equal(pathname, '/api/admin/users/5/grant-subscription')
+      assert.deepEqual(request.postDataJSON(), { plan_type: 'two_months_5' })
+      data = { status: 'granted' }
+    }
+    await route.fulfill({ json: data })
+  })
+
+  try {
+    await page.goto(process.env.ADMIN_UI_TEST_URL || 'http://127.0.0.1:3012/subscriptions')
+    const filter = page.getByRole('combobox', { name: 'Фильтр подписок' })
+    const devices = page.getByRole('combobox', { name: 'Количество устройств' })
+    const rows = page.getByRole('row')
+    const userRow = tier => rows.filter({ hasText: `tier${tier}@example.test` })
+    await userRow(3).waitFor()
+    await userRow(5).waitFor()
+    assert.deepEqual(await filter.locator('option').evaluateAll(options => options.map(o => o.value)), [
+      'all', 'with_sub', 'monthly', 'two_months', 'quarterly', 'granted', 'inactive', 'unpaid', 'referrals', 'trial',
+    ])
+    await page.getByPlaceholder('Поиск по email или ID…').fill('tier')
+    for (const tier of ['3', '5']) {
+      await devices.selectOption(tier)
+      await filter.selectOption('monthly')
+      const response = page.waitForResponse(res => {
+        const params = new URL(res.url()).searchParams
+        return res.url().includes('/subscriptions/users?') && params.get('filter') === 'unpaid'
+          && params.get('devices') === tier && params.get('q') === 'tier'
+      })
+      await filter.selectOption('unpaid')
+      await response
+      await page.getByText(`pending-${tier}`, { exact: true }).waitFor()
+      await userRow(tier).waitFor()
+      assert.equal(await userRow(tier === '3' ? '5' : '3').count(), 0)
+    }
+    assert.ok(requests.some(query => query.devices === '5' && query.filter === 'monthly'))
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    const screenshot = process.env.ADMIN_UI_SUBSCRIPTIONS_SCREENSHOTS
+    if (screenshot) await page.screenshot({ path: `${screenshot}-${width}.png` })
+    await userRow(5).getByRole('button', { name: '2 месяца · 5 устр.', exact: true }).click()
+    await page.getByText(/Подписка «2 месяца · 5 устр\.» выдана/).waitFor()
+  } finally {
+    await page.close()
+  }
+}
+
 ;(async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
   try {
@@ -129,7 +197,11 @@ async function run(browser, scenario) {
       await run(browser, scenario)
       console.log(`PASS ${scenario.name}`)
     }
-    console.log(`OK ${scenarios.length} browser scenarios; API fully mocked`)
+    for (const width of [1280, 390]) {
+      await runDeviceFilters(browser, width)
+      console.log(`PASS device filters and grant at ${width}px`)
+    }
+    console.log('OK browser scenarios; API fully mocked')
   } finally {
     await browser.close()
   }

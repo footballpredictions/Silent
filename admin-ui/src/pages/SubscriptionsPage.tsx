@@ -65,15 +65,24 @@ interface CodeLookup {
 const PLANS = [
   { type: 'trial', label: 'Пробный', days: 3, endOnly: true },
   { type: 'three_days', label: '3 дня', days: 3 },
-  { type: 'monthly', label: 'Месяц', days: null },
-  { type: 'two_months', label: '2 месяца', days: null },
-  { type: 'quarterly', label: '3 месяца', days: null },
+  { type: 'monthly', label: 'Месяц · 3 устр.', days: null },
+  { type: 'two_months', label: '2 месяца · 3 устр.', days: null },
+  { type: 'quarterly', label: '3 месяца · 3 устр.', days: null },
   { type: 'half_year', label: 'Полгода', days: null },
   { type: 'yearly', label: 'Год', days: null },
   { type: 'unlimited', label: '∞', days: null },
+  { type: 'monthly_5', label: 'Месяц · 5 устр.', days: null },
+  { type: 'two_months_5', label: '2 месяца · 5 устр.', days: null },
+  { type: 'quarterly_5', label: '3 месяца · 5 устр.', days: null },
 ] as const
 
 const SUB_FILTER_KEY = 'admin.subscriptions.filter'
+
+const DEVICE_FILTERS = [
+  { value: 'all', label: 'Все устройства' },
+  { value: '3', label: '3 устройства' },
+  { value: '5', label: '5 устройств' },
+]
 
 const SUB_FILTERS = [
   { value: 'all', label: 'Все' },
@@ -103,11 +112,11 @@ const PLAN_NAMES: Record<string, string> = {
   trial: 'Пробный',
   test: 'Тест',
   three_days: '3 дня',
-  monthly: 'Месяц',
+  monthly: 'Месяц · 3 устройства',
   monthly_5: 'Месяц · 5 устройств',
-  two_months: '2 месяца',
+  two_months: '2 месяца · 3 устройства',
   two_months_5: '2 месяца · 5 устройств',
-  quarterly: '3 месяца',
+  quarterly: '3 месяца · 3 устройства',
   quarterly_5: '3 месяца · 5 устройств',
   half_year: 'Полгода',
   yearly: 'Год',
@@ -174,6 +183,9 @@ export default function SubscriptionsPage({ token }: { token: string }) {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [filter, setFilter] = useState<SubFilter>(() => readStoredFilter())
+  const [devices, setDevices] = useState('all')
+  const [usersVersion, setUsersVersion] = useState(0)
+  const [orphansVersion, setOrphansVersion] = useState(0)
   const [page, setPage] = useState(1)
   const [pages, setPages] = useState(1)
   const [total, setTotal] = useState(0)
@@ -217,7 +229,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
 
   useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, filter])
+  }, [debouncedSearch, filter, devices])
 
   const setAndStoreFilter = (value: string) => {
     const next = (SUB_FILTERS.some(f => f.value === value) ? value : 'all') as SubFilter
@@ -246,6 +258,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
         filter,
         q: debouncedSearch,
       })
+      if (devices !== 'all') params.set('devices', devices)
       try {
         const res = await fetch(`/api/admin/subscriptions/users?${params}`, { headers })
         if (!alive) return
@@ -270,42 +283,26 @@ export default function SubscriptionsPage({ token }: { token: string }) {
     return () => {
       alive = false
     }
-  }, [page, filter, debouncedSearch, token])
+  }, [page, filter, devices, debouncedSearch, token, usersVersion])
 
-  const fetchUsers = async () => {
-    setLoading(true)
-    setError(null)
-    const searching = debouncedSearch.length > 0
-    const params = new URLSearchParams({
-      page: String(searching ? 1 : page),
-      page_size: searching ? '500' : String(pageSize),
-      filter,
-      q: debouncedSearch,
-    })
-    const res = await fetch(`/api/admin/subscriptions/users?${params}`, { headers })
-    if (!res.ok) {
-      setError('Не удалось загрузить пользователей')
-      setLoading(false)
-      return
-    }
-    const data = await res.json()
-    setUsers(data.items || [])
-    setTotal(data.total ?? 0)
-    setPages(searching ? 1 : (data.pages ?? 1))
-    setLoading(false)
-  }
+  const refreshUsers = () => setUsersVersion(version => version + 1)
+  const refreshOrphans = () => setOrphansVersion(version => version + 1)
 
-  const fetchOrphans = async () => {
-    const res = await fetch('/api/admin/subscriptions/orphan-payments?limit=12', { headers })
-    if (res.ok) {
-      const data = await res.json()
-      setOrphans(data.items || [])
-    }
-  }
+  useEffect(() => {
+    const controller = new AbortController()
+    const params = new URLSearchParams({ limit: '12' })
+    if (devices !== 'all') params.set('devices', devices)
+    fetch(`/api/admin/subscriptions/orphan-payments?${params}`, { headers, signal: controller.signal })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && !controller.signal.aborted) setOrphans(data.items || [])
+      })
+      .catch(() => { /* список пользователей доступен независимо от оплат */ })
+    return () => controller.abort()
+  }, [devices, token, orphansVersion])
 
   useEffect(() => {
     fetchTestMode()
-    fetchOrphans()
   }, [])
 
   const toggleTestMode = async () => {
@@ -331,7 +328,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
           ? 'Глобальный тестовый режим включён — безлимит для всех пользователей'
           : `Глобальный тестовый режим выключен${n ? ` (очищено тест-подписок: ${n})` : ''}`,
       )
-      await fetchUsers()
+      refreshUsers()
     } finally {
       setTestModeBusy(false)
     }
@@ -359,7 +356,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
         return
       }
       setSuccess(next ? `Безлимит включён для ${u.email}` : `Безлимит выключен для ${u.email}`)
-      await fetchUsers()
+      refreshUsers()
       if (history?.user.id === u.id) await openHistory(u.id)
     } finally {
       setActionKey(null)
@@ -384,7 +381,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
           return
         }
         setSuccess(`Пробный период снят у ${u.email} — можно оплатить сразу`)
-        await fetchUsers()
+        refreshUsers()
         if (history?.user.id === u.id) await openHistory(u.id)
         return
       }
@@ -417,8 +414,8 @@ export default function SubscriptionsPage({ token }: { token: string }) {
           : ''
         setSuccess(`Подписка «${planLabel}» выдана ${u.email}${until}`)
       }
-      await fetchUsers()
-      await fetchOrphans()
+      refreshUsers()
+      refreshOrphans()
       if (history?.user.id === u.id) await openHistory(u.id)
     } finally {
       setActionKey(null)
@@ -463,8 +460,8 @@ export default function SubscriptionsPage({ token }: { token: string }) {
       }
       setSuccess(`Подписка снята у ${user.email}`)
       await openHistory(user.id)
-      await fetchUsers()
-      await fetchOrphans()
+      refreshUsers()
+      refreshOrphans()
     } catch {
       setHistoryRevokeError('Не удалось снять подписку. Проверьте соединение и обновите профиль.')
     } finally {
@@ -508,7 +505,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
       }
       setSuccess(`Подписка подключена для ${history.user.email}`)
       await openHistory(history.user.id)
-      await fetchUsers()
+      refreshUsers()
     } finally {
       setHistoryGrantId(null)
     }
@@ -531,8 +528,8 @@ export default function SubscriptionsPage({ token }: { token: string }) {
       }
       setCodeResult(body)
       setSuccess(`Подписка подключена для ${body.user?.email || 'пользователя'}`)
-      await fetchUsers()
-      await fetchOrphans()
+      refreshUsers()
+      refreshOrphans()
     } finally {
       setCodeBusy(false)
     }
@@ -557,7 +554,7 @@ export default function SubscriptionsPage({ token }: { token: string }) {
                 : `${total.toLocaleString('ru-RU')} пользователей · стр. ${page}/${pages}`}
           </p>
         </div>
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center lg:justify-end gap-3">
           <button
             type="button"
             onClick={() => {
@@ -606,6 +603,16 @@ export default function SubscriptionsPage({ token }: { token: string }) {
             options={[...SUB_FILTERS]}
             className="w-full sm:w-56 shrink-0"
             label="Фильтр подписок"
+          />
+          <SortSelect
+            value={devices}
+            onChange={value => {
+              setDevices(value)
+              setOrphans([])
+            }}
+            options={DEVICE_FILTERS}
+            className="w-full sm:w-44 shrink-0"
+            label="Количество устройств"
           />
         </div>
       </div>

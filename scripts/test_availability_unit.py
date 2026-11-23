@@ -432,16 +432,18 @@ def test_rst_injection_distinguished_from_timeout():
     assert KIND_PORT_BLOCK not in kinds
 
 
-def test_partial_asn_block_is_warning_with_carriers():
+def test_partial_reachability_warns_about_probe_points():
     snap = _queen()
-    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=5)
+    snap.ru[CHANNEL_PING] = _agg(CHANNEL_PING, ok=3)
     snap.ru[CHANNEL_API_TCP] = _agg(
-        CHANNEL_API_TCP, ok=2, failed=3, asns=["AS200000", "AS200000", "AS8359", "AS31133", "AS3216"]
+        CHANNEL_API_TCP, ok=1, failed=2, asns=["AS200000", "AS8359", "AS31133"]
     )
     verdicts = classify_target(snap)
     partial = [v for v in verdicts if v.kind == KIND_ASN_PARTIAL]
     assert partial
     assert partial[0].severity == "warning"
+    assert partial[0].title == "Частичная доступность из РФ"
+    assert partial[0].summary == "API (TCP) доступен с 1 из 3 точек РФ."
     joined = " ".join(partial[0].evidence)
     assert "МТС" in joined or "МегаФон" in joined or "Билайн" in joined
     assert report_status(verdicts) == "degraded"

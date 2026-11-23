@@ -620,13 +620,11 @@ def _channel_verdicts(snap: TargetSnapshot) -> list[Verdict]:
                     snap,
                     KIND_ASN_PARTIAL,
                     confidence=0.6,
-                    summary=(
-                        f"{channel_title(channel)} доступен не у всех операторов "
-                        f"({agg.ok_count} из {agg.total})."
-                    ),
+                    summary=f"{channel_title(channel)} доступен с {agg.ok_count} из {agg.total} точек РФ.",
                     evidence=[
-                        f"Не отвечают: {', '.join(carriers) or 'ноды без ASN'}.",
-                        f"Ошибки: {_fail_desc(agg)}.",
+                        f"Точки с ошибками — {', '.join(n.node for n in failing)}.",
+                        f"Сети этих точек — {', '.join(carriers) or 'ASN отсутствует'}.",
+                        f"Ошибки проб — {_fail_desc(agg)}.",
                     ],
                     channel=channel,
                     port=port,

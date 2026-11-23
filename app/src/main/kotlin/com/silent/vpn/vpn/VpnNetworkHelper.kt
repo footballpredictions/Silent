@@ -50,6 +50,57 @@ object VpnNetworkHelper {
         return false
     }
 
+    fun connectionVpnHint(context: Context): String? = runCatching {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return@runCatching null
+        val ourUid = context.applicationInfo.uid
+        var unknownOwner = false
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            val owner = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) caps.ownerUid else -1
+            if (owner >= 0 && owner != ourUid) {
+                return@runCatching "Обнаружена активная VPN-сеть другого приложения. Проверьте, не мешает ли она подключению."
+            }
+            if (owner < 0) unknownOwner = true
+        }
+        if (unknownOwner && !SilentVpnService.isRunning &&
+            !WdttTunnelManager.running.value && !OlcrtcTunnelManager.running.value
+        ) {
+            "Android видит активную VPN-сеть, но не показывает её владельца. Проверьте раздел VPN в настройках."
+        } else {
+            null
+        }
+    }.getOrNull()
+
+    fun logConnectionDiagnostics(
+        context: Context,
+        vpnBeforeConnect: String? = null,
+        silentServiceBeforeConnect: Boolean = false,
+    ) {
+        (connectionVpnHint(context) ?: vpnBeforeConnect?.let { "До попытки подключения. $it" })?.let {
+            WdttTunnelManager.logUi("connection_diagnostics_vpn", "[Диагностика] $it")
+        }
+        if (silentServiceBeforeConnect) {
+            WdttTunnelManager.logUi(
+                "connection_diagnostics_service",
+                "[Диагностика] Служба Silent VPN уже работала до подключения без готового туннеля. Возможен остаток предыдущей сессии.",
+            )
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val strictPrivateDns = runCatching {
+                val cm = context.getSystemService(ConnectivityManager::class.java) ?: return@runCatching false
+                val network = findUnderlyingNetwork(context) ?: return@runCatching false
+                !cm.getLinkProperties(network)?.privateDnsServerName.isNullOrBlank()
+            }.getOrDefault(false)
+            if (strictPrivateDns) {
+                WdttTunnelManager.logUi(
+                    "connection_diagnostics_dns",
+                    "[Диагностика] Для Wi-Fi или мобильной сети задан провайдер частного DNS. При ошибках DNS проверьте его доступность.",
+                )
+            }
+        }
+    }
+
     /** WireGuard-сеть Silent (в т.ч. после kill процесса — без проверки isRunning). */
     fun findOurVpnNetwork(context: Context): Network? {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager

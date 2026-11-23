@@ -544,6 +544,7 @@ class MainViewModel @Inject constructor(
                     } else if (bootstrapVpnMode) {
                         _statusMsg.value = err
                         if (isBootstrapFatalError(err)) {
+                            VpnNetworkHelper.logConnectionDiagnostics(appContext)
                             _vpnState.value = VpnState.DISCONNECTED
                             bootstrapVpnMode = false
                             cancelBootstrapSessionTimeout()
@@ -3971,6 +3972,7 @@ class MainViewModel @Inject constructor(
 
                 if (_vpnState.value == VpnState.CONNECTING) {
                     cancelBootstrapSessionTimeout()
+                    VpnNetworkHelper.logConnectionDiagnostics(context)
                     stopVpnLocally(context)
                     bootstrapVpnMode = false
                     _vpnState.value = VpnState.DISCONNECTED
@@ -4280,8 +4282,11 @@ class MainViewModel @Inject constructor(
             otaCheckedThisVpnSession = false
             otaCheckGate.resetCooldown()
             VpnSessionState.resetBackendSync()
-            if (VpnNetworkHelper.isOtherVpnActive(context)) {
-                DebugLog.i("MainViewModel", "Подключение заменит другой активный VPN")
+            val vpnBeforeConnect = VpnNetworkHelper.connectionVpnHint(context)
+            val silentServiceBeforeConnect = SilentVpnService.isRunning &&
+                !WdttTunnelManager.tunnelReady.value && !OlcrtcTunnelManager.tunnelReady.value
+            val logConnectionDiagnostics = {
+                VpnNetworkHelper.logConnectionDiagnostics(context, vpnBeforeConnect, silentServiceBeforeConnect)
             }
             try {
             // После входа WDTT bootstrap мог оставить isBootstrapMode=true → вылет на LOGIN.
@@ -4582,6 +4587,7 @@ class MainViewModel @Inject constructor(
                         connect(context, olcrtcReassignAttempt + 1)
                         return@launch
                     }
+                    logConnectionDiagnostics()
                     _vpnError.value = fail
                     _vpnState.value = VpnState.DISCONNECTED
                     stopVpnLocally(context)
@@ -4631,6 +4637,7 @@ class MainViewModel @Inject constructor(
                     _vpnError.value = if (!hasVpnAccess()) {
                         subscriptionRequiredMessage()
                     } else {
+                        logConnectionDiagnostics()
                         "Нет VPN-конфига. Закройте приложение и откройте снова."
                     }
                     _vpnState.value = VpnState.DISCONNECTED
@@ -4665,6 +4672,7 @@ class MainViewModel @Inject constructor(
                     relaunchConfig = toConnect,
                     requireGetconfAccess = false,
                     allowEscalation = false,
+                    logConnectionDiagnostics = logConnectionDiagnostics,
                 )
             }.onFailure {
                 if (!shouldSurfaceConnectFailure(it)) {
@@ -4675,6 +4683,7 @@ class MainViewModel @Inject constructor(
                     return@onFailure
                 }
                 DebugLog.e("MainViewModel", "connect failed", it)
+                logConnectionDiagnostics()
                 _subscriptionProbeActive.value = false
                 pendingGetconfProfile = null
                 _vpnError.value = connectFailureMessage(it.message)
@@ -4920,6 +4929,7 @@ class MainViewModel @Inject constructor(
         relaunchConfig: VpnConfig? = null,
         requireGetconfAccess: Boolean = false,
         allowEscalation: Boolean = true,
+        logConnectionDiagnostics: () -> Unit,
     ) {
         repo.resetVkCredSessionEscalate()
         WdttTunnelManager.consumeFloodEscalate()
@@ -5001,6 +5011,7 @@ class MainViewModel @Inject constructor(
         }
 
         val subDenied = isSubscriptionAccessError(WdttTunnelManager.lastError.value.orEmpty())
+        if (!(requireGetconfAccess && subDenied)) logConnectionDiagnostics()
         stopVpnLocally(context)
         withContext(Dispatchers.IO) {
             VpnConnectHelper.ensureCleanSlate(context, force = true)

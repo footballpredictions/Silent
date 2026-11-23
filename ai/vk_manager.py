@@ -38,9 +38,9 @@ async def agent_heal_background(*, fill_only: bool = False) -> None:
 
 
 class VkApiError(Exception):
-    def __init__(self, code: int, msg: str):
+    def __init__(self, code: int, msg: str, method: str | None = None):
         self.code = code
-        super().__init__(f"VK API Error {code}: {msg}")
+        super().__init__(f"{method + ': ' if method else ''}VK API Error {code}: {msg}")
 
 
 class VkManager:
@@ -50,6 +50,7 @@ class VkManager:
         self._token: Optional[str] = None
         self._last_auth_error: str = ""
         self._flood_hit: bool = False
+        self._flood_cooldown_minutes = 45
         self._probe_client = None
         self._room_participant: VkRoomParticipant | None = None
         self._room_exit_failed = False
@@ -68,17 +69,24 @@ class VkManager:
             if not ok:
                 raise VkApiError(-1, err)
         data = await vk_api_call(method, self._token, params or None)
+        if method in {"messages.getCallToken", "messages.getCurrentCalls"} and (
+            data.get("error") or {}
+        ).get("error_code") == 10:
+            await asyncio.sleep(1)
+            data = await vk_api_call(method, self._token, params or None)
         if "error" in data:
             err = data["error"]
             code = err.get("error_code", -1)
             msg = err.get("error_msg", "Unknown")
-            if code == 9 or "flood" in msg.lower():
+            from ai.vk_hash_liveness import is_flood_message
+            if is_flood_message(code, msg):
                 self._flood_hit = True
+                self._flood_cooldown_minutes = 1 if code == 6 else 45
                 self._last_auth_error = msg
             if code in (5, 1116):
                 self._token = None
                 self._room_participant = None
-            raise VkApiError(code, msg)
+            raise VkApiError(code, msg, method)
         return data.get("response", {})
 
     async def ensure_authenticated(self, verify_calls: bool = False) -> tuple[bool, str]:
@@ -328,14 +336,21 @@ class VkManager:
         hash_val: str,
         call_link: str | None = None,
         user_id=None,
+        *,
+        preserve_active: bool = False,
+        commit: bool = True,
     ) -> VkHash:
+        if user_id is not None:
+            await self.db.execute(select(User.id).where(User.id == user_id).with_for_update())
         q = select(VkHash).where(VkHash.slot_index == slot)
         if user_id is not None:
             q = q.where(VkHash.user_id == user_id)
         else:
             q = q.where(VkHash.user_id.is_(None))
-        result = await self.db.execute(q)
+        result = await self.db.execute(q.execution_options(populate_existing=True))
         existing = result.scalar_one_or_none()
+        if existing and preserve_active and existing.is_active and existing.last_error_code != 1:
+            return existing
         if existing:
             existing.hash_value = hash_val
             existing.call_link = call_link
@@ -358,16 +373,18 @@ class VkManager:
                 user_id=user_id,
             )
             self.db.add(h)
-        await self.db.commit()
-        await self.db.refresh(h)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(h)
         return h
 
-    async def create_hash_for_user_slot(self, user_id, slot: int) -> tuple[Optional[str], str]:
+    async def create_hash_for_user_slot(self, user_id, slot: int, *, preserve_active: bool = False) -> tuple[Optional[str], str]:
         if slot < 0 or slot >= MAX_HASHES:
             return None, f"Слот должен быть 0–{MAX_HASHES - 1}"
-        ok, err = await self.ensure_authenticated()
-        if not ok:
-            return None, err
+        if not self._token:
+            ok, err = await self.ensure_authenticated()
+            if not ok:
+                return None, err
         pilot_email = await _setting(self.db, PILOT_EMAIL_SETTING)
         pilot_leave = False
         if pilot_email:
@@ -377,7 +394,10 @@ class VkManager:
         if not hash_val:
             return None, self._last_auth_error or "calls.start не вернул хеш"
         link = f"https://vk.com/call/join/{hash_val}"
-        await self.upsert_hash_slot(slot, hash_val, link, user_id=user_id)
+        saved = await self.upsert_hash_slot(slot, hash_val, link, user_id=user_id, preserve_active=preserve_active)
+        if saved.hash_value != hash_val:
+            await self.db.commit()
+            return None, "Слот уже заполнен"
         return hash_val, "OK"
 
     async def create_hash_for_slot(self, slot: int) -> tuple[Optional[str], str]:
@@ -449,12 +469,12 @@ class VkManager:
                 continue
             from app.services.vk_agent_runtime import record_activity
             await record_activity(self.db, "issuer", state="running")
-            hash_val, msg = await self.create_hash_for_user_slot(user_id, slot)
+            hash_val, msg = await self.create_hash_for_user_slot(user_id, slot, preserve_active=True)
             if hash_val:
                 created += 1
             else:
                 logger.warning("fill slot %s user %s: %s", slot, user_id, msg)
-                if self._flood_hit or (msg and "flood" in msg.lower()):
+                if self._room_exit_failed or self._flood_hit or (msg and "flood" in msg.lower()):
                     break
             await asyncio.sleep(3)
         return created
@@ -492,11 +512,14 @@ class VkManager:
                 users_touched += 1
                 total_created += n
             if self._flood_hit:
-                await set_flood_cooldown(self.db, minutes=45)
+                minutes = self._flood_cooldown_minutes
+                await set_flood_cooldown(self.db, minutes=minutes)
                 return (
                     f"VK flood control — остановились. Создано {total_created} хешей "
-                    f"для {users_touched} пользов. Повтор через ~45 мин."
+                    f"для {users_touched} пользов. Повтор через ~{minutes} мин."
                 )
+            if self._room_exit_failed:
+                return f"Ошибка: {self._last_auth_error}; создано {total_created} хешей, повтор отложен"
 
         dup_part = f", удалено дубликатов: {removed_dupes}" if removed_dupes else ""
         return (

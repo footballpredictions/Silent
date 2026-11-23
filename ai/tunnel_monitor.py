@@ -2,10 +2,12 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import distinct, func, or_, select
 from app.database import AsyncSessionLocal
-from app.models import VkHash
+from app.models import User, VkHash
+from app.services import vk_hash_reserve
 from ai.vk_manager import VkManager, MAX_HASHES
 
 logger = logging.getLogger(__name__)
@@ -27,13 +29,26 @@ async def _heal(db, *, full_fill: bool):
     if flood:
         return
     user_ids = []
+    reserve_due = await vk_hash_reserve.needs_refill(db)
     if not full_fill:
         result = await db.execute(select(VkHash.user_id).where(
             VkHash.user_id.isnot(None), VkHash.slot_index >= 0, VkHash.slot_index < MAX_HASHES,
             or_(VkHash.is_active == False, VkHash.last_error_code == 1),  # noqa: E712
         ).distinct())
         user_ids = list(result.scalars().all())
-        if not user_ids:
+        if await vk_hash_reserve.enabled(db):
+            from app.services.vpn_service import BOOTSTRAP_USER_EMAIL
+
+            active_slots = select(func.count(distinct(VkHash.slot_index))).where(
+                VkHash.user_id == User.id, VkHash.is_active.is_(True),
+                VkHash.slot_index >= 0, VkHash.slot_index < MAX_HASHES,
+            ).correlate(User).scalar_subquery()
+            recent = await db.scalars(select(User.id).where(
+                User.is_verified.is_(True), User.is_active.is_(True), User.email != BOOTSTRAP_USER_EMAIL,
+                User.created_at >= datetime.utcnow() - timedelta(days=1), active_slots < MAX_HASHES,
+            ).order_by(User.created_at).limit(4))
+            user_ids = list(dict.fromkeys([*recent, *user_ids]))
+        if not user_ids and not reserve_due:
             return
     manager = VkManager(db)
     try:
@@ -43,16 +58,23 @@ async def _heal(db, *, full_fill: bool):
             async with agent_lease("issuer") as acquired:
                 if not acquired:
                     return
-                if not await manager.authenticate(verify_calls=False):
+                if user_ids and not await manager.authenticate(verify_calls=False):
                     await set_agent_run_log(db, "Ошибка авторизации VK: замена отложена", ok=False)
                     return "Ошибка авторизации VK: замена отложена"
                 created = 0
                 for uid in user_ids:
                     created += await manager.fill_user_empty_slots(uid)
-                    if manager._flood_hit:
-                        await set_flood_cooldown(db, minutes=45)
+                    if manager._flood_hit or manager._room_exit_failed:
                         break
                 message = f"Очередь мёртвых хешей: +{created}, пользователей={len(user_ids)}"
+        if reserve_due and not manager._flood_hit and not manager._room_exit_failed:
+            async with agent_lease("issuer") as acquired:
+                if acquired and await vk_hash_reserve.refill_one(db, manager):
+                    logger.info("VK issuer: replenished one verified reserve hash")
+        if manager._flood_hit and not (await is_flood_cooldown(db))[0]:
+            await set_flood_cooldown(db, minutes=manager._flood_cooldown_minutes)
+        if manager._room_exit_failed and not message.startswith("Ошибка"):
+            message = f"Ошибка VK: {manager._last_auth_error}; {message}"
         await set_agent_run_log(db, message, ok=not manager._flood_hit and not message.startswith("Ошибка"))
         return message
     finally:

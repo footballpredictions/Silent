@@ -283,6 +283,9 @@ class JoinHashProber:
                 )
                 try:
                     last = await self._post(url)
+                    code, msg = _vk_error_from(last)
+                    if code == 10 and not is_flood_message(code, msg):
+                        continue
                     break
                 except Exception as e:
                     logger.debug("getCallPreview %s: %s", host, e)

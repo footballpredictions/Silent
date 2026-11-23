@@ -206,9 +206,10 @@ async def cleanup_bootstrap_devices(db: AsyncSession, device_fingerprint: str) -
     return del_result.rowcount or 0
 
 
-async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int:
+async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID, *, ready_only: bool = False) -> int:
     """Create missing server slots (0–3) via AI agent when enabled."""
     from app.services.vk_agent_runtime import role_enabled
+    from app.services import vk_hash_reserve
     from ai.vk_manager import VkManager
 
     if not await role_enabled(db, "issuer"):
@@ -217,14 +218,21 @@ async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int
     active = await count_active_server_hashes(db, user_id)
     if active >= MAX_SERVER_SLOTS:
         return 0
-
-    manager = VkManager(db)
     created = 0
+    reserve_enabled = await vk_hash_reserve.enabled(db)
+    if reserve_enabled:
+        created = await vk_hash_reserve.claim_ready_hashes(db, user_id)
+        if ready_only or active + created >= MAX_SERVER_SLOTS:
+            return created
+        from app.services.vk_agent_auth import is_flood_cooldown
+        if (await is_flood_cooldown(db))[0]:
+            return created
+    manager = VkManager(db)
     try:
         ok, err = await manager.ensure_authenticated()
         if not ok:
             logger.warning("ensure_user_server_hashes: auth failed: %s", err)
-            return 0
+            return created
         for slot in range(MAX_SERVER_SLOTS):
             exists = await db.execute(
                 select(VkHash.id).where(
@@ -235,11 +243,13 @@ async def ensure_user_server_hashes(db: AsyncSession, user_id: uuid.UUID) -> int
             )
             if exists.scalar_one_or_none():
                 continue
-            hash_val, msg = await manager.create_hash_for_user_slot(user_id, slot)
+            hash_val, msg = await manager.create_hash_for_user_slot(user_id, slot, preserve_active=True)
             if hash_val:
                 created += 1
             else:
                 logger.warning("slot %s for user %s: %s", slot, user_id, msg)
+                if manager._room_exit_failed or manager._flood_hit:
+                    break
     finally:
         await manager.close()
     return created
@@ -250,7 +260,7 @@ async def request_hash_refresh(db: AsyncSession, user: User) -> tuple[bool, str]
     active = await count_active_server_hashes(db, user.id)
     if active >= MAX_SERVER_SLOTS:
         return True, "Хеши в норме"
-    created = await ensure_user_server_hashes(db, user.id)
+    created = await ensure_user_server_hashes(db, user.id, ready_only=not active)
     if created > 0:
         return True, f"Добавлено хешей: {created}"
     if active == 0 and not user.bootstrap_hash:

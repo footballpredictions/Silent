@@ -388,7 +388,7 @@ async def apply_post_verification_benefits(db: AsyncSession, user: User) -> Subs
         from app.services.user_hash_service import ensure_user_server_hashes
 
         if await is_agent_enabled(db):
-            created = await ensure_user_server_hashes(db, user.id)
+            created = await ensure_user_server_hashes(db, user.id, ready_only=True)
             if created:
                 logger.info("post_verify: created %s VK hash slot(s) for user %s", created, user.id)
     except Exception as e:

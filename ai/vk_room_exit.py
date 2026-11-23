@@ -100,5 +100,6 @@ class VkRoomParticipant:
             call = item.get("active_call", item) if isinstance(item, dict) else {}
             if isinstance(call, dict) and call.get("call_id") == call_id:
                 raise VkRoomExitError("Звонок остался в активных после выхода")
-        if await self._probe.probe(vk_hash) != KIND_ALIVE:
-            raise VkRoomExitError("VK не подтвердил ссылку после выхода")
+        verdict = await self._probe.probe(vk_hash)
+        if verdict != KIND_ALIVE:
+            raise VkRoomExitError(f"VK не подтвердил ссылку после выхода ({self._probe.flood_stage or 'preview'}: {verdict})")

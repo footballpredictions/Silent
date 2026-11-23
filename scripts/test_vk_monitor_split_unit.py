@@ -21,6 +21,18 @@ class SplitTests(unittest.IsolatedAsyncioTestCase):
                 await manager._vk_request("calls.start", {})
         self.assertTrue(manager._flood_hit)
 
+    async def test_internal_error_retries_call_status_but_not_call_creation(self):
+        from ai.vk_manager import VkManager, VkApiError
+        manager = VkManager(MagicMock())
+        manager._token = "test-only"
+        error = {"error": {"error_code": 10, "error_msg": "Internal server error"}}
+        vk = AsyncMock(side_effect=[error, {"response": {"items": []}}, error])
+        with patch("ai.vk_manager.vk_api_call", vk), patch("ai.vk_manager.asyncio.sleep", AsyncMock()):
+            self.assertEqual(await manager._vk_request("messages.getCurrentCalls", {}), {"items": []})
+            with self.assertRaisesRegex(VkApiError, "calls.start: VK API Error 10"):
+                await manager._vk_request("calls.start", {})
+        self.assertEqual(vk.await_count, 3)
+
     async def asyncSetUp(self):
         @asynccontextmanager
         async def lease(name):
@@ -60,6 +72,7 @@ class SplitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_consumer_with_empty_queue_does_not_authenticate_or_probe(self):
         db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
         db.execute = AsyncMock(return_value=MagicMock())
         db.execute.return_value.scalars.return_value.all.return_value = []
         with patch("app.services.vk_agent_auth.is_agent_enabled", AsyncMock(return_value=True)), \
@@ -69,6 +82,7 @@ class SplitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_consumer_heals_only_queued_users_without_probing(self):
         db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
         db.execute = AsyncMock(return_value=MagicMock())
         db.execute.return_value.scalars.return_value.all.return_value = ["user-1"]
         manager = MagicMock()
@@ -76,6 +90,7 @@ class SplitTests(unittest.IsolatedAsyncioTestCase):
         manager.fill_user_empty_slots = AsyncMock(return_value=1)
         manager.close = AsyncMock()
         manager._flood_hit = False
+        manager._room_exit_failed = False
         with patch("app.services.vk_agent_auth.is_agent_enabled", AsyncMock(return_value=True)), \
              patch("app.services.vk_agent_auth.set_agent_run_log", AsyncMock()), \
              patch.object(tunnel_monitor, "VkManager", return_value=manager):

@@ -130,6 +130,49 @@ class HealingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rows[1].hash_value, "fixture_hash_1")
         self.assertEqual([call.args[-1] for call in participant.leave.await_args_list], [first, second])
 
+    async def test_first_config_claims_four_distinct_ready_hashes_per_user_without_vk(self):
+        import json
+        from app.services.user_hash_service import ensure_user_server_hashes
+
+        for row in self.rows:
+            row.is_active = False
+        other = User(email="second-reserve@example.invalid", password_hash="test-only")
+        self.db.add(other)
+        self.db.add_all([
+            AppSetting(key="vk_issuer_enabled", value="true"),
+            AppSetting(key="vk_issuer_hash_reserve", value=json.dumps([
+                [f"reserve_hash_{index}", datetime.utcnow().isoformat()]
+                for index in range(8)
+            ])),
+        ])
+        await self.db.commit()
+        with patch.object(VkManager, "ensure_authenticated", side_effect=AssertionError("reserve must work offline")):
+            created = await ensure_user_server_hashes(self.db, self.user.id, ready_only=True)
+            again = await ensure_user_server_hashes(self.db, self.user.id, ready_only=True)
+            second = await ensure_user_server_hashes(self.db, other.id, ready_only=True)
+        self.assertEqual((created, again, second), (4, 0, 4))
+        self.assertEqual(await get_server_hashes_for_user(self.db, self.user),
+                         [f"reserve_hash_{index}" for index in range(4)])
+        self.assertEqual(await get_server_hashes_for_user(self.db, other),
+                         [f"reserve_hash_{index}" for index in range(4, 8)])
+        self.assertEqual(json.loads((await self.db.get(AppSetting, "vk_issuer_hash_reserve")).value), [])
+
+    async def test_preview_retries_internal_error_on_other_vk_host_but_respects_limits(self):
+        from ai.vk_hash_liveness import JoinHashProber
+
+        preview = JoinHashProber(None)
+        preview._token = "fixture-session"
+        preview._post = AsyncMock(side_effect=[
+            {"error": {"error_code": 10}},
+            {"response": {"call_id": "fixture-call"}},
+            {"error": {"error_code": 6}},
+        ])
+        self.assertEqual(await preview.probe("fixture_hash"), live.KIND_ALIVE)
+        self.assertEqual(await preview.probe("fixture_hash"), live.KIND_FLOOD)
+        self.assertEqual(preview._post.await_count, 3)
+        self.assertIn("api.vk.ru", preview._post.await_args_list[0].args[0])
+        self.assertIn("api.vk.me", preview._post.await_args_list[1].args[0])
+
     async def test_pilot_does_not_replace_slot_when_exit_fails(self):
         from ai.vk_room_exit import PILOT_EMAIL_SETTING, VkRoomExitError
         self.db.add(AppSetting(key=PILOT_EMAIL_SETTING, value=self.user.email))

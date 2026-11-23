@@ -129,12 +129,10 @@ async def device_register(
             from app.services.user_hash_service import (
                 set_user_bootstrap_hash,
                 cleanup_bootstrap_devices,
-                ensure_user_server_hashes,
             )
 
             await set_user_bootstrap_hash(db, user, req.bootstrap_hash)
             await cleanup_bootstrap_devices(db, req.device_fingerprint)
-            await ensure_user_server_hashes(db, user.id)
 
         await register_device(
             db,
@@ -155,11 +153,26 @@ async def device_register(
         device = result.scalar_one_or_none()
         if not device:
             raise HTTPException(status_code=500, detail="Не удалось создать устройство")
+        await _ensure_config_hashes(db, user.id, legacy_prepare=bool(req.bootstrap_hash))
         return await build_vpn_config_for_user(
             db, device, user, has_sub, app_version=_request_app_version(request)
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+async def _ensure_config_hashes(db, user_id, *, legacy_prepare: bool = True) -> None:
+    from app.services import vk_hash_reserve
+    from app.services.user_hash_service import count_active_server_hashes, ensure_user_server_hashes
+    from app.services.vk_agent_runtime import role_enabled
+
+    reserve_enabled = await vk_hash_reserve.enabled(db)
+    if legacy_prepare or reserve_enabled:
+        await ensure_user_server_hashes(db, user_id, ready_only=True)
+    if (reserve_enabled and not await count_active_server_hashes(db, user_id)
+            and await role_enabled(db, "issuer")):
+        raise HTTPException(status_code=503, detail="VPN-хеши ещё готовятся. Попробуйте подключиться через 30 секунд.",
+                            headers={"Retry-After": "30"})
 
 
 @router.get("/config", response_model=VpnConfigResponse)
@@ -184,9 +197,7 @@ async def get_config(
     await ensure_trial_subscription(db, user)
     await require_active_subscription(user, db)
     has_sub = await user_has_active_subscription(user, db)
-    from app.services.user_hash_service import ensure_user_server_hashes
-
-    await ensure_user_server_hashes(db, user.id)
+    await _ensure_config_hashes(db, user.id)
     ver = _request_app_version(request, app_version)
     return await build_vpn_config_for_user(
         db, device, user, has_sub, preferred_server, app_version=ver
@@ -233,11 +244,12 @@ async def get_vk_hashes(
             detail="Хеш не задан. Введите хеш звонка VK на экране входа.",
         )
     boot = (user.bootstrap_hash or hashes[0]).strip()
+    items = await get_hash_items_for_user(db, user)
     return {
         "hashes": hashes,
         "bootstrap_hash": boot,
-        "mode": "full" if len(hashes) > 1 else "bootstrap",
-        "items": await get_hash_items_for_user(db, user),
+        "mode": "full" if any(i["source"] == "server" and i["is_active"] for i in items) else "bootstrap",
+        "items": items,
     }
 
 
@@ -445,7 +457,7 @@ async def connect(
 
     from app.services.user_hash_service import ensure_user_server_hashes
 
-    await ensure_user_server_hashes(db, user.id)
+    await ensure_user_server_hashes(db, user.id, ready_only=True)
 
     if not device.is_connected:
         connected = await count_connected_sessions(db, user.id)

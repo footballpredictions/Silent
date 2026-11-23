@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -31,13 +32,16 @@ except ImportError:
     standby_monitor_loop = None  # type: ignore
     mount_failover_routes = None  # type: ignore
 
+try:
+    from standby_runtime import run_cell_control
+except ImportError:
+    from asyncio import to_thread as run_cell_control
+
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
     task = None
     if standby_monitor_loop is not None:
-        import asyncio
-
         task = asyncio.create_task(standby_monitor_loop())
     yield
     if task is not None:
@@ -611,6 +615,10 @@ async def wg_kick(
 ):
     """Улей снимает живой WG peer при отзыве подписки."""
     _auth(x_cell_agent_secret)
+    return await run_cell_control(_kick_requested_peers, req)
+
+
+def _kick_requested_peers(req: WgKickRequest) -> dict[str, bool]:
     try:
         from standby_runtime import kick_wg_peer, kick_wg_peers_by_ip
     except ImportError:
@@ -635,13 +643,17 @@ async def sync_manifest(
     _auth(x_cell_agent_secret)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="invalid manifest")
+    await run_cell_control(_write_manifest, payload)
+    return {"ok": True, "version": payload.get("version"), "device_count": payload.get("device_count")}
+
+
+def _write_manifest(payload: dict[str, Any]) -> None:
     HIVE_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = HIVE_MANIFEST_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, HIVE_MANIFEST_PATH)
     if on_manifest_updated is not None:
         on_manifest_updated(payload)
-    return {"ok": True, "version": payload.get("version"), "device_count": payload.get("device_count")}
 
 
 class NetProbeTarget(BaseModel):

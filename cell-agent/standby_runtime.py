@@ -9,8 +9,9 @@ import secrets
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -58,6 +59,13 @@ _wg_live_pub_list: list[str] = []
 _manifest_cache: dict | None = None
 _manifest_stamp = None
 _manifest_lock = threading.RLock()
+_control_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cell-control")
+_ControlResult = TypeVar("_ControlResult")
+
+
+async def run_cell_control(operation: Callable[..., _ControlResult], *args: Any) -> _ControlResult:
+    """Keep peer, manifest and DNAT mutations serialized without blocking HTTP."""
+    return await asyncio.get_running_loop().run_in_executor(_control_executor, operation, *args)
 
 
 class InternalOnlineRequest(BaseModel):
@@ -934,25 +942,33 @@ def ensure_standby_server() -> None:
     _standby_server_thread.start()
 
 
+def _maintain_local_peers() -> None:
+    apply_manifest_peers()
+    heal_live_getconf_allowed_ips()
+    enforce_denied_manifest_peers()
+    sync_silent_deny()
+    gc_stale_local_peers()
+    wg_peer_counts()
+
+
+def _set_standby_mode(enable: bool) -> None:
+    _iptables_dnat_to_local(enable)
+    _write_standby_state(enable)
+
+
 async def standby_monitor_loop() -> None:
     """Фон: peers из manifest, мониторинг Улья, DNAT на локальный API."""
     global _queen_healthy, _queen_fail_streak
     await asyncio.sleep(8)
     ensure_standby_server()
     # Рестарт агента не должен оставлять DNAT на localhost с прошлого ложного standby.
-    _iptables_dnat_to_local(False)
-    _write_standby_state(False)
+    await run_cell_control(_set_standby_mode, False)
     _queen_healthy = True
     _queen_fail_streak = 0
     logger.warning("standby: start — DNAT на Улей, standby только после %s фейлов health", QUEEN_FAIL_BEFORE_STANDBY)
     while True:
         try:
-            apply_manifest_peers()
-            heal_live_getconf_allowed_ips()
-            enforce_denied_manifest_peers()
-            sync_silent_deny()
-            gc_stale_local_peers()
-            wg_peer_counts()
+            await run_cell_control(_maintain_local_peers)
             healthy = await check_queen_health()
             _queen_healthy, _queen_fail_streak, action = apply_queen_health_tick(
                 now_healthy=healthy,
@@ -965,12 +981,10 @@ async def standby_monitor_loop() -> None:
                     _queen_fail_streak,
                     STANDBY_API_PORT,
                 )
-                _iptables_dnat_to_local(True)
-                _write_standby_state(True)
+                await run_cell_control(_set_standby_mode, True)
             elif action == "queen":
                 logger.warning("standby: Улей снова доступен — DNAT на Улей")
-                _iptables_dnat_to_local(False)
-                _write_standby_state(False)
+                await run_cell_control(_set_standby_mode, False)
         except Exception as e:
             logger.warning("standby monitor: %s", e)
         await asyncio.sleep(15)

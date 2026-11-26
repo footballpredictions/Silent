@@ -3,7 +3,8 @@
  * Паритет с Android (TG+YT через VPN): ipv4_only, fake-ip (резолв на соте),
  * block UDP/QUIC, dial peer до TUN, Telemost/WB prefetch.
  */
-const { spawn, execSync } = require('child_process')
+const { spawn, execFile } = require('child_process')
+const execFileAsync = require('util').promisify(execFile)
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
@@ -339,18 +340,12 @@ function killProc(proc, name, log) {
   }
 }
 
-function forceKillWindows(log) {
+async function forceKillWindows(log) {
   if (process.platform !== 'win32') return
-  let killed = 0
-  for (const im of ['olcrtc2-cnc.exe', 'sing-box.exe']) {
-    try {
-      execSync(`taskkill /F /IM ${im} /T`, { stdio: 'ignore', windowsHide: true })
-      killed += 1
-    } catch {
-      /* not running */
-    }
-  }
-  if (killed > 0) log?.('[olcrtc2] forceKill windows processes')
+  const results = await Promise.allSettled(['olcrtc2-cnc.exe', 'sing-box.exe'].map(name =>
+    execFileAsync('taskkill.exe', ['/F', '/IM', name, '/T'], { windowsHide: true, timeout: 5000 }),
+  ))
+  if (results.some(result => result.status === 'fulfilled')) log?.('[olcrtc2] forceKill windows processes')
 }
 
 function parseDnsServers(raw) {
@@ -720,7 +715,7 @@ async function stopOlcrtc2Session(log) {
   singboxProc = null
   killProc(cncProc, 'olcrtc2-cnc', log)
   cncProc = null
-  forceKillWindows(log)
+  await forceKillWindows(log)
   await sleep(250)
 }
 
@@ -740,7 +735,8 @@ function formatStaticHosts(map) {
     .join(',')
 }
 
-async function beginOlcrtc2Session(config, { log, onReady } = {}) {
+async function beginOlcrtc2Session(config, { log, onReady, isCancelled = () => false } = {}) {
+  if (isCancelled()) return { cancelled: true }
   // Полный сброс + пауза: иначе ICE цепляется к старому TUN 172.19.0.1.
   await stopOlcrtc2Session(log)
   const cncPath = findExe(['olcrtc2-cnc.exe', 'olcrtc2-cnc'])
@@ -869,6 +865,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
     log?.(`[olcrtc2] STATIC_HOSTS=${Object.keys(staticHosts).length}`)
   }
 
+  if (isCancelled()) return { cancelled: true }
   sessionActive = true
   ready = false
   iceConnected = false
@@ -922,6 +919,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
   })
 
   const portOk = await waitForPort(socksHost, socksPort, 90_000, log)
+  if (isCancelled()) return { cancelled: true }
   if (!portOk || !sessionActive) {
     // Частый кейс Telemost: prefetched CONN_FILE устарел → handshake timeout, затем
     // вторая попытка уже взлетает. Делаем эту попытку локально, без room-failure.
@@ -938,7 +936,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
           ...config,
           __olcrtcNoTelemostPrefetch: true,
         },
-        { log, onReady },
+        { log, onReady, isCancelled },
       )
     }
     await stopOlcrtc2Session(log)
@@ -950,6 +948,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
   const peerWaitMs = provider === 'telemost' ? 8_000 : 25_000
   log?.(`[olcrtc2] ждём ICE/peer… (${peerWaitMs / 1000}с)`)
   const dialOk = await waitForPeerReady(socksHost, socksPort, peerWaitMs, log, socksUser, socksPass)
+  if (isCancelled()) return { cancelled: true }
   if (!dialOk || !sessionActive) {
     await stopOlcrtc2Session(log)
     return { error: 'olcrtc2: peer/ICE не поднялся (timeout)' }
@@ -974,6 +973,7 @@ async function beginOlcrtc2Session(config, { log, onReady } = {}) {
     log?.(`[sing-box] exited code=${code}`)
   })
   await sleep(200)
+  if (isCancelled()) return { cancelled: true }
   ready = true
   lastTunnelActivityMs = Date.now()
   activeSocks = { host: socksHost, port: socksPort, user: socksUser, pass: socksPass }

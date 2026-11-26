@@ -22,16 +22,16 @@ test('second instance during quit does not touch a destroyed BrowserWindow', () 
 test('Windows window appears while firewall preparation is still pending', async () => {
   const source = fs.readFileSync(require.resolve('../src/main/main'), 'utf8')
   const start = source.indexOf('app.whenReady().then(') + 'app.whenReady().then('.length
-  const end = source.indexOf('\n})\n\nlet macQuitFlushDone', start) + 2
+  const end = source.indexOf('\n})\n\nlet vpnQuitFlushDone', start) + 2
   let ready, windows = 0
   const firewall = new Promise(resolve => { ready = resolve })
   const startup = vm.runInNewContext(`(${source.slice(start, end)})`, {
     app: { getPath: () => 'fixture', setAsDefaultProtocolClient() {}, isPackaged: true },
     process: { platform: 'win32', resourcesPath: 'fixture' },
     russianServices: { configure() {} }, startRussianPolicyRefresh() {}, softTamperHints() {},
-    isDebugBuild: false, sendLog() {}, killOrphanWdtt() {},
+    isDev: false, isDebugBuild: false, sendLog() {}, killOrphanWdtt() {}, vpnStartupRecovery: null,
     path: require('node:path'), fs: { existsSync: () => false },
-    require: () => ({ ensureSilentVpnFirewallAllow: () => firewall }),
+    require: () => ({ ensureSilentVpnFirewallAllow: () => firewall, recoverIdleWindowsTunnel: async () => {} }),
     createWindow() { windows++ }, createTray() {}, warmVkExcludeIps() {},
   })
   const done = startup()

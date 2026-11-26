@@ -874,7 +874,7 @@ export default function MainScreen({
   }
 
   const handleToggle = async () => {
-    if (disconnecting) return
+    if (disconnecting || logoutBusyRef.current) return
     if (connectLockRef.current && !connecting && !connected) return
 
     if (connected || connecting) {
@@ -922,10 +922,12 @@ export default function MainScreen({
 
     connectLockRef.current = true
     disconnectTokenRef.current += 1
+    const connectGen = ++connectGenRef.current
     userWantsVpnRef.current = true
     // olcrtc: только dual-cache (без сети на каждый connect).
     if (isOlcrtcBypass()) {
       const pre = await resolveOlcrtcConfig({ preferCache: true })
+      if (connectGen !== connectGenRef.current) return
       if (!pre) {
         connectLockRef.current = false
         alert(
@@ -949,7 +951,6 @@ export default function MainScreen({
     clearLogs()
     pushLog('Main', 'connect start')
     SessionTrace.enter('Main.connect', 'start')
-    const connectGen = ++connectGenRef.current
     startSnakeHold(connectGen)
     let recoveryBootstrapOwned = false
     let mainConnectStarted = false
@@ -1277,38 +1278,30 @@ export default function MainScreen({
   const logoutBusyRef = useRef(false)
   const [loggingOut, setLoggingOut] = useState(false)
 
-  const handleLogout = () => {
-    promoCheckVersionRef.current++
-    profileFetchVersionRef.current++
+  const handleLogout = async () => {
     if (logoutBusyRef.current) return
     logoutBusyRef.current = true
+    promoCheckVersionRef.current++
+    profileFetchVersionRef.current++
+    connectGenRef.current++
+    disconnectTokenRef.current++
+    pendingConnectAfterSubscriptionRefreshRef.current = false
     setLoggingOut(true)
+    setDisconnecting(true)
     setMenuOpen(false)
     setMenuPage(null)
 
     const fp = (() => { try { return DEVICE_FINGERPRINT() } catch { return null } })()
     const token = localStorage.getItem('silent_token')
-    const needVpnStop = connected || connecting || disconnecting
-
-    // Сразу UI. Stable fingerprint переживает logout → следующий вход reuse слот (как Android).
-    setMainVpnSessionActive(false)
-    setConnected(false)
-    setConnecting(false)
-    setDisconnecting(false)
+    resetVpnUi()
+    resetBootstrapRendererState()
+    stopOlcrtcHeartbeatLoop({ leave: true })
     connectLockRef.current = false
-    connectInFlightRef.current = false
-    clearSnakeHold()
     onlineMarkedRef.current = false
-    clearCachedVpnConfig()
-    clearCachedProfile()
-    clearSessionDeviceId()
-    clearSessionFingerprint()
-    clearTokens()
-    resetConfigSyncOnLogout()
-    resetReachabilityReporter()
-    onLogout()
 
-    void (async () => {
+    try {
+      const stopped = await (window as any).electronAPI?.vpnDisconnect?.({ slow: true })
+      if (stopped && !stopped.success) throw new Error('VPN ещё работает')
       try {
         if (fp && token) {
           await Promise.race([
@@ -1324,13 +1317,22 @@ export default function MainScreen({
           ])
         }
       } catch { /* ignore */ }
-      try {
-        if (needVpnStop) {
-          void (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
-        }
-      } catch { /* ignore */ }
+      clearCachedVpnConfig()
+      clearCachedProfile()
+      clearSessionDeviceId()
+      clearSessionFingerprint()
+      clearTokens()
+      resetConfigSyncOnLogout()
+      resetReachabilityReporter()
+      onLogout()
+    } catch (e) {
+      pushLog('Main', `logout VPN stop: ${(e as Error).message}`, 'E')
+      alert('Не удалось отключить VPN. Попробуйте выйти из профиля ещё раз.')
+    } finally {
       logoutBusyRef.current = false
-    })()
+      setLoggingOut(false)
+      setDisconnecting(false)
+    }
   }
 
   const saveRename = async () => {

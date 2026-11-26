@@ -6,7 +6,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const net = require('net')
-const { exec, execSync, execFile, execFileSync, spawn } = require('child_process')
+const { exec, execSync, execFile, spawn } = require('child_process')
 const { promisify } = require('util')
 const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
@@ -17,6 +17,7 @@ const TUNNEL_CONF_NAME = 'wg-turn.conf'
 const SERVICE_NAME = `WireGuardTunnel$${TUNNEL_NAME}`
 const STABLE_CONF_DIR = path.join(process.env.ProgramData || 'C:\\ProgramData', 'SilentVPN')
 const STABLE_WG_DIR = path.join(STABLE_CONF_DIR, 'wireguard')
+const IPV6_RESTORE_MARKER = path.join(STABLE_CONF_DIR, 'restore-ipv6.pending')
 const FALLBACK_BACKEND_IP = '89.125.188.100'
 /** DNS: Cloudflare+Yandex по умолчанию. Меню DNS — через options/config.dns_override. */
 const WG_DNS = '1.1.1.1, 1.0.0.1, 77.88.8.8'
@@ -132,15 +133,15 @@ function findWintunDll(dir) {
   return fs.existsSync(p) ? p : null
 }
 
-function wgExeVersion(dir) {
+async function wgExeVersion(dir) {
   const exe = path.join(dir || '', 'wireguard.exe')
   if (!fs.existsSync(exe)) return '0'
   try {
-    const out = execSync(
+    const { stdout } = await execAsync(
       `powershell.exe -NoProfile -Command "(Get-Item -LiteralPath '${exe.replace(/'/g, "''")}').VersionInfo.ProductVersion"`,
       { encoding: 'utf8', windowsHide: true, timeout: 5000 },
     )
-    return String(out || '').trim() || '0'
+    return String(stdout || '').trim() || '0'
   } catch {
     return '0'
   }
@@ -158,7 +159,7 @@ function cmpVersion(a, b) {
   return 0
 }
 
-function pickBestWgSource(isDev, dirname, send) {
+async function pickBestWgSource(isDev, dirname, send) {
   const candidates = []
   const bundled = findBundledDir(isDev, dirname)
   if (bundled) candidates.push({ dir: bundled, label: 'bundled' })
@@ -168,7 +169,7 @@ function pickBestWgSource(isDev, dirname, send) {
   // ProgramData — только цель копирования, не источник (залипает 0.5.3 / wintun.dll).
   let best = null
   for (const c of candidates) {
-    const ver = wgExeVersion(c.dir)
+    const ver = await wgExeVersion(c.dir)
     if (!best || cmpVersion(ver, best.ver) > 0) {
       best = { ...c, ver }
     }
@@ -177,19 +178,15 @@ function pickBestWgSource(isDev, dirname, send) {
   return best
 }
 
-let elevatedCache = { at: 0, value: false }
-
-function isProcessElevated() {
-  const now = Date.now()
-  if (now - elevatedCache.at < 60_000) return elevatedCache.value
-  try {
-    execSync('net session', { stdio: 'ignore', windowsHide: true, timeout: 3000 })
-    elevatedCache = { at: now, value: true }
-    return true
-  } catch {
-    elevatedCache = { at: now, value: false }
-    return false
-  }
+// The privilege level of this Electron process cannot change while it runs.
+let elevationCheck
+async function isProcessElevated() {
+  elevationCheck ??= execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', [
+    '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()',
+    '$principal = [Security.Principal.WindowsPrincipal]::new($identity)',
+    'if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }',
+  ].join('; ')], { windowsHide: true, timeout: 5000 }).then(() => true, () => false)
+  return elevationCheck
 }
 
 /**
@@ -212,9 +209,9 @@ function cleanupLegacyWintun(dir, wgVer, send) {
  * Если ProgramData залип на старом 0.5.3 (служба держит файл) —
  * снять службу и перезаписать бинарники с best (как делает установщик).
  */
-function forceRefreshProgramDataFrom(best, send) {
-  if (!best?.dir || !isProcessElevated()) return false
-  const stableVer = wgExeVersion(STABLE_WG_DIR)
+async function forceRefreshProgramDataFrom(best, send) {
+  if (!best?.dir || !(await isProcessElevated())) return false
+  const stableVer = await wgExeVersion(STABLE_WG_DIR)
   if (!(cmpVersion(best.ver, stableVer) > 0)) return false
 
   send?.(`[WG] ProgramData ${stableVer} устарел → ${best.ver}, сбрасываю службу…`)
@@ -226,11 +223,11 @@ function forceRefreshProgramDataFrom(best, send) {
   for (const exe of tryExe) {
     if (!fs.existsSync(exe)) continue
     try {
-      runCmd(`"${exe}" /uninstalltunnelservice ${TUNNEL_NAME}`, path.dirname(exe))
+      await runCmdAsync(`"${exe}" /uninstalltunnelservice ${TUNNEL_NAME}`, path.dirname(exe))
     } catch { /* ignore */ }
   }
-  runCmd(`sc stop "${SERVICE_NAME}"`)
-  runCmd(`sc delete "${SERVICE_NAME}"`)
+  await runCmdAsync(`sc stop "${SERVICE_NAME}"`)
+  await runCmdAsync(`sc delete "${SERVICE_NAME}"`)
 
   fs.mkdirSync(STABLE_WG_DIR, { recursive: true })
   let copied = false
@@ -247,7 +244,7 @@ function forceRefreshProgramDataFrom(best, send) {
   }
   if (copied) {
     cleanupLegacyWintun(STABLE_WG_DIR, best.ver, send)
-    send?.(`[WG] ProgramData обновлён до ${wgExeVersion(STABLE_WG_DIR)}`)
+    send?.(`[WG] ProgramData обновлён до ${await wgExeVersion(STABLE_WG_DIR)}`)
   }
   return copied
 }
@@ -257,16 +254,16 @@ function forceRefreshProgramDataFrom(best, send) {
  * wintun.dll опционален (с 1.0 драйвер WireGuardNT, не Wintun).
  * Не залипаем на старом ProgramData 0.5.3 при reuse.
  */
-function prepareRuntimeDir(isDev, dirname, send, options = {}) {
-  const best = pickBestWgSource(isDev, dirname, send)
+async function prepareRuntimeDir(isDev, dirname, send, options = {}) {
+  const best = await pickBestWgSource(isDev, dirname, send)
   if (!best) {
     send?.('[WG] Не найден wireguard.exe (resources/wireguard или Program Files\\WireGuard)')
     return null
   }
 
-  forceRefreshProgramDataFrom(best, send)
+  await forceRefreshProgramDataFrom(best, send)
 
-  const stableVer = wgExeVersion(STABLE_WG_DIR)
+  const stableVer = await wgExeVersion(STABLE_WG_DIR)
   const reuse = options.reuse === true
     && fs.existsSync(path.join(STABLE_WG_DIR, 'wireguard.exe'))
     && cmpVersion(stableVer, best.ver) >= 0
@@ -298,7 +295,7 @@ function prepareRuntimeDir(isDev, dirname, send, options = {}) {
       if (e.code === 'EBUSY' && fs.existsSync(dest)) {
         // Если в ProgramData старая версия и занята — лучше system, если есть.
         if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))
-          && cmpVersion(wgExeVersion(SYSTEM_WG_DIR), stableVer) > 0) {
+          && cmpVersion(await wgExeVersion(SYSTEM_WG_DIR), stableVer) > 0) {
           lastRuntimeDir = SYSTEM_WG_DIR
           send?.(`[WG] ${name} занят — переключаемся на Program Files`)
           return SYSTEM_WG_DIR
@@ -332,7 +329,7 @@ function prepareRuntimeDir(isDev, dirname, send, options = {}) {
     cleanupLegacyWintun(STABLE_WG_DIR, best.ver, send)
   }
 
-  const copiedVer = wgExeVersion(STABLE_WG_DIR)
+  const copiedVer = await wgExeVersion(STABLE_WG_DIR)
   if (cmpVersion(copiedVer, best.ver) < 0) {
     if (fs.existsSync(path.join(SYSTEM_WG_DIR, 'wireguard.exe'))) {
       lastRuntimeDir = SYSTEM_WG_DIR
@@ -353,15 +350,6 @@ function prepareRuntimeDir(isDev, dirname, send, options = {}) {
   lastRuntimeDir = STABLE_WG_DIR
   send?.(`[WG] Runtime: ${STABLE_WG_DIR} (${copiedVer})`)
   return STABLE_WG_DIR
-}
-
-function runCmd(cmd, cwd) {
-  try {
-    return execSync(cmd, { cwd, encoding: 'utf8', windowsHide: true, timeout: 45000, stdio: 'pipe' })
-  } catch (e) {
-    const out = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
-    return out || null
-  }
 }
 
 /** Async — не блокирует Electron main (иначе UI «Не отвечает» при bootstrap). */
@@ -397,7 +385,7 @@ async function enableWgAdapters(send) {
   await psExecAsync(`
     Get-NetAdapter -ErrorAction SilentlyContinue |
       Where-Object {
-        $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard'
+        $_.Name -eq '${TUNNEL_NAME}'
       } |
       ForEach-Object {
         try { Enable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction Stop }
@@ -429,14 +417,8 @@ async function queryWgService() {
 }
 
 async function startWgService(send) {
+  if (!await setWgServiceManual(send)) return { ok: false }
   await enableWgAdapters(send)
-  try {
-    await execAsync(`sc config "${SERVICE_NAME}" start= demand`, {
-      windowsHide: true,
-      timeout: 8000,
-      encoding: 'utf8',
-    })
-  } catch { /* ignore */ }
   try {
     await execAsync(`sc start "${SERVICE_NAME}"`, {
       windowsHide: true,
@@ -473,11 +455,24 @@ async function startWgService(send) {
   }
 }
 
+async function setWgServiceManual(send) {
+  try {
+    await execFileAsync('sc.exe', ['config', SERVICE_NAME, 'start=', 'demand'], {
+      windowsHide: true, timeout: 8000,
+    })
+    return true
+  } catch {
+    send?.('[WG] Не удалось отключить автозапуск службы wg-turn', 'W')
+    return false
+  }
+}
+
 async function runWgInstall(wgExe, stableConf, runtimeDir, send) {
   send('[WG] Установка службы WireGuardTunnel$wg-turn...')
   await enableWgAdapters(send)
   const before = await queryWgService()
   if (before.running) {
+    if (!await setWgServiceManual(send)) return { ok: false, out: '' }
     send('[WG] служба уже RUNNING — install пропускаем')
     return { ok: true, accessDenied: false, out: '' }
   }
@@ -553,20 +548,6 @@ async function trySyncConf(runtimeDir, stableConf, send) {
   }
 }
 
-function psExec(script) {
-  const file = path.join(os.tmpdir(), `silent-wg-${Date.now()}.ps1`)
-  try {
-    fs.writeFileSync(file, script, 'utf8')
-    execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${file}"`, {
-      windowsHide: true,
-      stdio: 'ignore',
-      timeout: 30000,
-    })
-  } catch {} finally {
-    try { fs.unlinkSync(file) } catch {}
-  }
-}
-
 async function psExecAsync(script) {
   const file = path.join(os.tmpdir(), `silent-wg-${Date.now()}-${Math.random().toString(36).slice(2)}.ps1`)
   try {
@@ -584,7 +565,7 @@ function isTunnelUp() {
   if (browserRouter.isActive()) return true
   try {
     const out = execSync(
-      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { ($_.Name -eq \'wg-turn\' -or $_.InterfaceDescription -match \'WireGuard Tunnel\') -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
+      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { $_.Name -eq \'wg-turn\' -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
       { windowsHide: true, encoding: 'utf8', timeout: 10000 },
     )
     return !!out.trim()
@@ -597,7 +578,7 @@ async function isTunnelUpAsync() {
   if (browserRouter.isActive()) return true
   try {
     const { stdout } = await execAsync(
-      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { ($_.Name -eq \'wg-turn\' -or $_.InterfaceDescription -match \'WireGuard Tunnel\') -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
+      'powershell.exe -NoProfile -Command "Get-NetAdapter -EA SilentlyContinue | ? { $_.Name -eq \'wg-turn\' -and $_.Status -eq \'Up\' } | Select -First 1 -Expand Name"',
       { windowsHide: true, encoding: 'utf8', timeout: 10000 },
     )
     return !!String(stdout || '').trim()
@@ -639,7 +620,7 @@ async function polishWgNetworkProfile(send, mtu = WG_MTU_DEFAULT) {
   const mtuNum = Number(mtu) || WG_MTU_DEFAULT
   try {
     await execAsync(
-      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue; netsh interface ipv4 set subinterface $a.ifIndex mtu=${mtuNum} store=persistent | Out-Null } }"`,
+      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' } | Select-Object -First 1; if ($a) { Set-NetConnectionProfile -InterfaceIndex $a.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue; netsh interface ipv4 set subinterface $a.ifIndex mtu=${mtuNum} store=persistent | Out-Null } }"`,
       { windowsHide: true, timeout: 12000 },
     )
     send?.(`[WG] Адаптер wg-turn: профиль Private, MTU ${mtuNum}`)
@@ -877,7 +858,7 @@ async function applyWgDns(send, dnsValue = WG_DNS) {
   const psServers = servers.map((s) => `'${s.replace(/'/g, "''")}'`).join(',')
   try {
     await execAsync(
-      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } | Select-Object -First 1; if ($a) { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @(${psServers}) -ErrorAction SilentlyContinue } }"`,
+      `powershell.exe -NoProfile -Command "& { $a = Get-NetAdapter -EA SilentlyContinue | Where-Object { $_.Name -eq '${TUNNEL_NAME}' } | Select-Object -First 1; if ($a) { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @(${psServers}) -ErrorAction SilentlyContinue } }"`,
       { windowsHide: true, timeout: 12000 },
     )
     send?.(`[WG] DNS на адаптере: ${servers.join(', ')}`)
@@ -934,10 +915,10 @@ function probeTunnelGateway(timeoutMs = 2500) {
   })
 }
 
-async function waitForTunnelUp(maxMs = 30000, send) {
+async function waitForTunnelUp(maxMs = 30000, send, isCancelled = () => false) {
   const deadline = Date.now() + maxMs
   let enabled = false
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !isCancelled()) {
     if (await isServiceRunningAsync()) return true
     if (!enabled) {
       enabled = true
@@ -945,6 +926,7 @@ async function waitForTunnelUp(maxMs = 30000, send) {
     }
     await sleep(300)
   }
+  if (isCancelled()) return false
   const up = await isServiceRunningAsync()
   if (!up) await logServiceState(send)
   return up
@@ -1056,8 +1038,7 @@ async function disableWgAdapters(send, epoch = null) {
   await psExecAsync(`
     Get-NetAdapter -ErrorAction SilentlyContinue |
       Where-Object {
-        $_.Name -eq '${TUNNEL_NAME}' -or
-        $_.InterfaceDescription -match 'WireGuard'
+        $_.Name -eq '${TUNNEL_NAME}'
       } |
       ForEach-Object {
         try {
@@ -1071,6 +1052,7 @@ async function disableWgAdapters(send, epoch = null) {
 }
 
 async function stopWgServiceLocal(wgExe, runtimeDir, send) {
+  await runCmdAsync(`sc.exe config "${SERVICE_NAME}" start= demand`, undefined, 8000)
   if (wgExe && fs.existsSync(wgExe)) {
     const out = await runCmdAsync(`"${wgExe}" /uninstalltunnelservice ${TUNNEL_NAME}`, runtimeDir, 20000)
     if (out && isAccessDeniedOut(out)) {
@@ -1087,7 +1069,7 @@ async function stopWgServiceLocal(wgExe, runtimeDir, send) {
   } catch { /* ignore */ }
   await psExecAsync(`
     Get-CimInstance Win32_Process -Filter "Name='wireguard.exe'" -ErrorAction SilentlyContinue |
-      Where-Object { $_.CommandLine -match 'wg-turn|SilentVPN' } |
+      Where-Object { $_.CommandLine -match '[/]tunnelservice.*[\\/]SilentVPN[\\/]wg-turn\.conf' } |
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   `)
   return { accessDenied: false }
@@ -1108,11 +1090,12 @@ try {
   if (Test-Path '${exe}') {
     & '${exe}' /uninstalltunnelservice ${TUNNEL_NAME} 2>&1 | ForEach-Object { Log $_ }
   }
+  sc.exe config '${SERVICE_NAME}' start= demand 2>&1 | ForEach-Object { Log $_ }
   sc.exe stop '${SERVICE_NAME}' 2>&1 | ForEach-Object { Log $_ }
   Start-Sleep -Milliseconds 800
   sc.exe delete '${SERVICE_NAME}' 2>&1 | ForEach-Object { Log $_ }
   Get-NetAdapter -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -eq '${TUNNEL_NAME}' -or $_.InterfaceDescription -match 'WireGuard' } |
+    Where-Object { $_.Name -eq '${TUNNEL_NAME}' } |
     ForEach-Object {
       Log "disable adapter $($_.Name) ($($_.Status))"
       try { Disable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction Stop }
@@ -1160,8 +1143,7 @@ async function forceStopWireGuard(isDev, dirname, send) {
       return
     }
     await browserRouter.stop()
-    const alreadyDown =
-      !(await isWgStillPresentAsync()) && !(await isServiceRunningAsync())
+    const alreadyDown = !(await isTunnelUpAsync()) && (await queryWgService()).exists === false
     if (alreadyDown) {
       // Нет службы/адаптера — не спамить «Остановка» при каждом olcrtc connect.
       return
@@ -1169,7 +1151,7 @@ async function forceStopWireGuard(isDev, dirname, send) {
 
     send?.('[WG] Остановка туннеля...')
 
-    const runtimeDir = lastRuntimeDir || prepareRuntimeDir(isDev, dirname, send) || STABLE_WG_DIR
+    const runtimeDir = lastRuntimeDir || STABLE_WG_DIR
     const wgExe = path.join(runtimeDir, 'wireguard.exe')
 
     // Сначала гасим адаптер — Windows сразу снимает «VPN включён»,
@@ -1209,7 +1191,7 @@ async function forceStopWireGuard(isDev, dirname, send) {
       return
     }
     // Install мог пройти через elevated UAC, а Electron без админа — локальный uninstall молча no-op на Win10.
-    if (!isProcessElevated() || first.accessDenied) {
+    if (!(await isProcessElevated()) || first.accessDenied) {
       const ok = await uninstallTunnelElevated(wgExe, runtimeDir, send)
       if (ok) {
         send?.('[WG] Туннель wg-turn снят (UAC)')
@@ -1255,6 +1237,14 @@ async function stopWireGuardTunnel(isDev, dirname, send, excludeIPs = []) {
       savedPhysicalGateway = null
     }
   })
+}
+
+async function recoverIdleWindowsTunnel(isDev, dirname, send) {
+  const [service, adapterUp] = await Promise.all([queryWgService(), isTunnelUpAsync()])
+  if (!service.exists && !adapterUp && !fs.existsSync(IPV6_RESTORE_MARKER)) return
+  send?.('[WG] Снимаем wg-turn, оставшийся после завершения приложения')
+  await forceStopWireGuard(isDev, dirname, send)
+  await restoreIpv6Leak(send)
 }
 
 function buildWgConfigFromApi(config, listenPort = 9000) {
@@ -1337,6 +1327,9 @@ function ensureWgIpv6Address(confText) {
  * Иначе Gemini на Wi‑Fi уходит мимо Сервера 4 (Android VPN режет IPv6 сам).
  */
 async function blockIpv6Leak(send) {
+  // Remember that the physical bindings need restoring even after a crash.
+  fs.mkdirSync(STABLE_CONF_DIR, { recursive: true })
+  fs.writeFileSync(IPV6_RESTORE_MARKER, '')
   const ps = [
     "$ErrorActionPreference='SilentlyContinue'",
     "netsh interface teredo set state disabled | Out-Null",
@@ -1360,7 +1353,7 @@ async function blockIpv6Leak(send) {
     "} | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue",
     "$loop = Get-NetIPInterface -AddressFamily IPv6 | Where-Object { $_.InterfaceAlias -match 'Loopback' } | Select-Object -First 1",
     "if ($loop) {",
-    "  New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $loop.InterfaceIndex -NextHop '::1' -RouteMetric 1 -Publish No -ErrorAction SilentlyContinue | Out-Null",
+    "  New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $loop.InterfaceIndex -NextHop '::1' -RouteMetric 1 -Publish No -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null",
     "}",
     "Write-Output 'ok'",
   ].join('; ')
@@ -1380,11 +1373,13 @@ async function blockIpv6Leak(send) {
 }
 
 async function restoreIpv6Leak(send) {
+  const pending = fs.existsSync(IPV6_RESTORE_MARKER)
   const ps = [
     "$ErrorActionPreference='SilentlyContinue'",
-    "Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object {",
+    "$blackhole = @(Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object {",
     "  $_.InterfaceAlias -match 'Loopback' -and $_.NextHop -eq '::1'",
-    "} | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue",
+    "})",
+    ...(pending ? [] : ["if (-not $blackhole) { exit 0 }"]),
     "Get-NetAdapter | Where-Object {",
     "  $_.InterfaceDescription -notmatch 'WireGuard|Wintun|Loopback'",
     "  -and $_.Name -notmatch 'WireGuard|wg-turn|Loopback'",
@@ -1396,14 +1391,18 @@ async function restoreIpv6Leak(send) {
     "} | ForEach-Object {",
     "  Set-NetIPInterface -InterfaceIndex $_.InterfaceIndex -RouterDiscovery Controlled -ErrorAction SilentlyContinue",
     "}",
+    "$blackhole | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue",
     "Write-Output 'ok'",
   ].join('; ')
   try {
-    await execAsync(
+    const { stdout } = await execAsync(
       `powershell.exe -NoProfile -NonInteractive -Command "${ps.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', windowsHide: true, timeout: 20000 },
     )
-    send?.('[WG] IPv6 restored (ms_tcpip6 on)')
+    if (String(stdout || '').includes('ok')) {
+      if (pending) fs.unlinkSync(IPV6_RESTORE_MARKER)
+      send?.('[WG] IPv6 restored (ms_tcpip6 on)')
+    }
   } catch (e) {
     send?.('[WG] IPv6 restore: ' + (e.message || e), 'W')
   }
@@ -1432,7 +1431,7 @@ function generateExclusionAllowedIPs(excludeIPs) {
   return networks.map(([n, p]) => `${numToIp(n)}/${p}`).join(', ')
 }
 
-function installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs = [], subnetOnly = false) {
+function installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs = [], subnetOnly = false, isCancelled = () => false) {
   return new Promise((resolve) => {
     const logPath = path.join(STABLE_CONF_DIR, 'wg-install.log')
     const scriptPath = path.join(STABLE_CONF_DIR, 'wg-install.ps1')
@@ -1452,7 +1451,11 @@ try {
   $out = & '${wgExe.replace(/'/g, "''")}' /installtunnelservice '${stableConf.replace(/'/g, "''")}' 2>&1
   $out | ForEach-Object { Log $_ }
   if ($LASTEXITCODE -ne 0) { Log "install exit=$LASTEXITCODE"; exit $LASTEXITCODE }
-  sc.exe start '${SERVICE_NAME}' 2>&1 | ForEach-Object { Log $_ }
+  sc.exe config '${SERVICE_NAME}' start= demand 2>&1 | ForEach-Object { Log $_ }
+  if ($LASTEXITCODE -ne 0) {
+    & '${wgExe.replace(/'/g, "''")}' /uninstalltunnelservice ${TUNNEL_NAME} 2>&1 | ForEach-Object { Log $_ }
+    exit 1
+  }
   Start-Sleep -Milliseconds 400
 ${bypassPs1}
   Log "OK"
@@ -1480,9 +1483,7 @@ ${bypassPs1}
         resolve(false)
         return
       }
-      const up = await waitForTunnelUp(35000, send)
-      if (up) await finalizeTunnelUp(send, excludeIPs, subnetOnly)
-      resolve(up)
+      resolve(await waitForTunnelUp(35000, send, isCancelled))
     })
 
     launcher.on('error', () => {
@@ -1496,13 +1497,15 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
   // Отдать event loop UI (иначе клик тумблера → «Не отвечает» на секунду)
   await sleep(0)
   await waitWgStopIdle()
+  if (options.isCancelled?.()) return false
   const skipWdttWait = options.skipWdttWait === true
   const subnetOnly = options.subnetOnly === true
   const skipForceStop = options.skipForceStop === true
   const reuseRuntime = options.reuseRuntime === true
   // Gateway в фоне — не блокировать install (как origin: sync без await-цепочки)
   const gatewayPromise = excludeIPs.length || options.browserRouting ? capturePhysicalGateway(send) : Promise.resolve(null)
-  const runtimeDir = prepareRuntimeDir(isDev, dirname, send, { reuse: reuseRuntime })
+  const runtimeDir = await prepareRuntimeDir(isDev, dirname, send, { reuse: reuseRuntime })
+  if (options.isCancelled?.()) return false
   if (!runtimeDir) {
     send('[WG] Нет wireguard.exe / wintun.dll — переустановите Silent VPN')
     return false
@@ -1552,8 +1555,9 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     send('[WG] WDTT активен, поднимаем WireGuard...')
   }
 
+  if (options.isCancelled?.()) return false
   if (!subnetOnly && options.browserRouting) {
-    if (!isProcessElevated()) {
+    if (!(await isProcessElevated())) {
       send('[WG] Для раздельных правил запустите SilentVPN-Admin.bat', 'E')
       return false
     }
@@ -1616,7 +1620,9 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     await sleep(200)
   }
 
+  if (options.isCancelled?.()) return false
   const finishOk = async () => {
+    if (options.isCancelled?.()) return false
     await gatewayPromise
     await finalizeTunnelUp(send, excludeIPs, subnetOnly, resolvedDns, resolvedMtu)
     await sleep(400)
@@ -1639,16 +1645,15 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     return true
   }
 
-  // Сброс кеша elevation — иначе 60с false-positive после смены прав.
-  elevatedCache = { at: 0, value: false }
-  const elevated = isProcessElevated()
+  const elevated = await isProcessElevated()
   send(elevated ? '[WG] Процесс с правами администратора' : '[WG] Без админа — нужен UAC для службы WireGuard')
 
   // Win10: прошлый disconnect мог только Disable-NetAdapter — перед install включим.
   await enableWgAdapters(send)
+  if (options.isCancelled?.()) return false
 
   if (!elevated) {
-    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
+    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly, options.isCancelled)
     if (ok) return finishOk()
     send('[WG] Нужны права администратора (UAC). Переустановите Silent VPN или запустите SilentVPN-Admin.bat')
     return false
@@ -1656,28 +1661,32 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
 
   const installResult = await runWgInstall(wgExe, stableConf, runtimeDir, send)
 
-  if (await waitForTunnelUp(25000, send)) {
+  if (installResult.ok && await waitForTunnelUp(25000, send, options.isCancelled)) {
     return finishOk()
   }
 
+  if (options.isCancelled?.()) return false
   send('[WG] Служба не поднялась — Enable-NetAdapter + sc start, без второго uninstall…')
   await enableWgAdapters(send)
-  await startWgService(send)
-  if (await waitForTunnelUp(15000, send)) {
+  const restarted = await startWgService(send)
+  if (restarted.ok && await waitForTunnelUp(15000, send, options.isCancelled)) {
     return finishOk()
   }
 
+  if (options.isCancelled?.()) return false
   send('[WG] Служба не поднялась — повтор установки через 2с…')
   await sleep(2000)
+  if (options.isCancelled?.()) return false
   const retryResult = await runWgInstall(wgExe, stableConf, runtimeDir, send)
-  if (await waitForTunnelUp(25000, send)) {
+  if (retryResult.ok && await waitForTunnelUp(25000, send, options.isCancelled)) {
     return finishOk()
   }
 
+  if (options.isCancelled?.()) return false
   // Ложный «elevated» или Access Denied — fallback на UAC-скрипт.
   if (installResult.accessDenied || retryResult.accessDenied || !(await isServiceRunningAsync())) {
     send('[WG] Служба не создалась — повтор через UAC…')
-    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly)
+    const ok = await installTunnelElevated(wgExe, stableConf, runtimeDir, send, excludeIPs, subnetOnly, options.isCancelled)
     if (ok) return finishOk()
   }
 
@@ -1690,6 +1699,7 @@ async function applyWireGuardConfig(confPath, isDev, dirname, send, excludeIPs =
     if (String(evt || '').trim()) send('[WG] Event log: ' + String(evt).trim().slice(0, 300))
   } catch { /* ignore */ }
 
+  if (options.isCancelled?.()) return false
   send('[WG] Служба не поднялась — services.msc → WireGuardTunnel$wg-turn')
   send('[WG] Переустановите Silent VPN (установщик чинит WG 1.1) или SilentVPN-Admin.bat')
   return false
@@ -1712,6 +1722,7 @@ module.exports = {
   resetWireGuardState: () => {},
   forceStopWireGuard,
   stopWireGuardTunnel,
+  recoverIdleWindowsTunnel,
   buildWgConfigFromApi,
   resolveWgMtu,
   WG_MTU_DEFAULT,

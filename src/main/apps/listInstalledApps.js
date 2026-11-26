@@ -3,6 +3,7 @@
  * Источники: меню Пуск, Desktop, Steam library, ярлыки BlueStacks.
  */
 const { execFileSync } = require('child_process')
+const { Worker, isMainThread, parentPort, workerData } = require('worker_threads')
 const crypto = require('crypto')
 const fs = require('fs')
 const os = require('os')
@@ -876,8 +877,25 @@ function listInstalledApps() {
   return apps
 }
 
+let pendingScan
+
+function scanInstalledApps() {
+  if (!pendingScan) {
+    pendingScan = new Promise((resolve, reject) => {
+      const worker = new Worker(__filename, { workerData: 'installed-apps' })
+      worker.once('message', resolve)
+      worker.once('error', reject)
+      worker.once('exit', code => reject(new Error(`Installed apps scan exited (${code})`)))
+    }).finally(() => { pendingScan = null })
+  }
+  return pendingScan
+}
+
+if (!isMainThread && workerData === 'installed-apps') parentPort.postMessage(listInstalledApps())
+
 module.exports = {
   listInstalledApps,
+  scanInstalledApps,
   // для тестов
   parseSteamAppIdFromTarget,
   parseBlueStacksPackage,

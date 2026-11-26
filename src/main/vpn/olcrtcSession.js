@@ -2,7 +2,8 @@
  * Debug-only: olcrtc cnc (SOCKS5) + sing-box TUN → SOCKS.
  * Не трогает WDTT/WireGuard.
  */
-const { spawn, execSync } = require('child_process')
+const { spawn, execFile } = require('child_process')
+const execFileAsync = require('util').promisify(execFile)
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
@@ -160,7 +161,7 @@ async function waitForSocksDial(host, port, timeoutMs, log, socksUser = '', sock
     'www.google.com',
   ]
   let streak = 0
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && sessionActive) {
     const ok = await socksDialDomainOnce(host, port, probeHost, 2800, socksUser, socksPass)
     if (!ok) {
       streak = 0
@@ -196,25 +197,24 @@ function killProc(proc, name, log) {
   }
 }
 
-function stopOlcrtcSession(log) {
+async function stopOlcrtcSession(log) {
   ready = false
   sessionActive = false
   killProc(singboxProc, 'sing-box', log)
   singboxProc = null
   killProc(olcrtcProc, 'olcrtc', log)
   olcrtcProc = null
-  try {
-    execSync('taskkill /F /IM olcrtc.exe /T', { stdio: 'ignore', windowsHide: true })
-  } catch { /* ignore */ }
-  try {
-    execSync('taskkill /F /IM sing-box.exe /T', { stdio: 'ignore', windowsHide: true })
-  } catch { /* ignore */ }
+  if (process.platform === 'win32') {
+    await Promise.allSettled(['olcrtc.exe', 'sing-box.exe'].map(name =>
+      execFileAsync('taskkill.exe', ['/F', '/IM', name, '/T'], { windowsHide: true, timeout: 5000 }),
+    ))
+  }
   // Дать Win снять TUN 172.19.0.1 — иначе ICE ходит в мёртвый iface → unreachable.
   log?.('[olcrtc] session stopped')
 }
 
 async function stopOlcrtcSessionAndSettle(log) {
-  stopOlcrtcSession(log)
+  await stopOlcrtcSession(log)
   await sleep(600)
 }
 
@@ -368,9 +368,10 @@ function renderSingboxConfig(socksHost, socksPort, socksUser = '', socksPass = '
 /**
  * @returns {Promise<{ success?: boolean, error?: string }>}
  */
-async function beginOlcrtcSession(config, { log, onReady } = {}) {
+async function beginOlcrtcSession(config, { log, onReady, isCancelled = () => false } = {}) {
   // Полный сброс + пауза: иначе ICE цепляется к 172.19.0.1 (старый sing-box TUN).
   await stopOlcrtcSessionAndSettle(log)
+  if (isCancelled()) return { cancelled: true }
   lastOlcrtcLines = []
   const olcrtcPath = findExe(['olcrtc.exe', 'olcrtc'])
   if (!olcrtcPath) {
@@ -440,6 +441,7 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
     log?.(`[olcrtc] STATIC_HOSTS=${hostPairs.length}`)
   }
 
+  if (isCancelled()) return { cancelled: true }
   sessionActive = true
   ready = false
   log?.(`[olcrtc] start ${olcrtcPath}`)
@@ -514,6 +516,7 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
 
   // SOCKS только ПОСЛЕ peer (bringUpLink) — ждём до 90с.
   const socksUp = await waitForPort(socksHost, socksPort, 90_000, log)
+  if (isCancelled()) return { cancelled: true }
   if (!socksUp) {
     const tail = lastOlcrtcLines.slice(-8).join(' | ').slice(0, 400)
     if (tail) log?.(`[olcrtc] last: ${tail}`)
@@ -521,14 +524,15 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
       earlyExitCode != null
         ? `olcrtc вышел с кодом ${earlyExitCode} до SOCKS (peer/room/auth)`
         : `olcrtc SOCKS не поднялся на ${socksHost}:${socksPort} (нет peer srv или ICE в мёртвый TUN — выключите VPN и повторите)`
-    stopOlcrtcSession(log)
+    await stopOlcrtcSession(log)
     return { error: hint }
   }
   log?.(`[olcrtc] SOCKS listen ${socksHost}:${socksPort}`)
 
   const dialOk = await waitForSocksDial(socksHost, socksPort, 60_000, log, socksUser, socksPass)
+  if (isCancelled()) return { cancelled: true }
   if (!dialOk) {
-    stopOlcrtcSession(log)
+    await stopOlcrtcSession(log)
     return { error: 'olcrtc SOCKS слушает, но peer не отвечает (dial timeout)' }
   }
 
@@ -558,8 +562,9 @@ async function beginOlcrtcSession(config, { log, onReady } = {}) {
   })
 
   await new Promise((r) => setTimeout(r, 250))
+  if (isCancelled()) return { cancelled: true }
   if (!isOlcrtcAlive()) {
-    stopOlcrtcSession(log)
+    await stopOlcrtcSession(log)
     return { error: 'olcrtc завершился сразу после старта' }
   }
 

@@ -1,7 +1,8 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { spawn } = require('child_process')
+const { spawn, execFile } = require('child_process')
+const execFileAsync = require('util').promisify(execFile)
 const dns = require('dns')
 const https = require('https')
 const http = require('http')
@@ -12,23 +13,19 @@ const httpsAgent = new https.Agent({ keepAlive: false })
 app.commandLine.appendSwitch('ignore-certificate-errors')
 const {
   stopWireGuardTunnel,
-  forceStopWireGuard,
   waitForWdttProxy,
   waitForUdpPortFree,
   waitForTunnelDown,
   isProcessElevated,
-  isTunnelUp,
-  isServiceRunning,
   isTunnelUpAsync,
   isServiceRunningAsync,
   buildWgConfigFromApi,
-  applyWireGuardConfig,
+  applyWireGuardConfig: applyNativeWireGuardConfig,
   addServerBypassRoutes,
   removeHostBypassRoutes,
   capturePhysicalGateway,
   normalizeWgConfText,
   waitWgStopIdle,
-  prepareRuntimeDir,
   beginWgApply,
   probeTunnelGateway,
   resolveWgMtu,
@@ -661,6 +658,7 @@ function clearFullTunnelUpgradeTimer() {
 function quitAppFully() {
   if (isQuitting) return
   isQuitting = true
+  vpnConnectSeq += 1
   try {
     if (tray && !tray.isDestroyed()) {
       tray.destroy()
@@ -683,25 +681,16 @@ function quitAppFully() {
 }
 
 function cleanupVpn() {
-  try {
-    const { clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
-    void clearActiveExcludedExePaths(sendLog)
-  } catch { /* ignore */ }
-  try {
-    const { clearSiteBypass } = require('./apps/siteBypass')
-    void clearSiteBypass(sendLog)
-  } catch { /* ignore */ }
+  if (vpnCleanupPromise) return vpnCleanupPromise
+  const { clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
+  const { clearSiteBypass } = require('./apps/siteBypass')
+  const routeStops = [clearActiveExcludedExePaths(sendLog), clearSiteBypass(sendLog)]
   clearTelegramWarmupTimers()
   telegramWarmupMinWorkersDone = false
   resetHashFailureSessionState()
   vpnBootstrapMode = false
   vpnOlcrtcMode = false
-  try {
-    stopOlcrtcSession(sendLog)
-  } catch { /* ignore */ }
-  try {
-    stopOlcrtc2Session(sendLog)
-  } catch { /* ignore */ }
+  const bypassStops = [stopOlcrtcSession(sendLog), stopOlcrtc2Session(sendLog)]
   wgCredPhase = false
   expectedCredGroups = 1
   credGroupsResolved = 0
@@ -728,14 +717,23 @@ function cleanupVpn() {
     try { wdttProcess.kill() } catch {}
     wdttProcess = null
   }
-  // Не await на обычном disconnect — UI не блокируем.
-  // before-quit на darwin/linux ждёт vpnCleanupPromise (иначе DNS/routes остаются).
-  const tunnelStop = stopWireGuardTunnel(isDev, __dirname, sendLog, sessionExcludeIPs)
+  const excludeIPs = [...sessionExcludeIPs]
+  const pendingApplies = [...wireGuardApplies]
+  const tunnelStop = (async () => {
+    await vpnStartupRecovery
+    if (pendingApplies.length && process.platform === 'win32') {
+      await require('./vpn/browserRouter').stop()
+    }
+    await Promise.allSettled(pendingApplies)
+    await stopWireGuardTunnel(isDev, __dirname, sendLog, excludeIPs)
+  })()
   const hostsClear = Promise.resolve().then(() => syncAdminNipHosts(false, sendLog)).catch(() => false)
-  vpnCleanupPromise = Promise.all([tunnelStop, hostsClear]).then(() => {})
-  const stopping = vpnCleanupPromise
-  void stopping.finally(() => {
-    if (vpnCleanupPromise === stopping) vpnCleanupPromise = null
+  vpnCleanupPromise = Promise.allSettled([tunnelStop, hostsClear, ...routeStops, ...bypassStops]).then(results => {
+    const failed = results.find(result => result.status === 'rejected')
+    if (failed) throw failed.reason
+  }).finally(() => { vpnCleanupPromise = null })
+  void vpnCleanupPromise.catch(error => {
+    sendLog(`[VPN] Остановка: ${error?.message || error}`, 'E')
   })
   clearBypassRefresh()
   wgApplied = false
@@ -746,10 +744,22 @@ function cleanupVpn() {
     russianServices.configure(app.getPath('userData')).tunnelStopped()
     notifyRussianServices()
   } catch { /* russianServices may not be ready during early quit */ }
+  return vpnCleanupPromise
 }
 
-/** Последний stopWireGuardTunnel — для await на before-quit (Mac/Linux). */
 let vpnCleanupPromise = null
+let vpnStartupRecovery = Promise.resolve()
+const wireGuardApplies = new Set()
+
+async function applyWireGuardConfig(...args) {
+  const applying = applyNativeWireGuardConfig(...args)
+  wireGuardApplies.add(applying)
+  try {
+    return await applying
+  } finally {
+    wireGuardApplies.delete(applying)
+  }
+}
 
 function isWdttAlive() {
   if (!wdttProcess) return false
@@ -783,12 +793,7 @@ function onOlcrtcFamilyDead({ code, reason }) {
   tunnelReadySent = false
   activeWorkerCount = 0
   lastVpnConnectConfig = null
-  try {
-    stopOlcrtcSession(sendLog)
-  } catch { /* ignore */ }
-  try {
-    stopOlcrtc2Session(sendLog)
-  } catch { /* ignore */ }
+  void cleanupVpn()
   if (mainWindow && !mainWindow.isDestroyed()) {
     // Отдельно от ручного vpn-disconnect: UI сбросит sticky и подтянет новый room.
     mainWindow.webContents.send('olcrtc-room-dead', {
@@ -1071,12 +1076,8 @@ function startNetworkMonitor() {
 }
 
 async function cleanupVpnAsync() {
-  cleanupVpn()
-  await waitForTunnelDown(15000, sendLog)
-  // Дождаться очереди stopWireGuardTunnel (bypass/disable), иначе логи WG
-  // и снятие маршрутов догоняют уже готовый olcrtc/Telemost.
-  await waitWgStopIdle()
-  await sleep(500)
+  await cleanupVpn()
+  return waitForTunnelDown(15000, sendLog)
 }
 
 async function fastDisconnectVpn() {
@@ -1193,8 +1194,8 @@ function wdttExePath() {
 
 ipcMain.handle('list-installed-apps', async () => {
   try {
-    const { listInstalledApps } = require('./apps/listInstalledApps')
-    const apps = listInstalledApps()
+    const { scanInstalledApps } = require('./apps/listInstalledApps')
+    const apps = await scanInstalledApps()
     const withIcon = apps.filter(a => a.icon).length
     sendLog(`[Apps] ярлыки: ${apps.length}, иконок: ${withIcon}`)
     return apps
@@ -1555,6 +1556,7 @@ ipcMain.handle('vk-guest-bootstrap', async (_, authUrl) => {
 })
 
 async function beginWdttSession(config, { switching = false } = {}) {
+  const connectSeq = vpnConnectSeq
   vpnBootstrapMode = !!config.is_bootstrap
   if (vpnBootstrapMode) {
     const overlay = pickBootstrapOverlay({
@@ -1577,8 +1579,9 @@ async function beginWdttSession(config, { switching = false } = {}) {
     const { setActiveExcludedExePaths, clearActiveExcludedExePaths } = require('./apps/vpnAppExclusions')
     const { clearSiteBypass } = require('./apps/siteBypass')
     if (config.is_bootstrap) {
-      clearActiveExcludedExePaths()
-      void clearSiteBypass(sendLog)
+      void Promise.all([clearActiveExcludedExePaths(), clearSiteBypass(sendLog)]).catch(error => {
+        sendLog(`[Sites] Очистка правил: ${error?.message || error}`, 'W')
+      })
     } else {
       const paths = getExcludedExePathsForVpn(defaultStatePath(app.getPath('userData')))
       setActiveExcludedExePaths(paths)
@@ -1694,6 +1697,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
     } catch { /* ignore */ }
   }
   const apiConf = buildWgConfigFromApi(config)
+  if (!vpnSessionActive || connectSeq !== vpnConnectSeq) return { cancelled: true }
 
   const gen = ++wdttGeneration
   const proc = spawn(exePath, args, {
@@ -1907,22 +1911,31 @@ async function beginWdttSession(config, { switching = false } = {}) {
         browserPolicy,
         isCancelled: () => !vpnSessionActive || vpnConnectSeq !== wgConnectSeq,
       })
-      const timeoutMs = isProcessElevated() ? 70000 : 90000
+      const timeoutMs = await isProcessElevated() ? 70000 : 90000
       let ok = false
+      let installTimedOut = false
+      let installTimer
       try {
         ok = await Promise.race([
           wgPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('WG install timeout')), timeoutMs)),
+          new Promise((_, reject) => {
+            installTimer = setTimeout(() => {
+              installTimedOut = true
+              reject(new Error('WG install timeout'))
+            }, timeoutMs)
+          }),
         ])
       } catch (e) {
         sendLog('[WG] ' + (e.message || 'install failed'))
         ok = false
+      } finally {
+        clearTimeout(installTimer)
       }
       if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
       // Windows: служба Wintun иногда успевает подняться после race — soft-OK ок.
       // Darwin/Linux: «процесс/utun жив» ≠ data-plane. Лог 10:05: data-plane мёртв,
       // apply вернул false, а эта ветка всё равно ставила «успех» → сайты по Wi‑Fi.
-      if (!ok && (await isServiceRunningAsync())) {
+      if (installTimedOut && (await isServiceRunningAsync())) {
         if (process.platform === 'win32') {
           sendLog('[WG] Туннель/служба активны после таймаута — считаем успехом')
           ok = true
@@ -1939,8 +1952,11 @@ async function beginWdttSession(config, { switching = false } = {}) {
         // Handshake после смены сервера: ConfigSync не должен сразу уходить на public IP Улья.
         wgRouteSettleUntil = Date.now() + 15_000
         await addServerBypassRoutes([...excludeIPs], sendLog)
+        if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
         await ensureNipIoBypassRoutes(sendLog)
+        if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
         await syncAdminNipHosts(peerIsHive(config?.server_ip, ADMIN_HIVE_IP), sendLog)
+        if (!vpnSessionActive || vpnConnectSeq !== wgConnectSeq) return false
         scheduleBypassRefresh(sendLog)
         try {
           const { refreshAppExclusionBypassAfterTunnel } = require('./apps/vpnAppExclusions')
@@ -1962,7 +1978,7 @@ async function beginWdttSession(config, { switching = false } = {}) {
           ? 'VPN на Mac не поднялся (нет ответа туннеля или служба VPN не установлена). Тумблер сброшен, чтобы сайты не шли мимо VPN — попробуйте ещё раз.'
           : process.platform === 'linux'
             ? 'WireGuard не запустился. Проверьте helper / polkit'
-            : isProcessElevated()
+            : await isProcessElevated()
               ? 'WireGuard не запустился. Проверьте services.msc → WireGuardTunnel$wg-turn'
               : 'Разрешите UAC (Да) или запустите «Silent VPN (Admin).bat»',
       )
@@ -2221,6 +2237,9 @@ ipcMain.handle('vpn-connect', async (_, config) => {
   const wantOlcrtc = wantOlcrtcFamily(config)
   const useOlcrtc2 = wantOlcrtc2Family(config)
   const seq = ++vpnConnectSeq
+  await vpnStartupRecovery
+  await vpnCleanupPromise
+  if (isQuitting || seq !== vpnConnectSeq) return { cancelled: true }
 
   if (vpnConnectInFlight) {
     sendLog('[VPN] connect: ждём завершения предыдущего…')
@@ -2229,11 +2248,13 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       sendLog('[VPN] connect: отменён (новый disconnect/connect)')
       return { cancelled: true }
     }
+    await vpnCleanupPromise
+    if (seq !== vpnConnectSeq) return { cancelled: true }
   }
 
-  if (!wantBootstrap && vpnBootstrapMode) {
-    sendLog('[VPN] connect: смена bootstrap → main, полный перезапуск')
-    await cleanupVpnAsync()
+  if (vpnSessionActive && wantBootstrap !== vpnBootstrapMode) {
+    sendLog('[VPN] connect: смена основного/временного туннеля, полный перезапуск')
+    if (!await cleanupVpnAsync()) return { error: 'Предыдущий туннель VPN ещё работает' }
     if (seq !== vpnConnectSeq) return { cancelled: true }
   }
 
@@ -2263,6 +2284,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       // к cloud-api/stream.wb уходит в мёртвый TUN → timeout (на Android — whitelist).
       await cleanupVpnAsync()
       await new Promise((r) => setTimeout(r, 250))
+      if (seq !== vpnConnectSeq) return { cancelled: true }
       lastVpnConnectConfig = config
       vpnSessionActive = true
       vpnOlcrtcMode = true
@@ -2274,6 +2296,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
       const begin = useOlcrtc2 ? beginOlcrtc2Session : beginOlcrtcSession
       const result = await begin(config, {
         log: sendLog,
+        isCancelled: () => seq !== vpnConnectSeq || !vpnSessionActive,
         onReady: () => {
           activeWorkerCount = 1
           // Сразу после SOCKS+TUN — не ждать poll (иначе waitVpnReady → ложный alert).
@@ -2287,6 +2310,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
           }
         },
       })
+      if (seq !== vpnConnectSeq) return { cancelled: true }
       if (result.error) {
         vpnSessionActive = false
         vpnOlcrtcMode = false
@@ -2313,6 +2337,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
     if (wdttProcess && !transportSwitching && !isTransportHealthy()) {
       sendLog('[VPN] Переподключение: остановка предыдущей сессии...')
       await cleanupVpnAsync()
+      if (seq !== vpnConnectSeq) return { cancelled: true }
     }
     // Службу wg-turn НЕ снимаем заранее — apply сделает syncconf (~1с) вместо install.
 
@@ -2348,8 +2373,7 @@ ipcMain.handle('vpn-connect', async (_, config) => {
 ipcMain.handle('vpn-disconnect', async (_, opts) => {
   vpnConnectSeq += 1
   if (opts?.slow) {
-    await cleanupVpnAsync()
-    return { success: true }
+    return { success: await cleanupVpnAsync() }
   }
   await fastDisconnectVpn()
   return { success: true }
@@ -3189,11 +3213,10 @@ function scheduleLinuxUpdateAfterExit(filePath) {
   return { ok: true, batPath: shPath, logPath }
 }
 
-function killOrphanWdtt() {
+async function killOrphanWdtt() {
   try {
-    const { execFileSync } = require('child_process')
     const spec = killOrphanWdttCmd()
-    execFileSync(spec.cmd, spec.args, { stdio: 'ignore', windowsHide: true, timeout: 5000 })
+    await execFileAsync(spec.cmd, spec.args, { windowsHide: true, timeout: 5000 })
   } catch { /* нет процесса */ }
 }
 
@@ -3247,17 +3270,11 @@ ipcMain.handle('app-update-install', async (_, filePath) => {
       return { ok: false, error: 'File not found' }
     }
     sendLog('[Update] stopping VPN before install…')
-    try {
-      networkMonitor?.stop()
-      await fastDisconnectVpn()
-    } catch { /* ignore */ }
-    killOrphanWdtt()
-    if (process.platform === 'win32') {
-      const { execSync } = require('child_process')
-      for (const proc of ['wireguard.exe', 'wg.exe']) {
-        try { execSync(`taskkill /F /IM ${proc}`, { stdio: 'ignore' }) } catch { /* ignore */ }
-      }
+    vpnConnectSeq += 1
+    if (!await cleanupVpnAsync()) {
+      return { ok: false, error: 'Не удалось остановить VPN перед обновлением' }
     }
+    await killOrphanWdtt()
     await sleep(300)
 
     sendLog('[Update] schedule installer after exit: ' + filePath)
@@ -3293,22 +3310,14 @@ app.whenReady().then(async () => {
   }
   softTamperHints({ isPackaged: app.isPackaged, isDebugBuild, log: sendLog })
 
-  // После OTA/установки: убиваем осиротевший wdtt и даём WireGuard дописаться.
-  killOrphanWdtt()
-
-  const postInstallStamp = process.platform === 'win32'
-    ? path.join('C:\\ProgramData\\SilentVPN', 'post-install.stamp')
-    : ''
-  if (postInstallStamp && fs.existsSync(postInstallStamp)) {
-    try { fs.unlinkSync(postInstallStamp) } catch { /* ignore */ }
-    sendLog('[WG] Первый запуск после установки — ждём готовности WireGuard…')
-    await sleep(2500)
-    try {
-      prepareRuntimeDir(isDev, __dirname, sendLog)
-    } catch (e) {
-      sendLog(`[WG] post-install warm: ${e?.message || e}`)
+  vpnStartupRecovery = Promise.resolve(killOrphanWdtt()).then(async () => {
+    if (process.platform === 'win32') {
+      const { recoverIdleWindowsTunnel } = require('./vpn/wireguard')
+      await recoverIdleWindowsTunnel(isDev, __dirname, sendLog)
     }
-  }
+  }).catch(error => {
+    sendLog(`[WG] Восстановление после предыдущего запуска: ${error?.message || error}`, 'E')
+  })
 
   // Show the window before potentially slow firewall commands. The router still
   // waits for the shared preparation promise before creating its adapter.
@@ -3331,24 +3340,22 @@ app.whenReady().then(async () => {
 
 })
 
-let macQuitFlushDone = false
+let vpnQuitFlushDone = false
 app.on('before-quit', (e) => {
   isQuitting = true
-  // Mac/Linux: без await stop остаётся DNS/0.0.0.0/1 → «нет интернета» после закрытия.
-  if ((process.platform === 'darwin' || process.platform === 'linux' || require('./vpn/browserRouter').isActive() || vpnCleanupPromise) && !macQuitFlushDone) {
+  if (!vpnQuitFlushDone) {
     e.preventDefault()
-    if (!vpnCleanupPromise) cleanupVpn()
-    const pending = vpnCleanupPromise || Promise.resolve()
+    vpnConnectSeq += 1
+    const pending = cleanupVpn()
     Promise.race([
       pending.catch(() => {}),
       new Promise((r) => setTimeout(r, 8000)),
     ]).finally(() => {
-      macQuitFlushDone = true
+      vpnQuitFlushDone = true
       app.quit()
     })
     return
   }
-  cleanupVpn()
 })
 
 app.on('window-all-closed', () => {

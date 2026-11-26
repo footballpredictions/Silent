@@ -17,10 +17,10 @@ function fixture() {
     sessionDnsOverride: '', confPath: 'fixture', excludeIPs: [], isDev: false, __dirname: 'fixture',
     resolveWgMtu: () => 1200, normalizeWgConfText: x => x, sendLog: noop,
     waitForWdttProxy: async () => true, fs: { writeFileSync: noop },
-    isServiceRunningAsync: async () => false, process: { platform: 'win32' },
+    isServiceRunningAsync: async () => !!state.serviceRunning, process: { platform: 'win32' },
     prepareBrowserRoutingPolicy: () => ({}),
-    applyWireGuardConfig: async () => { installs++; return true },
-    isProcessElevated: () => true, setTimeout: () => 0,
+    applyWireGuardConfig: async () => { installs++; return state.installOk ?? true },
+    isProcessElevated: () => true, setTimeout: () => 0, clearTimeout: noop,
     require: name => {
       if (name === './vpn/browserRouter') return { updatePolicy: async () => {
         policyCalls++
@@ -75,4 +75,14 @@ test('policy setup failure reports a failed install and releases its guard witho
   assert.equal(f.state.wgApplied, false)
   assert.equal(f.state.wgInstallInFlight, false)
   assert.match(f.state.failure, /policy rejected/)
+})
+
+test('an explicit install failure never reports a leftover Windows service as a ready VPN', async () => {
+  const f = fixture()
+  f.state.serviceRunning = true
+  f.state.installOk = false
+  f.release()
+  assert.equal(await f.apply(), false)
+  assert.equal(f.policyCalls(), 0)
+  assert.equal(f.state.wgApplied, false)
 })

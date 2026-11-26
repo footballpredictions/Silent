@@ -25,7 +25,7 @@ function fixture({ cached = null, denied = false } = {}) {
 
     alert: m => state.alerts.push(m), pushLog() {}, SessionTrace: { enter() {} },
   }
-  for (const name of ['connectLockRef','connectInFlightRef','userWantsVpnRef','onlineMarkedRef','pendingConnectAfterSubscriptionRefreshRef']) context[name] = { current: false }
+  for (const name of ['connectLockRef','connectInFlightRef','userWantsVpnRef','onlineMarkedRef','pendingConnectAfterSubscriptionRefreshRef','logoutBusyRef']) context[name] = { current: false }
   for (const name of ['connectGenRef','disconnectTokenRef','tunnelUpAtRef']) context[name] = { current: 0 }
   for (const name of ['setMainVpnSessionActive','setActiveWorkers','clearVpnLogs','clearLogs','startSnakeHold','clearSnakeHold','setVpnReady','setMenuOpen','setMenuPage','setConnected','setConnecting','setDisconnecting','resetVpnUi']) context[name] = () => {}
   const apiCall = async kind => {

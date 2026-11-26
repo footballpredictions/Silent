@@ -82,6 +82,19 @@ test('an expired login timer does not prevent a later config recovery', async ()
   await api.disconnectBootstrapVpn()
 })
 
+test('resetting the profile starts a new login channel even if the previous one expired', async () => {
+  const { state, api } = fixture()
+  assert.equal(await api.ensureBootstrapVpn(), true)
+  state.clock += 120001
+  state.tick()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(api.isBootstrapExpired(), true)
+  api.resetBootstrapRendererState()
+  assert.equal(await api.ensureBootstrapVpn(), true)
+  assert.equal(state.starts, 2)
+  await api.disconnectBootstrapVpn()
+})
+
 test('failed recovery stays owned until the caller cleans it up, then can retry', async () => {
   const { state, api } = fixture()
   state.ready = false

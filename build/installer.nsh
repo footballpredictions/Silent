@@ -68,8 +68,6 @@
   Pop $0
   nsExec::ExecToLog 'taskkill /F /IM site-router.exe'
   Pop $0
-  nsExec::ExecToLog 'taskkill /F /IM wireguard.exe'
-  Pop $0
 
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES64\WireGuard\wireguard.exe"
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES\WireGuard\wireguard.exe"
@@ -138,8 +136,6 @@
   Pop $0
   nsExec::ExecToLog 'taskkill /F /IM site-router.exe'
   Pop $0
-  nsExec::ExecToLog 'taskkill /F /IM wireguard.exe'
-  Pop $0
 
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES64\WireGuard\wireguard.exe"
   !insertmacro silentWgUninstallTunnel "$PROGRAMFILES\WireGuard\wireguard.exe"
@@ -157,7 +153,7 @@
     ${IfNot} ${FileExists} "$PROGRAMFILES64\WireGuard\wireguard.exe"
       ${IfNot} ${FileExists} "$PROGRAMFILES\WireGuard\wireguard.exe"
         DetailPrint "Installing WireGuard 1.1 (MSI)..."
-        nsExec::ExecToLog 'msiexec /i "$INSTDIR\resources\wireguard-installer.msi" /qn /norestart'
+        nsExec::ExecToLog 'msiexec /i "$INSTDIR\resources\wireguard-installer.msi" /qn /norestart DO_NOT_LAUNCH=1'
         Pop $0
         DetailPrint "msiexec exit=$0"
         Sleep 800
@@ -190,13 +186,6 @@
 
   Delete "${SILENT_WG_DIR}\wintun.dll"
 
-  ; Маркер для клиента: первый запуск после install — подождать WG
-  CreateDirectory "${SILENT_PD_DIR}"
-  FileOpen $0 "${SILENT_PD_DIR}\post-install.stamp" w
-  FileWrite $0 "1"
-  FileClose $0
-
-  Sleep 1500
   !insertmacro CustomSilentFirewallAdd
   DetailPrint "WireGuard repair done"
 !macroend

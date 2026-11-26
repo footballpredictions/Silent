@@ -20,7 +20,6 @@ test('installer.nsh creates permanent site-router firewall rules', () => {
   assert.match(nsh, /profile=any/)
   assert.match(nsh, /WireGuard repair done/)
   assert.match(nsh, /silentVpnWipeRuntime/)
-  assert.match(nsh, /post-install\.stamp/)
 })
 
 test('browserRouter ensures firewall before spawning site-router', () => {

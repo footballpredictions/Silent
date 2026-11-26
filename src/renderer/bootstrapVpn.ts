@@ -51,6 +51,7 @@ let bootstrapSessionDeadline = 0
 let statusListener: ((msg: string) => void) | null = null
 let lastBootstrapWgAddress: string | null = null
 let bootstrapEnsureGeneration = 0
+let paymentBootstrapHeld = false
 
 export function setBootstrapStatusListener(fn: ((msg: string) => void) | null) {
   statusListener = fn
@@ -220,8 +221,10 @@ export async function ensureBootstrapVpn(): Promise<boolean> {
         : `Запасной режим: ${modeLabel}…`,
     )
 
-    const res = await electron.vpnConnect(bootWithDns)
-    if (runId !== bootstrapEnsureGeneration) return false
+    const res = await electron.vpnConnect(bootWithDns).catch((error: Error) => ({
+      error: error?.message || 'Не удалось запустить временный VPN',
+    }))
+    if (runId !== bootstrapEnsureGeneration || res?.cancelled) return false
     if (res?.error) {
       pushLog('Bootstrap', `vpnConnect error: ${res.error}`, 'E')
       await consumeFloodEscalateFlag()
@@ -301,9 +304,12 @@ export async function prefetchLoginDataViaBootstrap(): Promise<boolean> {
 /** Сброс флагов bootstrap без остановки основного VPN. */
 export function resetBootstrapRendererState(): void {
   bootstrapEnsureGeneration += 1
-  cancelBootstrapSessionTimeout()
+  resetBootstrapDeadline()
   bootstrapActive = false
+  bootstrapExpired = false
   connectBootstrapHeld = false
+  paymentBootstrapHeld = false
+  lastBootstrapWgAddress = null
   setBootstrapApiRouting(false)
   clearTunnelApiBase()
 }
@@ -318,8 +324,6 @@ export async function disconnectBootstrapVpn(): Promise<void> {
   clearTunnelApiBase()
   await (window as any).electronAPI?.vpnDisconnect?.({ fast: true })
 }
-
-let paymentBootstrapHeld = false
 
 export function isPaymentBootstrapActive(): boolean {
   return paymentBootstrapHeld && bootstrapActive

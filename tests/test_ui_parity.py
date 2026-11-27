@@ -17,6 +17,8 @@ class RouterUIParity(unittest.TestCase):
             relative=original.relative_to(OPENWRT)
             with self.subTest(asset=relative):
                 source=original.read_text(encoding='utf-8').replace('OpenWrt','Keenetic').replace('openwrt','keenetic')
+                # Both clients open the same router guide on the official site.
+                source=source.replace('https://silentvpn3.github.io/#keenetic','https://silentvpn3.github.io/#openwrt')
                 target=(own/relative).read_text(encoding='utf-8')
                 def normalized(text):
                     text=re.sub(r'1\.0\.\d+-r\d+','CACHE_REVISION',text)

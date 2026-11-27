@@ -256,7 +256,6 @@ class MainViewModel @Inject constructor(
         { android.os.SystemClock.elapsedRealtime() })
     private var paymentApi: com.silent.vpn.data.SilentApi? = null
     private var paymentPlan: String? = null
-    private var paymentBrowserDirect = false
     private var paymentRoutePreview: com.silent.vpn.data.PaymentPreview? = null
     private var paymentAttemptEndpoint: com.silent.vpn.policy.BootstrapOverlayEndpoint? = null
     private var paymentRouteJob: Job? = null
@@ -944,7 +943,8 @@ class MainViewModel @Inject constructor(
     private fun isPaymentBootstrapTunnelUp(): Boolean =
         WdttTunnelManager.isBootstrapMode() &&
             SilentVpnService.isRunning &&
-            WdttTunnelManager.tunnelReady.value
+            WdttTunnelManager.tunnelReady.value &&
+            WdttTunnelManager.lastParams()?.let { it.payment && !it.paymentApiOnly } == true
 
     private fun holdPaymentBootstrapIfRunning() {
         paymentBootstrapHeld = true
@@ -996,6 +996,7 @@ class MainViewModel @Inject constructor(
         com.silent.vpn.vpn.VpnNetworkHelper.findUnderlyingNetwork(appContext)?.networkHandle,
         com.silent.vpn.vpn.VpnNetworkHelper.getSilentVpnNetwork(appContext)?.networkHandle,
         WdttTunnelManager.paymentConnectionId(), System.identityHashCode(WdttTunnelManager.lastParams()),
+        com.silent.vpn.data.RussianServices.changes.value, repo.isSitesWhitelist(), repo.getBypassRoutesRaw().hashCode(),
     ).joinToString("|")
 
     private suspend fun fetchPaymentPreview(api: com.silent.vpn.data.SilentApi, plan: String): com.silent.vpn.data.PaymentPreview {
@@ -1008,35 +1009,37 @@ class MainViewModel @Inject constructor(
         return response.body() ?: error("Не удалось получить расчёт")
     }
 
-    /** Same contract as iOS: browser + preview must work on one unchanged route. */
+    private suspend fun mainPaymentApiBase(): String? {
+        if (paymentBootstrapHeld || WdttTunnelManager.isBootstrapMode()) return null
+        return withContext(Dispatchers.IO) {
+            val main = repo.isMainVpnTunnelUp()
+            val nativeMain = com.silent.vpn.vpn.BrowserScopedTunnel.isRunning()
+            val splitBrowserRoute = main && nativeMain && (
+                com.silent.vpn.data.RussianServices.enabled(appContext) ||
+                    repo.isSitesWhitelist() || repo.getBypassRoutesRaw().isNotBlank() ||
+                    com.silent.vpn.util.PaymentBrowser.checkoutPackage(appContext)?.let {
+                        com.silent.vpn.vpn.BrowserScopedTunnel.hasFullBrowserPath(it)
+                    } != true
+                )
+            com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL.takeIf {
+                com.silent.vpn.policy.PaymentTunnelPolicy.canReuseBrowserPath(main, nativeMain, splitBrowserRoute)
+            }
+        }
+    }
+
+    /** Checkout loads other origins after the landing page. Reserve one full browser route. */
     private suspend fun preparePaymentRoute(plan: String): com.silent.vpn.policy.PreparedPaymentRoute<
         com.silent.vpn.data.SilentApi, com.silent.vpn.data.PaymentPreview, String> {
         val epoch = paymentRouteEpoch
-        val main = repo.isMainVpnTunnelUp()
-        val native = com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL
-        val bases = if (paymentBootstrapHeld || WdttTunnelManager.isBootstrapMode()) emptyList()
-            else if (main) listOf(native).filter { com.silent.vpn.vpn.BrowserScopedTunnel.isRunning() }
-            else repo.paymentPublicBases()
-        var directSiteVerified = false
         return paymentReservation.prepare(
             identity = { paymentRouteIdentity(plan) },
             stillOwned = { epoch == paymentRouteEpoch && repo.isLoggedIn() },
-            currentBases = bases,
-            siteAvailable = {
-                if (main) com.silent.vpn.vpn.PaymentInternetProbe.check(appContext)
-                else com.silent.vpn.vpn.PaymentInternetProbe.checkDirect(appContext).also { directSiteVerified = it }
-            },
+            currentBases = listOfNotNull(mainPaymentApiBase()),
+            siteAvailable = { com.silent.vpn.vpn.PaymentInternetProbe.check(appContext) },
             api = { repo.paymentApi(it) },
             preview = { api -> kotlinx.coroutines.withTimeoutOrNull(5_000) { fetchPaymentPreview(api, plan) } },
             temporary = {
                 paymentPlan = plan
-                val direct = directSiteVerified || com.silent.vpn.vpn.PaymentInternetProbe.checkDirect(appContext)
-                if (paymentBootstrapHeld && paymentBrowserDirect != direct) {
-                    // Finish any previous payment-owned mode before preparing another.
-                    finishPaymentInternet()
-                    paymentPlan = plan
-                }
-                paymentBrowserDirect = direct
                 paymentRoutePreview = null
                 if (!ensurePaymentBootstrapHeld(appContext, force = true, verify = true)) {
                     error("Не удалось включить временный интернет для оплаты. Повторите.")
@@ -1046,17 +1049,12 @@ class MainViewModel @Inject constructor(
             },
         ).also {
             paymentApi = it.api
-            DebugLog.i("MainViewModel", when {
-                paymentBootstrapHeld && paymentBrowserDirect -> "Оплата: ЮMoney напрямую, API через временный VPN"
-                paymentBootstrapHeld -> "Оплата: используем готовый временный маршрут"
-                main -> "Оплата: используем основной VPN"
-                else -> "Оплата: ЮMoney и API доступны напрямую"
-            })
+            DebugLog.i("MainViewModel", if (paymentBootstrapHeld) "Оплата: браузер и API через временный VPN"
+                else "Оплата: браузер и API через основной VPN")
         }
     }
 
-    private suspend fun needsPaymentInternetBridge(): Boolean = paymentBootstrapHeld ||
-        WdttTunnelManager.isBootstrapMode() || (!repo.isMainVpnTunnelUp() && paymentApi == null)
+    private suspend fun needsPaymentInternetBridge(): Boolean = mainPaymentApiBase() == null
 
     /** Пока жив payment-bootstrap — скачать WG выбранного слота, чтобы первый тумблер не был пустым. */
     private suspend fun prefetchMainConfigBeforePaymentTeardown() {
@@ -1547,7 +1545,10 @@ class MainViewModel @Inject constructor(
                 )
                 val candidates = com.silent.vpn.policy.PaymentRouteFailover.candidates(
                     BootstrapVpnConfig.SERVER_HOST, BootstrapVpnConfig.SERVER_PORT, cells,
-                )
+                ).let { routes ->
+                    val main = WdttTunnelManager.lastParams()?.takeUnless { WdttTunnelManager.isBootstrapMode() }
+                    if (main == null) routes else routes.sortedBy { it.ip != main.serverIp || it.port != main.serverPort }
+                }
                 paymentMainHandoff.prepare(
                     mainActive = repo.isMainVpnTunnelUp() ||
                         (SilentVpnService.isRunning && !WdttTunnelManager.isBootstrapMode()),
@@ -1556,10 +1557,8 @@ class MainViewModel @Inject constructor(
                         paymentRoutes.prepare(candidates,
                             start = { route, reuse -> ensurePaymentBootstrapHeldLocked(context, route, reuse) },
                             probe = {
-                                val browserReady = if (paymentBrowserDirect) {
-                                    WdttTunnelManager.lastParams()?.paymentApiOnly == true &&
-                                        com.silent.vpn.vpn.PaymentInternetProbe.checkDirect(context)
-                                } else awaitPaymentBrowserRoutes() && com.silent.vpn.vpn.PaymentInternetProbe.check(context)
+                                val browserReady = awaitPaymentBrowserRoutes() &&
+                                    com.silent.vpn.vpn.PaymentInternetProbe.check(context)
                                 if (!browserReady) false
                                 else {
                                     val api = repo.paymentApi(WdttTunnelManager.tunnelApiBase())
@@ -1596,7 +1595,8 @@ class MainViewModel @Inject constructor(
             holdPaymentBootstrapIfRunning()
             return awaitPaymentApiReady()
         }
-        if (paymentBootstrapHeld && WdttTunnelManager.lastParams()?.payment == true) {
+        val currentPayment = WdttTunnelManager.lastParams()?.let { it.payment && !it.paymentApiOnly } == true
+        if (paymentBootstrapHeld && currentPayment) {
             paymentReservation.clear()
             paymentAttemptEndpoint = endpoint
             if (!WdttTunnelManager.switchPaymentExit(endpoint.ip, endpoint.port)) return false
@@ -1624,8 +1624,7 @@ class MainViewModel @Inject constructor(
         silentBootstrapSync = false
         repo.clearTunnelApiBase()
         DebugLog.i("MainViewModel", "payment bootstrap start mobile=$onMobile exit=${endpoint.ip}")
-        launchVpnService(context.applicationContext, config, forceBootstrap = true, forcePayment = true,
-            paymentApiOnly = paymentBrowserDirect)
+        launchVpnService(context.applicationContext, config, forceBootstrap = true, forcePayment = true)
         if (awaitPaymentApiReady()) return true
         DebugLog.w("MainViewModel", "payment bootstrap: tunnel API not ready")
         return false
@@ -1691,7 +1690,6 @@ class MainViewModel @Inject constructor(
         paymentApi = null
         paymentRoutePreview = null
         paymentPlan = null
-        paymentBrowserDirect = false
         paymentAttemptEndpoint = null
         paymentMainHandoff.finish(
             stopPayment = {
@@ -1748,7 +1746,6 @@ class MainViewModel @Inject constructor(
         paymentApi = null
         paymentRoutePreview = null
         paymentPlan = null
-        paymentBrowserDirect = false
         paymentAttemptEndpoint = null
         paymentBootstrapHeld = false
         paymentRouteJob?.cancel()
@@ -4781,7 +4778,6 @@ class MainViewModel @Inject constructor(
         forceBootstrap: Boolean = false,
         requireGetconf: Boolean = false,
         forcePayment: Boolean = false,
-        paymentApiOnly: Boolean = false,
     ) {
         val isBootstrap = forceBootstrap || bootstrapVpnMode
         if (repo.isOlcrtcBypass() && !forcePayment) {
@@ -4831,7 +4827,7 @@ class MainViewModel @Inject constructor(
         val wdttConfig = wdttConnectConfig(forService)
         val intent = Intent(context, SilentVpnService::class.java).apply {
             action = SilentVpnService.ACTION_CONNECT
-            putExtra(SilentVpnService.EXTRA_CONFIG, org.json.JSONObject(Gson().toJson(wdttConfig)).put("payment_tunnel", forcePayment).put("payment_api_only", paymentApiOnly).toString())
+            putExtra(SilentVpnService.EXTRA_CONFIG, org.json.JSONObject(Gson().toJson(wdttConfig)).put("payment_tunnel", forcePayment).toString())
             putExtra(SilentVpnService.EXTRA_IS_BOOTSTRAP, isBootstrap)
             putExtra(SilentVpnService.EXTRA_REQUIRE_GETCONF, !isBootstrap && requireGetconf)
         }
@@ -5460,7 +5456,11 @@ class MainViewModel @Inject constructor(
                 cleanup?.join()
                 PaymentRequest.run(com.silent.vpn.policy.PaymentRouteFailover.PREPARATION_TIMEOUT_MS) {
                     val route = preparePaymentRoute(planType)
-                    check(route.identity == paymentRouteIdentity(planType)) { "Сеть изменилась. Повторите оплату." }
+                    val browserRouteReady = if (paymentBootstrapHeld) isPaymentBootstrapTunnelUp()
+                        else mainPaymentApiBase() != null
+                    check(browserRouteReady && route.identity == paymentRouteIdentity(planType)) {
+                        "Сеть изменилась. Повторите оплату."
+                    }
                     val pay = PaymentRequest.create { initPaymentApi(route.api, planType) }
                     rememberPaymentAndOpen(pay.url, pay.label, onUrl)
                 }
@@ -5482,9 +5482,10 @@ class MainViewModel @Inject constructor(
         repo.savePendingPaymentLabel(label)
         try {
             // Init used the pinned API; do not select/probe again before opening the browser.
-            if (paymentBootstrapHeld && (!isPaymentBootstrapTunnelUp() ||
-                    (if (paymentBrowserDirect) WdttTunnelManager.lastParams()?.paymentApiOnly != true
-                    else !awaitPaymentBrowserRoutes()))) {
+            val browserReady = if (paymentBootstrapHeld) {
+                isPaymentBootstrapTunnelUp() && awaitPaymentBrowserRoutes()
+            } else mainPaymentApiBase() != null
+            if (!browserReady) {
                 error("Платёжный сайт недоступен через доступные серверы. Попробуйте позже.")
             }
             kotlinx.coroutines.currentCoroutineContext().ensureActive()

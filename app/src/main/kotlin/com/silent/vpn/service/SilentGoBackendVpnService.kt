@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.IpPrefix
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import com.silent.vpn.util.DebugLog
 import com.wireguard.android.backend.GoBackend
 import java.net.InetAddress
@@ -18,11 +19,12 @@ class SilentGoBackendVpnService : GoBackend.VpnService() {
         /** Дыры 0.0.0.0/0 (IP/CIDR) — задаёт WireGuardHelper перед establish(). */
         @Volatile var vpnExcludeRouteCidrs: List<String> = emptyList()
 
-        /** Bootstrap: drop IPv6 underlay, иначе Gmail уходит мимо туннеля. */
+        /** Bootstrap: blocking TUN file descriptor. */
         @Volatile var blockUnderlyingNetwork: Boolean = false
+        @Volatile var ipv4OnlyCheckout: Boolean = false
     }
 
-    override fun getBuilder(): Builder = SiteBypassVpnBuilder()
+    override fun getBuilder(): Builder = SiteBypassVpnBuilder(ipv4OnlyCheckout)
 
     override fun onRevoke() {
         DebugLog.w("GoBackendVpn", "VPN revoked by system (another VPN connected)")
@@ -35,11 +37,18 @@ class SilentGoBackendVpnService : GoBackend.VpnService() {
         )
     }
 
-    private inner class SiteBypassVpnBuilder : Builder() {
+    private inner class SiteBypassVpnBuilder(private val checkout: Boolean) : Builder() {
+        override fun allowFamily(family: Int): Builder {
+            // TURN route exclusions make GoBackend call allowFamily(AF_INET6).
+            // This tunnel carries IPv4 only, so leave IPv6 blocked by Android.
+            if (checkout && family == OsConstants.AF_INET6) return this
+            return super.allowFamily(family)
+        }
+
         override fun establish(): ParcelFileDescriptor? {
             if (blockUnderlyingNetwork) {
                 setBlocking(true)
-                DebugLog.i("GoBackendVpn", "blocking underlay (Gmail IPv6 leak off)")
+                DebugLog.i("GoBackendVpn", "blocking TUN file descriptor")
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val n = applyExcludeRoutes(this, vpnExcludeRouteCidrs)

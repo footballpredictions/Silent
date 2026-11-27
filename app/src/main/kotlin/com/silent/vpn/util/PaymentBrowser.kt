@@ -26,6 +26,21 @@ object PaymentBrowser {
 
     fun openPaymentUrl(context: Context, url: String) {
         val uri = Uri.parse(url)
+        val preferred = preferredIntent(context, uri)
+        if (preferred != null) {
+            DebugLog.i("PaymentBrowser", "open ${preferred.`package`}")
+            context.startActivity(preferred)
+            return
+        }
+        DebugLog.w("PaymentBrowser", "fallback default browser")
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    internal fun checkoutPackage(context: Context): String? =
+        (preferredIntent(context, Uri.parse("https://yoomoney.ru/"))?.`package`
+            ?: defaultHttpsBrowserPackage(context))?.takeUnless { it == "android" }
+
+    private fun preferredIntent(context: Context, uri: Uri): Intent? {
         val pm = context.packageManager
         for (pkg in PREFERRED_PACKAGES) {
             if (!isInstalled(pm, pkg)) continue
@@ -33,16 +48,9 @@ object PaymentBrowser {
                 setPackage(pkg)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            if (intent.resolveActivity(pm) != null) {
-                DebugLog.i("PaymentBrowser", "open $pkg")
-                context.startActivity(intent)
-                return
-            }
+            if (intent.resolveActivity(pm) != null) return intent
         }
-        DebugLog.w("PaymentBrowser", "fallback default browser")
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
+        return null
     }
 
     fun defaultHttpsBrowserPackage(context: Context): String? {

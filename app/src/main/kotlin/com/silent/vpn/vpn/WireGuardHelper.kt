@@ -106,6 +106,7 @@ class WireGuardHelper(context: Context) {
             lastExcludeRouteKey = null
             SilentGoBackendVpnService.vpnExcludeRouteCidrs = emptyList()
             SilentGoBackendVpnService.blockUnderlyingNetwork = false
+            SilentGoBackendVpnService.ipv4OnlyCheckout = false
         }
     }
 
@@ -162,6 +163,9 @@ class WireGuardHelper(context: Context) {
                     apiOverlayMode = apiOverlayMode,
                     includeAppOverlay = includeAppOverlay,
                 )
+            val ipv4OnlyCheckout = SilentGoBackendVpnService.blockUnderlyingNetwork &&
+                excludeIPs.isNotEmpty() && WdttTunnelManager.lastParams()?.payment == true
+            SilentGoBackendVpnService.ipv4OnlyCheckout = ipv4OnlyCheckout
             val excludeRouteKey = excludeRouteCidrs.sorted().joinToString(",")
             val excludeRouteChanged = excludeRouteKey != lastExcludeRouteKey
 
@@ -269,7 +273,7 @@ class WireGuardHelper(context: Context) {
 
             val semanticKey =
                 wgSemanticKey(configToApply) + "|ex=$excludeKey|apps=$appPolicyKey|ov=$apiOverlayMode|appin=$includeAppOverlay|blk=${SilentGoBackendVpnService.blockUnderlyingNetwork}" +
-                    "|routes=$excludeRouteKey|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}|ru=$ruDirect:${russian.getString("revision")}|mtu=$profileMtu"
+                    "|routes=$excludeRouteKey|browser=$browserSites|sites=$siteWhitelist:${siteTargets.sorted().joinToString(",")}|domains=${siteDomains.sorted().joinToString(",")}|ru=$ruDirect:${russian.getString("revision")}|mtu=$profileMtu|checkout4=$ipv4OnlyCheckout"
 
             if (sharedTunnel != null && semanticKey.isNotBlank() && semanticKey == lastAppliedSemanticKey) {
 
@@ -284,7 +288,9 @@ class WireGuardHelper(context: Context) {
 
             val ifaceBuilder = Interface.Builder()
 
-                .parseAddresses(parsed.`interface`.addresses.joinToString(", ") { it.toString() })
+                .parseAddresses(parsed.`interface`.addresses
+                    .filter { !ipv4OnlyCheckout || it.address.address.size == 4 }
+                    .joinToString(", ") { it.toString() })
 
             // Bootstrap идёт через отдельную соту и не наследует игровой MTU main-слота.
             // Main uses API profile metadata; old API retains slot defaults.
@@ -358,13 +364,10 @@ class WireGuardHelper(context: Context) {
 
 
 
-            if (parsed.`interface`.dnsServers.isNotEmpty()) {
-                ifaceBuilder.parseDnsServers(
-                    parsed.`interface`.dnsServers.joinToString(", ") { it.hostAddress ?: "" },
-                )
-            } else {
-                ifaceBuilder.parseDnsServers(DnsPreset.FALLBACK.servers)
-            }
+            val dnsServers = parsed.`interface`.dnsServers.filter { !ipv4OnlyCheckout || it.address.size == 4 }
+            ifaceBuilder.parseDnsServers(
+                dnsServers.joinToString(", ") { it.hostAddress ?: "" }.ifBlank { DnsPreset.FALLBACK.servers },
+            )
 
 
 
@@ -617,6 +620,7 @@ class WireGuardHelper(context: Context) {
                 lastExcludeRouteKey = null
                 SilentGoBackendVpnService.vpnExcludeRouteCidrs = emptyList()
                 SilentGoBackendVpnService.blockUnderlyingNetwork = false
+                SilentGoBackendVpnService.ipv4OnlyCheckout = false
 
             }
 

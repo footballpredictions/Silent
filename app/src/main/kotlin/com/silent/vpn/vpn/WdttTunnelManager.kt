@@ -2108,7 +2108,9 @@ object WdttTunnelManager {
      * best-effort, throttled reload triggered by native log messages.
      */
     suspend fun prepareBootstrapInternetForPayment(): Boolean = wgApplyMutex.withLock {
-        if (overlayRestoreSuppressed) return@withLock false
+        if (overlayRestoreSuppressed || lastParams?.let { it.payment && !it.paymentApiOnly } != true) {
+            return@withLock false
+        }
         val exclusions = effectiveExcludeIps().filter {
             com.silent.vpn.policy.PaymentTunnelPolicy.isIpv4Host(it)
         }

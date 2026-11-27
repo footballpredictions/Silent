@@ -7,12 +7,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PaymentRouteSessionTest {
-    @Test fun `direct works on LTE and wifi without starting VPN when both site and API work`() = runTest {
-        repeat(2) {
+    @Test fun `checkout reserves one full route when the direct or split path only loads the page shell`() = runTest {
+        for ((main, split) in listOf(false to false, false to true, true to true, true to false)) {
             val session = PaymentRouteSession<String, String, String>({ 0 })
-            val route = session.prepare({ "account-plan-network" }, { true }, listOf("public"), { true }, { it },
-                { "preview" }, { error("must not start temporary VPN") })
-            assertEquals("public", route.api)
+            val current = if (main) "main" else "public"
+            val currentBases = listOf(current).filter {
+                PaymentTunnelPolicy.canReuseBrowserPath(main, nativeMain = main, splitBrowserRoute = split)
+            }
+            var temporaryStarts = 0
+            suspend fun prepare() = session.prepare({ "account-plan-network" }, { true }, currentBases, { true }, { it },
+                { "preview" }, { temporaryStarts++; "full-temporary" to "preview" })
+            val route = prepare()
+            assertEquals("main=$main, split=$split", if (main && !split) "main" else "full-temporary", route.api)
+            assertSame(route, prepare())
+            assertEquals(if (main && !split) 0 else 1, temporaryStarts)
         }
     }
 

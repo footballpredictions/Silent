@@ -14,15 +14,6 @@ import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 internal object PaymentInternetProbe {
-    suspend fun checkDirect(context: Context): Boolean = withContext(Dispatchers.IO) {
-        val network = VpnNetworkHelper.findUnderlyingNetwork(context) ?: return@withContext false
-        val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).socketFactory(network.socketFactory)
-            .dns(object : Dns { override fun lookup(hostname: String) = network.getAllByName(hostname).toList() })
-            .connectTimeout(2, TimeUnit.SECONDS).readTimeout(2, TimeUnit.SECONDS).callTimeout(4, TimeUnit.SECONDS)
-            .followRedirects(false).followSslRedirects(false).build()
-        PaymentProbeClient.check(client)
-    }
-
     suspend fun check(context: Context): Boolean {
         if (BrowserScopedTunnel.isRunning()) return withContext(Dispatchers.IO) {
             val connection = URL(BrowserScopedTunnel.OTA_BASE_URL + "/_silent/payment-site").openConnection(Proxy.NO_PROXY) as HttpURLConnection

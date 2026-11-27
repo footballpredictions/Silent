@@ -43,6 +43,12 @@ object BrowserScopedTunnel {
     private var key: String? = null
     private var deviceFingerprint: String? = null
     private var targetRevision = 0L
+    private data class AppliedBrowserRouting(
+        val excludedApps: Set<String>,
+        val splitTraffic: Boolean,
+        val russianDirect: Boolean,
+    )
+    private var appliedBrowserRouting: AppliedBrowserRouting? = null
     private class TargetAck(val revision: Long) {
         val done = CountDownLatch(1)
         var applied = false
@@ -53,6 +59,11 @@ object BrowserScopedTunnel {
         runCatching { value.exitValue(); false }.getOrDefault(true)
 
     @Synchronized fun isRunning(): Boolean = alive(process)
+
+    @Synchronized internal fun hasFullBrowserPath(packageName: String): Boolean {
+        val policy = appliedBrowserRouting ?: return false
+        return alive(process) && !policy.splitTraffic && !policy.russianDirect && packageName !in policy.excludedApps
+    }
 
     /** Revision-only update: preserve the native WG device, TUN and application sockets. */
     @Synchronized internal fun applyRussianPolicy(context: Context): Boolean {
@@ -65,9 +76,11 @@ object BrowserScopedTunnel {
             checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
             check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied)
             key = null // A later full reapply must still reconcile its semantic key.
+            appliedBrowserRouting = appliedBrowserRouting?.copy(russianDirect = policy.optBoolean("enabled"))
             com.silent.vpn.data.RussianServices.applied(context, policy)
             true
         } catch (e: Exception) {
+            appliedBrowserRouting = null // The native update may have applied even if the ACK was lost.
             DebugLog.w("BrowserRouting", "policy update not acknowledged: ${e.message}")
             false
         } finally { if (targetAck === ack) targetAck = null }
@@ -154,6 +167,11 @@ object BrowserScopedTunnel {
     ) {
         if (key == semanticKey && isRunning()) return
         val browsers = if (whitelist || targets.isNotEmpty() || domains.isNotEmpty()) browserUids(context) else emptySet()
+        val ipv6Enabled = config.`interface`.addresses.any { it.address.address.size == 16 } ||
+            config.`interface`.dnsServers.any { it.address.size == 16 }
+        val browserRouting = AppliedBrowserRouting(
+            appPolicy.packages, browsers.isNotEmpty() || ipv6Enabled, russian.optBoolean("enabled"),
+        )
         val shape = JSONObject().apply {
             put("russian_enabled", russian.optBoolean("enabled", false))
             // A payment peer can change without replacing a compatible Android TUN.
@@ -180,6 +198,7 @@ object BrowserScopedTunnel {
                 checkNotNull(process).outputStream.apply { write((update.toString() + "\n").toByteArray()); flush() }
                 check(ack.done.await(2_500, TimeUnit.MILLISECONDS) && ack.applied) { "Не подтверждено обновление адресов обхода" }
                 key = semanticKey
+                appliedBrowserRouting = browserRouting
                 com.silent.vpn.data.RussianServices.applied(context, russian)
                 DebugLog.i("BrowserRouting", "site addresses updated; WG/TUN preserved")
                 return
@@ -313,6 +332,7 @@ object BrowserScopedTunnel {
             configuration = null
             key = semanticKey
             deviceFingerprint = fingerprint
+            appliedBrowserRouting = browserRouting
             com.silent.vpn.data.RussianServices.applied(context, russian)
             DebugLog.i("BrowserRouting", "browser-only site rules active; other apps keep app policy")
         } catch (error: Throwable) {
@@ -343,6 +363,7 @@ object BrowserScopedTunnel {
         com.silent.vpn.data.RussianServices.tunnelStopped()
         key = null
         deviceFingerprint = null
+        appliedBrowserRouting = null
         targetAck?.done?.countDown()
         targetAck = null
         val oldProcess = process

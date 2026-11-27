@@ -841,10 +841,6 @@ class SilentRepository @Inject constructor(
         requireNativeUpstream = base == com.silent.vpn.vpn.BrowserScopedTunnel.OTA_BASE_URL,
         retryConnections = false)
 
-    fun paymentPublicBases(): List<String> =
-        (listOf(getPublicServerUrl(), "https://$DEFAULT_SERVER_HOST") + standbyApiUrlsForOverlay())
-            .map { it.trimEnd('/') }.filter { it.startsWith("https://") }.distinct()
-
     /** true когда app excluded из WG и overlay ещё нужен (прокси не поднят). */
     fun needsTunnelApiOverlay(): Boolean =
         APP_EXCLUDED_FROM_VPN &&

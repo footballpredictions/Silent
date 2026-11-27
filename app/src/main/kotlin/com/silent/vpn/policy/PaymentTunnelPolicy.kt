@@ -2,6 +2,12 @@ package com.silent.vpn.policy
 
 /** Payment depends on connectivity, not cached subscription/profile state or plan tier. */
 internal object PaymentTunnelPolicy {
+    fun canReuseBrowserPath(
+        mainVpn: Boolean,
+        nativeMain: Boolean,
+        splitBrowserRoute: Boolean,
+    ): Boolean = mainVpn && nativeMain && !splitBrowserRoute
+
     // Payment includes the app from the first start. Background API calls must
     // not replace its browser tunnel with the legacy API-only overlay.
     fun needsApiOverlay(appExcluded: Boolean, payment: Boolean): Boolean = appExcluded && !payment

@@ -226,6 +226,7 @@ function esc(value) {
 
 function icon(name) {
   const icons = {
+    globe: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="10"/><ellipse cx="12" cy="12" rx="4.5" ry="10"/><path d="M2 12h20"/></svg>',
     close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>',
     back: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14"/></svg>',
     menu: '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
@@ -668,6 +669,10 @@ function supportPage(t) {
       <a class="tg-tile" href="${esc(support)}" target="_blank" rel="noreferrer">
         <span class="tg-ico">${icon("telegram")}</span>
         <span>Поддержка</span>
+      </a>
+      <a class="tg-tile" href="https://silentvpn3.github.io/" target="_blank" rel="noopener noreferrer">
+        <span class="tg-ico">${icon("globe")}</span>
+        <span>Сайт</span>
       </a>
     </div>`;
 }

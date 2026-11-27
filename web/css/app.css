@@ -679,6 +679,7 @@ body.has-chrome { --sv-chrome: 36px; }
 
 .tg-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 32px;
   margin-top: 8px;
@@ -703,8 +704,8 @@ body.has-chrome { --sv-chrome: 36px; }
   width: 48px;
   height: 48px;
   border-radius: 16px;
-  background: #f3f4f6;
-  color: #000000;
+  background: var(--sv-surface);
+  color: var(--sv-fg);
   display: flex;
   align-items: center;
   justify-content: center;

@@ -565,6 +565,7 @@ private struct DevicesPage: View {
 
 private struct SupportPage: View {
     @EnvironmentObject var vm: MainViewModel
+    @State private var installer: SupportMobileInstaller?
 
     var body: some View {
         let p = vm.palette
@@ -577,6 +578,13 @@ private struct SupportPage: View {
                 link("Поддержка", vm.theme?.support_url.nilIfEmpty ?? "https://t.me/silentvpn3?direct", p)
                 link("Сайт", "https://silentvpn3.github.io/", p, icon: "globe")
             }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Скачать актуальную версию").font(.subheadline.weight(.semibold)).foregroundStyle(p.fg)
+                HStack(spacing: 24) {
+                    supportTile("Android", image: Image("SupportAndroid").renderingMode(.template), p) { installer = .android }
+                    supportTile("iOS", image: Image(systemName: "apple.logo"), p) { installer = .ios }
+                }
+            }
             if let privacy = vm.theme?.privacy_url.nilIfEmpty {
                 Button("Политика") { open(privacy) }.font(.subheadline).foregroundColor(p.link)
             }
@@ -586,13 +594,20 @@ private struct SupportPage: View {
             Spacer()
         }
         .padding(16)
+        .sheet(item: $installer) { platform in
+            SupportInstallSheet(platform: platform, palette: vm.palette)
+        }
     }
 
     private func link(_ title: String, _ url: String, _ p: Palette, icon: String = "paperplane.fill") -> some View {
-        Button { open(url) } label: {
+        supportTile(title, image: Image(systemName: icon), p) { open(url) }
+    }
+
+    private func supportTile(_ title: String, image: Image, _ p: Palette, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.title3)
+                image.resizable().scaledToFit()
+                    .frame(width: 21, height: 21)
                     .accessibilityHidden(true)
                     .frame(width: 48, height: 48)
                     .background(p.fg.opacity(0.06))

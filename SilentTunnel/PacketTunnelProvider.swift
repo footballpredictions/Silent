@@ -9,7 +9,9 @@ func silent_relay_event(_ message: UnsafePointer<CChar>?, _ level: Int32) {
     autoreleasepool {
         let severity: VPNLogLevel = level == 2 ? .error : (level == 1 ? .success : .info)
         let text = String(cString: message)
-        VPNLog.write(text, level: severity, source: "WDTT", key: text.hasPrefix("[СТАТИСТИКА]") ? "stats" : nil)
+        TunnelBridge.currentProvider()?.log(
+            text, level: severity, source: "WDTT", key: text.hasPrefix("[СТАТИСТИКА]") ? "stats" : nil
+        )
     }
 }
 
@@ -57,12 +59,19 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var paymentSwitchID: UUID?
     private var pathMonitor: NWPathMonitor?
     private let pathQueue = DispatchQueue(label: "silent.tunnel.path")
+    private var logSessionID: UUID?
+
+    fileprivate func log(_ message: String, level: VPNLogLevel = .info, source: String = "Туннель", key: String? = nil) {
+        VPNLog.write(message, level: level, source: source, key: key, sessionID: logSessionID)
+    }
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        let suppliedSession = (options?[VPNLog.sessionOption] as? String).flatMap(UUID.init(uuidString:))
+        logSessionID = suppliedSession ?? VPNLog.beginSession()
         let engineRevision: String
         if let revision = wdtt_engine_revision() { engineRevision = String(cString: revision); free(revision) }
         else { engineRevision = "unknown" }
-        VPNLog.write(AppIdentity.buildDescription + " · движок " + String(engineRevision.prefix(12)), source: "Версия VPN", key: "tunnel-build")
+        log(AppIdentity.buildDescription + " · движок " + String(engineRevision.prefix(12)), source: "Версия VPN", key: "tunnel-build")
         reasserting = false
         TunnelBridge.setProvider(self)
         guard var config = loadConfig() else {
@@ -72,18 +81,18 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
         if config.registrationRouting == true {
-            VPNLog.write("Запуск временного VPN для почты")
+            log("Запуск временного VPN для почты")
         } else {
-            VPNLog.write(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
+            log(config.bootstrapDuration == nil ? "Запуск основного VPN" : "Запуск временного VPN")
         }
         let os = ProcessInfo.processInfo.operatingSystemVersion
         var hardware = utsname()
         let model = uname(&hardware) == 0
             ? withUnsafeBytes(of: hardware.machine) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
             : "iPhone"
-        VPNLog.write("\(model) · iOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · ABI=arm64", source: "Устройство")
+        log("\(model) · iOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · ABI=arm64", source: "Устройство")
         if config.bootstrapDuration == nil, UUID(uuidString: config.deviceId) != nil {
-            VPNLog.write("libclient device-id: \(config.deviceId.prefix(4))… (\(config.deviceId.count) симв.)", source: "WDTT")
+            log("libclient device-id: \(config.deviceId.prefix(4))… (\(config.deviceId.count) симв.)", source: "WDTT")
         }
         if wdtt_engine_linked() == 0 {
             let text = "Туннель не собран. На Mac запустите scripts/build-libwdtt.sh и заново сделайте Archive."
@@ -117,7 +126,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 raw = "Не удалось запустить сетевой модуль"
             }
             let reason = code == 6 ? ": \(raw)" : ""
-            VPNLog.write("Сетевой модуль вернул ошибку \(code)\(reason)", level: .error)
+            log("Сетевой модуль вернул ошибку \(code)\(reason)", level: .error)
             wdtt_stop()
             writeError(raw)
             completionHandler(tunnelError(raw))
@@ -151,7 +160,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             self?.reading = true
             self?.readLoop()
-            VPNLog.write("Настройки маршрутизации применены. Ожидание WireGuard")
+            self?.log("Настройки маршрутизации применены. Ожидание WireGuard")
             guard let self else { completionHandler(CancellationError()); return }
             self.handshakeCheck = Task { [weak self] in
                 for _ in 0..<60 {
@@ -166,7 +175,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                             completionHandler(self?.tunnelError(text) ?? error)
                             return
                         }
-                        VPNLog.write("Рукопожатие WireGuard подтверждено", level: .success)
+                        self?.log("Рукопожатие WireGuard подтверждено", level: .success)
                         self?.startPathMonitor()
                         self?.startPolicyRefresh()
                         self?.scheduleBootstrapExpiry(config.bootstrapDuration, payment: config.paymentRouting == true)
@@ -205,7 +214,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-        VPNLog.write("Остановка расширения iOS: \(reason.rawValue)", level: reason == .userInitiated ? .info : .error)
+        log("Остановка расширения iOS: \(reason.rawValue)", level: reason == .userInitiated ? .info : .error)
         if reason != .userInitiated, reason != .none,
            AppIdentity.errorURL.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true {
             writeError("iOS завершила VPN (код остановки \(reason.rawValue))")
@@ -245,13 +254,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func sleep(completionHandler: @escaping () -> Void) {
-        VPNLog.write("Устройство переходит в сон", source: "Сеть")
+        log("Устройство переходит в сон", source: "Сеть")
         completionHandler()
     }
 
     override func wake() {
         guard reading else { return }
-        VPNLog.write("Устройство проснулось · проверяем привязку каналов к сети", source: "Сеть")
+        log("Устройство проснулось · проверяем привязку каналов к сети", source: "Сеть")
         wdtt_network_event(0)
     }
 
@@ -265,10 +274,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             guard path.status == .satisfied else { wasUnavailable = true; return }
             guard let identity = self.physicalPathIdentity(path) else { return }
             if let previous, previous != identity {
-                VPNLog.write("Физическая сеть изменилась · обновляем привязанные к ней UDP-сокеты", source: "Сеть")
+                self.log("Физическая сеть изменилась · обновляем привязанные к ней UDP-сокеты", source: "Сеть")
                 wdtt_network_event(1)
             } else if wasUnavailable {
-                VPNLog.write("Сеть вернулась · проверяем прежние каналы", source: "Сеть")
+                self.log("Сеть вернулась · проверяем прежние каналы", source: "Сеть")
                 wdtt_network_event(0)
             }
             previous = identity
@@ -352,7 +361,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         reasserting = true
         let switchID = UUID()
         paymentSwitchID = switchID
-        VPNLog.write("Оплата · меняем выход внутри временного VPN")
+        log("Оплата · меняем выход внутри временного VPN")
         paymentSwitch = Task { [weak self] in
             guard let self else { completionHandler?(nil); return }
             defer {
@@ -381,7 +390,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                         self.activeConfig = updated
                         if let url = AppIdentity.configURL { try JSONEncoder().encode(updated).write(to: url, options: .atomic) }
                         self.reasserting = false
-                        VPNLog.write("Оплата · новый выход подтвердил WireGuard", level: .success)
+                        self.log("Оплата · новый выход подтвердил WireGuard", level: .success)
                         completionHandler?(try? JSONEncoder().encode(PaymentExitSwitch.Reply(success: true, error: nil)))
                         return
                     }
@@ -443,7 +452,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             self.activeConfig = updated
             self.scheduleBootstrapExpiry(updated.bootstrapDuration, payment: false)
-            VPNLog.write("Маршрут для почты добавлен к временному VPN", level: .success)
+            self.log("Маршрут для почты добавлен к временному VPN", level: .success)
             completionHandler?(self.bootstrapDeadline.flatMap { try? JSONEncoder().encode($0) })
         }
     }
@@ -582,7 +591,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func writeError(_ text: String) {
-        VPNLog.write("Сетевое расширение не завершило текущий этап", level: .error)
+        log("Сетевое расширение не завершило текущий этап", level: .error)
         guard let url = AppIdentity.errorURL else { return }
         try? text.write(to: url, atomically: true, encoding: .utf8)
     }

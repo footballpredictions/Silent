@@ -30,6 +30,7 @@ final class MainViewModel: ObservableObject {
     @Published private(set) var bootstrapFailed = false
     @Published private(set) var bootstrapMailReady = false
     @Published private(set) var connectionLog: [VPNLogEntry] = []
+    @Published private(set) var connectionLogSessionID = VPNLog.currentSessionID()
     @Published private(set) var registrationEmail: String?
     @Published private(set) var verificationNotice: String?
     @Published private(set) var verificationResending = false
@@ -260,8 +261,25 @@ final class MainViewModel: ObservableObject {
     }
 
     private func logConnection(_ text: String, level: VPNLogLevel = .info, key: String? = nil) {
+        let currentSession = VPNLog.currentSessionID()
+        if connectionLogSessionID != currentSession {
+            connectionLogSessionID = currentSession
+            connectionLog.removeAll()
+        }
         connectionLog.append(VPNLogEntry(date: Date(), level: level, source: "Приложение", message: text, key: key))
         if connectionLog.count > 200 { connectionLog.removeFirst() }
+    }
+
+    private func beginVPNLogSession() {
+        connectionLogSessionID = VPNLog.beginSession()
+        connectionLog.removeAll()
+        logConnection(AppIdentity.buildDescription, key: "app-build")
+    }
+
+    private func beginAuthLogIfNeeded() {
+        if vpn.state == .disconnected {
+            beginVPNLogSession()
+        }
     }
 
     func clearVPNLog() {
@@ -272,6 +290,7 @@ final class MainViewModel: ObservableObject {
     private func startBootstrap(registrationRouting: Bool = false, reportFailure: Bool = true) async {
         guard !bootstrapHash.isEmpty, !loggedIn, (!authLoading || registrationRouting),
               !bootstrapActive, !bootstrapAttempted else { return }
+        beginVPNLogSession()
         bootstrapAttempted = true
         bootstrapActive = true
         bootstrapStarting = true
@@ -437,6 +456,10 @@ final class MainViewModel: ObservableObject {
 
     private func restoreSavedAccount(quickPublicAttempt: Bool = false) async {
         guard api.isLoggedIn, !authLoading else { return }
+        if quickPublicAttempt, vpn.state == .disconnected {
+            beginVPNLogSession()
+            logConnection("Восстановление сохранённого входа")
+        }
         authLoading = true
         launchStage = .session
         defer { authLoading = false }
@@ -548,6 +571,8 @@ final class MainViewModel: ObservableObject {
         defer { authLoading = false }
         do {
             await logoutTask?.value
+            beginAuthLogIfNeeded()
+            logConnection("Вход в аккаунт")
             _ = try await api.login(email: email, password: password)
             LocalStore.rememberMe = remember
             if remember {
@@ -577,6 +602,8 @@ final class MainViewModel: ObservableObject {
         defer { authLoading = false }
         do {
             await logoutTask?.value
+            beginAuthLogIfNeeded()
+            logConnection("Регистрация аккаунта")
             let entered = try await api.register(email: email, password: password, referralOrPromo: code)
             if remember {
                 LocalStore.rememberMe = true
@@ -623,6 +650,9 @@ final class MainViewModel: ObservableObject {
         authError = nil
         defer { authLoading = false }
         do {
+            await logoutTask?.value
+            beginAuthLogIfNeeded()
+            logConnection("Восстановление пароля")
             try await api.forgotPassword(email: email)
             forgotSent = true
         } catch {
@@ -694,6 +724,7 @@ final class MainViewModel: ObservableObject {
             menuPage = .subscription
             return
         }
+        beginVPNLogSession()
         vpnState = .connecting
         serverHint = ""
         let preferred = selectedServer
@@ -961,6 +992,7 @@ final class MainViewModel: ObservableObject {
             if !canCheckDirect { directSiteReady = await PaymentRoute.check() }
             try Task.checkCancellation()
             guard vpn.state == .disconnected else { throw APIError.network }
+            beginVPNLogSession()
         }
         // Keep public DNS and the browser's route on the physical network when
         // the site answers there. The VPN then claims only the private API gateway.
@@ -1091,7 +1123,9 @@ final class MainViewModel: ObservableObject {
         if AppIdentity.readTunnelConfig()?.paymentRouting == true { await vpn.disconnect() }
         if account != nil, let config, config.bootstrapDuration == nil, vpn.state == .disconnected,
            discardCount == vpn.sceneDiscardCount {
+            beginVPNLogSession()
             vpnState = .connecting
+            logConnection("Оплата · восстановление основного VPN")
             do {
                 try await vpn.connect(config)
                 try await api.checkTunnelGateway()
@@ -1370,7 +1404,9 @@ final class MainViewModel: ObservableObject {
                 if error is URLError { break }
             }
         }
-        if loaded > 0 { logConnection("Предварительно загружены конфиги VPN: \(loaded)") }
+        if !Task.isCancelled, profile?.id == account, loaded > 0 {
+            logConnection("Предварительно загружены конфиги VPN: \(loaded)")
+        }
     }
 
     func addSite() {

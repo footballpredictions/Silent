@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 enum VPNLogLevel: String, Codable { case info, success, error }
 
@@ -83,43 +88,97 @@ struct VPNLogRow: Identifiable {
 }
 
 enum VPNLog {
-    private static var file: URL? { AppIdentity.groupURL?.appendingPathComponent("vpn-events.jsonl") }
-    private static let lock = NSLock()
+    struct Snapshot {
+        let sessionID: UUID?
+        let entries: [VPNLogEntry]
+    }
+
+    static let sessionOption = "silent-log-session"
     private static let maxSize: UInt64 = 192 * 1024
+    private static let protection: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+
+    private static func withJournal<T>(_ action: (URL) -> T) -> T? {
+        guard let directory = AppIdentity.groupURL else { return nil }
+        let descriptor = open(directory.appendingPathComponent("vpn-events.lock").path, O_CREAT | O_RDWR, mode_t(0o600))
+        guard descriptor >= 0 else { return nil }
+        defer { _ = close(descriptor) }
+        // The app and the Network Extension run in different processes.
+        while flock(descriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else { return nil }
+        }
+        return action(directory)
+    }
+
+    private static func sessionFile(in directory: URL) -> URL {
+        directory.appendingPathComponent("vpn-events.session")
+    }
+
+    private static func journalFile(in directory: URL) -> URL {
+        directory.appendingPathComponent("vpn-events.jsonl")
+    }
+
+    private static func sessionID(in directory: URL) -> UUID? {
+        (try? String(contentsOf: sessionFile(in: directory), encoding: .utf8)).flatMap(UUID.init(uuidString:))
+    }
+
+    static func currentSessionID() -> UUID? { withJournal { sessionID(in: $0) } ?? nil }
+
+    static func beginSession() -> UUID? {
+        withJournal { directory -> UUID? in
+            let id = UUID()
+            let file = journalFile(in: directory)
+            do {
+                if FileManager.default.fileExists(atPath: file.path) {
+                    try FileManager.default.removeItem(at: file)
+                }
+                try Data(id.uuidString.utf8).write(to: sessionFile(in: directory), options: protection)
+                return id
+            } catch { return nil }
+        } ?? nil
+    }
 
     // Only explicitly selected events go into the shareable journal.
-    static func write(_ message: String, level: VPNLogLevel = .info, source: String = "Туннель", key: String? = nil) {
-        guard let file, var data = try? JSONEncoder().encode(
+    static func write(_ message: String, level: VPNLogLevel = .info, source: String = "Туннель",
+                      key: String? = nil, sessionID owner: UUID?) {
+        guard var data = try? JSONEncoder().encode(
             VPNLogEntry(date: Date(), level: level, source: source, message: message, key: key)
         ) else { return }
-        lock.lock()
-        defer { lock.unlock() }
         data.append(10)
-        let fm = FileManager.default
-        let size = (try? fm.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.uint64Value ?? 0
-        if size >= maxSize {
-            let recent = (try? Data(contentsOf: file))?.suffix(Int(maxSize / 2)) ?? Data()
-            var retained = recent.firstIndex(of: 10).map { Data(recent.suffix(from: recent.index(after: $0))) } ?? Data()
-            retained.append(data)
-            try? retained.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        } else if !fm.fileExists(atPath: file.path) {
-            try? data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        } else if let handle = try? FileHandle(forWritingTo: file) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
+        _ = withJournal { directory in
+            guard sessionID(in: directory) == owner else { return }
+            let file = journalFile(in: directory)
+            let fm = FileManager.default
+            let size = (try? fm.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.uint64Value ?? 0
+            if size >= maxSize {
+                let recent = (try? Data(contentsOf: file))?.suffix(Int(maxSize / 2)) ?? Data()
+                var retained = recent.firstIndex(of: 10).map { Data(recent.suffix(from: recent.index(after: $0))) } ?? Data()
+                retained.append(data)
+                try? retained.write(to: file, options: protection)
+            } else if !fm.fileExists(atPath: file.path) {
+                try? data.write(to: file, options: protection)
+            } else if let handle = try? FileHandle(forWritingTo: file) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            }
         }
     }
 
-    static func read() -> [VPNLogEntry] {
-        guard let file, let data = try? Data(contentsOf: file), data.count <= maxSize + 4096 else { return [] }
-        return data.split(separator: 10).suffix(1200).compactMap {
-            try? JSONDecoder().decode(VPNLogEntry.self, from: Data($0))
+    static func read() -> Snapshot {
+        guard let (id, data) = withJournal({ directory in
+            (sessionID(in: directory), try? Data(contentsOf: journalFile(in: directory)))
+        }) else { return Snapshot(sessionID: nil, entries: []) }
+        guard let data, data.count <= maxSize + 4096 else { return Snapshot(sessionID: id, entries: []) }
+        let decoder = JSONDecoder()
+        let entries = data.split(separator: 10).suffix(1200).compactMap {
+            try? decoder.decode(VPNLogEntry.self, from: Data($0))
         }
+        return Snapshot(sessionID: id, entries: entries)
     }
 
     static func clear() {
-        guard let file else { return }
-        try? FileManager.default.removeItem(at: file)
+        _ = withJournal { directory in
+            try? FileManager.default.removeItem(at: journalFile(in: directory))
+        }
     }
 }

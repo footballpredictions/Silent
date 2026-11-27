@@ -57,7 +57,7 @@ final class VpnManager: ObservableObject {
     }
 
     func connect(_ config: TunnelConfig, timeout: TimeInterval? = nil) async throws {
-        VPNLog.write(AppIdentity.buildDescription, source: "Приложение", key: "app-build")
+        let logSessionID = VPNLog.currentSessionID()
         let discardCount = sceneDiscardCount
         await pendingSceneStop?.value
         guard discardCount == sceneDiscardCount,
@@ -101,7 +101,9 @@ final class VpnManager: ObservableObject {
         defer { pendingLaunchID = nil }
         do {
             try Task.checkCancellation()
-            try mgr.connection.startVPNTunnel()
+            VPNLog.write(AppIdentity.buildDescription, source: "Приложение", key: "app-build", sessionID: logSessionID)
+            let options: [String: NSObject]? = logSessionID.map { [VPNLog.sessionOption: $0.uuidString as NSString] }
+            try mgr.connection.startVPNTunnel(options: options)
             let defaultTimeout: TimeInterval = config.hashes.count > 1 ? 58 : 50
             try await waitForConnection(mgr.connection, launchID: launchID, timeout: timeout ?? defaultTimeout)
         } catch {

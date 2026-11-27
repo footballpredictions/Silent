@@ -79,10 +79,15 @@ struct ConnectionLogButton: View {
 private struct VPNLogPanel: View {
     @EnvironmentObject private var vm: MainViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var tunnelEntries: [VPNLogEntry] = []
+    @State private var tunnelSnapshot = VPNLog.Snapshot(sessionID: nil, entries: [])
     @State private var copied = false
 
-    private var entries: [VPNLogRow] { VPNLogRow.grouped(vm.connectionLog + tunnelEntries) }
+    private var entries: [VPNLogRow] {
+        let currentSession = VPNLog.currentSessionID()
+        let appEntries = vm.connectionLogSessionID == currentSession ? vm.connectionLog : []
+        let tunnelEntries = tunnelSnapshot.sessionID == currentSession ? tunnelSnapshot.entries : []
+        return VPNLogRow.grouped(appEntries + tunnelEntries)
+    }
     private let background = Color(red: 0.067, green: 0.094, blue: 0.153)
 
     var body: some View {
@@ -134,9 +139,13 @@ private struct VPNLogPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background.ignoresSafeArea())
         .preferredColorScheme(.dark)
+        .onChange(of: vm.connectionLogSessionID) { _ in
+            tunnelSnapshot = VPNLog.read()
+            copied = false
+        }
         .task {
             while !Task.isCancelled {
-                tunnelEntries = VPNLog.read()
+                tunnelSnapshot = VPNLog.read()
                 do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
             }
         }
@@ -154,7 +163,7 @@ private struct VPNLogPanel: View {
             .disabled(entries.isEmpty)
             Button("Очистить") {
                 vm.clearVPNLog()
-                tunnelEntries = []
+                tunnelSnapshot = VPNLog.read()
                 copied = false
             }
             Button("Закрыть") { dismiss() }

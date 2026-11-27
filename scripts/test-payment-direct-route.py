@@ -52,6 +52,7 @@ enum PublicApiFailover {
     var paymentTunnelActive = false
     enum Level { case success, info, error }
     func logConnection(_ text: String, level: Level = .info) {}
+    func beginVPNLogSession() {}
 PREFLIGHT
 SELECTION
     func route() async throws -> String { try await preparePaymentRoute("monthly").base }

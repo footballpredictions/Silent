@@ -151,6 +151,7 @@ BOOTSTRAP_PROPERTY
    vpn.cachePersisted={ [weak self] in self?.configSaved == true }
  }
  func logConnection(_ text:String,level:Level = .info){clock.record("log:"+text)}
+ func beginVPNLogSession(){}
  enum Level {case info,error,success}
  func prefetchServerConfigs(account:String,slots:[String],tunnelActive:Bool) async {clock.record("preview:tunnel",3)}
  func requestMainConfig(_ slot:String,tunnelOnly:Bool) async throws ->VpnConfig{

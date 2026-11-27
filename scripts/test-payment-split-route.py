@@ -108,6 +108,7 @@ final class Provider {
     var profile: Profile? = Profile()
     enum Level { case info, error, success }
     func logConnection(_ text: String, level: Level = .info) {}
+    func beginVPNLogSession() {}
     REPLAY_PREPARATION
     REPLAY_SELECTION
     func route() async throws -> String { try await preparePaymentRoute("monthly").base }

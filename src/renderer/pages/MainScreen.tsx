@@ -29,7 +29,7 @@ import {
 import { fetchVpnConfigWithKeys } from '../vpnConfigFetch'
 import { waitVpnReady } from '../vpnReady'
 import { warmupBrowsingPath } from '../warmupBrowsingPath'
-import SupportTelegramLinks from '../components/SupportTelegramLinks'
+import SupportLinks from '../components/SupportLinks'
 import VpnToggle, { SNAKE_MIN_VISIBLE_MS } from '../components/VpnToggle'
 import DebugLogPanel, { DebugLogButton } from '../components/DebugLogPanel'
 import ThemeModeToggle from '../components/ThemeModeToggle'
@@ -2139,10 +2139,12 @@ export default function MainScreen({
               <button onClick={() => setMenuPage(null)} className="text-xs text-gray-400 mb-4">← Назад</button>
               <div className="text-sm font-semibold mb-3" style={{ color: fg }}>Поддержка</div>
               <p className="text-xs" style={{ color: muted }}>По вопросам обратитесь через Telegram.</p>
-              <SupportTelegramLinks
+              <SupportLinks
                 channelUrl={clientTheme?.telegram_channel_url}
                 supportUrl={clientTheme?.support_url}
+                fg={fg}
                 muted={muted}
+                surface={palette.surface}
               />
             </div>
           )}

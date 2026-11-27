@@ -67,7 +67,13 @@ func (e *vkCallsFailure) Error() string {
 	if e.Err == nil {
 		return fmt.Sprintf("step=%s kind=%s", e.Step, e.Kind)
 	}
-	return fmt.Sprintf("step=%s kind=%s: %v", e.Step, e.Kind, e.Err)
+	detail := e.Err
+	var requestErr *neturl.Error
+	if errors.As(detail, &requestErr) && requestErr.Err != nil {
+		// The query may contain a call link, device ID and anonymous token.
+		detail = requestErr.Err
+	}
+	return fmt.Sprintf("step=%s kind=%s: %v", e.Step, e.Kind, detail)
 }
 
 func (e *vkCallsFailure) Unwrap() error {
@@ -185,7 +191,6 @@ func getVKCredsViaVKCallsHost(ctx context.Context, link string, streamID int, ap
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
-		// LAN bind + public DNS: обход Wi‑Fi DPI poison api.vk.me.
 		tlsclient.WithDialer(newVkDirectDialer()),
 	)
 	if err != nil {

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -885,12 +885,12 @@ func setupGlobalResolver() {
 	// РЎС‚Р°СЂС‹Р№ РєРѕРґ РґС‘СЂРіР°Р» СЃРЅР°С‡Р°Р»Р° UDP: UDP-В«dialВ» СѓСЃРїРµС€РµРЅ РјРіРЅРѕРІРµРЅРЅРѕ (Р±РµР· СЂСѓРєРѕРїРѕР¶Р°С‚РёСЏ),
 	// РїРѕСЌС‚РѕРјСѓ РІСЃРµРіРґР° РІРѕР·РІСЂР°С‰Р°Р»СЃСЏ РїРµСЂРІС‹Р№ СЃРµСЂРІРµСЂ, Р·Р°РїСЂРѕСЃ РїРѕС‚РѕРј С‚Р°Р№РјР°СѓС‚РёР», Р° fallback РЅР°
 	// sys-dns/netd РќРРљРћР“Р”Рђ РЅРµ СЃСЂР°Р±Р°С‚С‹РІР°Р» в†’ "lookup login.vk.ru: i/o timeout".
-	dialer := &net.Dialer{
+	dialer := physicalTransportDialer(net.Dialer{
 		// Р’СЂРµРјСЏ РЅР° TCP-СЂСѓРєРѕРїРѕР¶Р°С‚РёРµ Рє DNS-СЃРµСЂРІРµСЂСѓ. Р”РѕСЃС‚Р°С‚РѕС‡РЅРѕ РґР»СЏ LTE, РЅРѕ РєРѕСЂРѕС‚РєРѕ,
 		// С‡С‚РѕР±С‹ РїСЂРё РЅРµРґРѕСЃС‚СѓРїРЅРѕРј СЃРµСЂРІРµСЂРµ Р±С‹СЃС‚СЂРѕ СѓР№С‚Рё РЅР° СЃР»РµРґСѓСЋС‰РёР№.
 		Timeout:   1500 * time.Millisecond,
 		KeepAlive: 30 * time.Second,
-	}
+	}, bindPhysicalTransport)
 	yandexDNSServers := []string{"77.88.8.8:53", "77.88.8.1:53"}
 	netdFallback := []string{"127.0.0.1:53", "[::1]:53"}
 

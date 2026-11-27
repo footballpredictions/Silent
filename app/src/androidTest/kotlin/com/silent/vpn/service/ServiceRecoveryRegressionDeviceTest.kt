@@ -140,6 +140,17 @@ class ServiceRecoveryRegressionDeviceTest {
         assertTrue("A confirmed lost network kept the original sockets", transport.stops() > 0)
     }
 
+    @Test fun zeroWorkersAfterVkDialTimeoutRetriesTransportWithoutDroppingWireGuard() = withTransport { service, transport ->
+        WdttTunnelManager.activeWorkers.value = 0
+        managerField("vkStartupDialFailedProcess").set(WdttTunnelManager, transport)
+        managerField("lastActiveAtMs").setLong(WdttTunnelManager, 0L)
+        recover(service, com.silent.vpn.policy.NetworkRecoveryPolicy.VK_STARTUP_NETWORK_STALLED)
+        assertEquals(1, transport.stops())
+        assertTrue(WdttTunnelManager.tunnelReady.value)
+        recover(service, com.silent.vpn.policy.NetworkRecoveryPolicy.VK_STARTUP_NETWORK_STALLED)
+        assertEquals(1, transport.stops())
+    }
+
     @Test fun missingBypassAcknowledgementCannotBlockMobileVpnRecovery() = withTransport { service, transport ->
         val nativeField = BrowserScopedTunnel::class.java.getDeclaredField("process").apply { isAccessible = true }
         check(nativeField.get(BrowserScopedTunnel) == null)

@@ -7,6 +7,32 @@ import org.junit.Test
 
 class NetworkRecoveryPolicyTest {
 
+    @Test fun `a live handover process with zero workers and failed VK dial can try the physical network once`() {
+        val reason = NetworkRecoveryPolicy.VK_STARTUP_NETWORK_STALLED
+        assertTrue(NetworkRecoveryPolicy.shouldRetryVkStartup(
+            bootstrap = false, live = true, activeWorkers = 0, dialFailed = true,
+            elapsedMs = 35_000, attempted = false, authChallenge = false,
+        ))
+        assertFalse(NetworkRecoveryPolicy.shouldKeepHealthyTransport(reason, transportHealthy = true))
+        assertFalse(NetworkRecoveryPolicy.shouldRecoverDirectNetwork(reason, wasPaused = false))
+        assertFalse(NetworkRecoveryPolicy.shouldRetryVkStartup(false, true, 0, true, 35_000, true, false))
+        assertFalse(NetworkRecoveryPolicy.shouldRetryVkStartup(false, true, 1, true, 35_000, false, false))
+        assertFalse(NetworkRecoveryPolicy.shouldRetryVkStartup(false, true, 0, false, 35_000, false, false))
+        assertFalse(NetworkRecoveryPolicy.shouldRetryVkStartup(false, true, 0, true, 5_000, false, false))
+        assertFalse(NetworkRecoveryPolicy.shouldRetryVkStartup(false, true, 0, true, 35_000, false, true))
+        assertFalse(NetworkRecoveryPolicy.shouldRetryVkStartup(true, true, 0, true, 35_000, false, false))
+    }
+
+    @Test fun `only a connect failure before VK replies qualifies for startup recovery`() {
+        assertTrue(NetworkRecoveryPolicy.isVkStartupDialFailure(
+            "[VKCalls] host failed (step=step1 auth.getAnonymToken kind=network: dial tcp 192.0.2.10:443: i/o timeout)",
+        ))
+        assertTrue(NetworkRecoveryPolicy.isVkStartupDialFailure("kind=network: dial tcp4: network is unreachable"))
+        assertFalse(NetworkRecoveryPolicy.isVkStartupDialFailure("kind=network: read tcp: i/o timeout"))
+        assertFalse(NetworkRecoveryPolicy.isVkStartupDialFailure("kind=network: context canceled"))
+        assertFalse(NetworkRecoveryPolicy.isVkStartupDialFailure("kind=flood: error_code=9"))
+    }
+
     @Test fun `physical recovery ignores validation blips and VPN-only failures`() {
         assertFalse(NetworkRecoveryPolicy.shouldRecoverDirectNetwork("validated_after_gap", false))
         assertFalse(NetworkRecoveryPolicy.shouldRecoverDirectNetwork("data_path_stalled:probe", false))

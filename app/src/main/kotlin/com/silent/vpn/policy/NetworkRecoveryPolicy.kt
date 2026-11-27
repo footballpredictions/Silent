@@ -3,6 +3,7 @@ package com.silent.vpn.policy
 import com.silent.vpn.policy.VpnNetworkConstants.MIN_TRANSPORT_RESTART_INTERVAL_MS
 
 object NetworkRecoveryPolicy {
+    const val VK_STARTUP_NETWORK_STALLED = "vk_startup_network_stalled"
 
     /** Карман/doze: radio на секунды теряет INTERNET — не убиваем libclient сразу. */
     const val PAUSE_AFTER_NO_INTERNET_MS = 8_000L
@@ -271,6 +272,7 @@ object NetworkRecoveryPolicy {
             base == "wifi_gap_restored" ||
             base == "link_handover" ||
             base == "data_path_stalled" ||
+            base == VK_STARTUP_NETWORK_STALLED ||
             base == "phone_call_end" ||
             base == "internet_restored"
     }
@@ -284,9 +286,29 @@ object NetworkRecoveryPolicy {
         return !mustRestartHealthyTransport(reason)
     }
 
+    /** A live process and an installed WG interface can survive a failed VK startup. */
+    fun shouldRetryVkStartup(
+        bootstrap: Boolean,
+        live: Boolean,
+        activeWorkers: Int,
+        dialFailed: Boolean,
+        elapsedMs: Long,
+        attempted: Boolean,
+        authChallenge: Boolean,
+    ): Boolean = !bootstrap && live && activeWorkers == 0 && dialFailed &&
+        elapsedMs >= 30_000L && !attempted && !authChallenge
+
+    fun isVkStartupDialFailure(line: String): Boolean =
+        line.contains("kind=network", ignoreCase = true) &&
+            line.contains("dial tcp", ignoreCase = true) &&
+            (line.contains("i/o timeout", ignoreCase = true) ||
+                line.contains("no route to host", ignoreCase = true) ||
+                line.contains("network is unreachable", ignoreCase = true))
+
     /** A failed VPN server does not invalidate working physical DIRECT sockets. */
     fun shouldRecoverDirectNetwork(reason: String, wasPaused: Boolean): Boolean =
         reason.substringBefore(':') != "data_path_stalled" &&
+            reason.substringBefore(':') != VK_STARTUP_NETWORK_STALLED &&
             (wasPaused || mustRestartHealthyTransport(reason))
 
     data class TransportRestartInput(

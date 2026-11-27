@@ -81,7 +81,7 @@ func dialUDPTURN(ctx context.Context, urls []string, sessionID int, params *Turn
 	if err := ctx.Err(); err != nil {
 		return nil, endpoint, err
 	}
-	conn, err := dialUDPForTURN(remote)
+	conn, err := dialUDPForTURN(ctx, remote)
 	if err != nil {
 		return nil, endpoint, fmt.Errorf("TURN UDP connect: %w", err)
 	}

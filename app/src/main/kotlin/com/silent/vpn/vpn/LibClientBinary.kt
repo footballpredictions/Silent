@@ -43,6 +43,7 @@ object LibClientBinary {
         cmd: List<String>,
         libDir: String,
         filesDir: File,
+        transportNetworkHandle: Long? = null,
     ): Process {
         if (!AppIntegrity.ensureOkForVpn(context)) {
             throw GeneralSecurityException(AppIntegrity.failMessage())
@@ -51,7 +52,7 @@ object LibClientBinary {
         val commands = cmd.toMutableList()
         commands[0] = primary
         try {
-            return buildProcess(commands, libDir, filesDir).start()
+            return buildProcess(commands, libDir, filesDir, transportNetworkHandle).start()
         } catch (e: IOException) {
             if (!DevicePlatform.isTv(context)) throw e
             val fallback = resolveCodeCacheFallback(context)
@@ -62,14 +63,19 @@ object LibClientBinary {
             commands[0] = fallback
             DebugLog.w("LibClientBinary", "exec primary failed (${e.message}), retry $fallback")
             WdttTunnelManager.traceApp("libclient_fallback", "primary exec failed, retry codeCache")
-            return buildProcess(commands, libDir, filesDir).start()
+            return buildProcess(commands, libDir, filesDir, transportNetworkHandle).start()
         }
     }
 
-    private fun buildProcess(cmd: List<String>, libDir: String, filesDir: File): ProcessBuilder =
+    private fun buildProcess(
+        cmd: List<String>, libDir: String, filesDir: File, transportNetworkHandle: Long?,
+    ): ProcessBuilder =
         ProcessBuilder(cmd).apply {
             directory(filesDir)
             redirectErrorStream(true)
             environment()["LD_LIBRARY_PATH"] = libDir
+            if (transportNetworkHandle != null) {
+                environment()["SILENT_WDTT_UNDERLYING_NETWORK"] = transportNetworkHandle.toULong().toString()
+            }
         }
 }

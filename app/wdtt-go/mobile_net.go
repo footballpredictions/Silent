@@ -139,8 +139,16 @@ func resolveUDPAddrNoRoute(network, address string) (*net.UDPAddr, error) {
 	return &net.UDPAddr{IP: ip, Port: port}, nil
 }
 
-func dialUDPForTURN(resolved *net.UDPAddr) (*net.UDPConn, error) {
-	// Без LocalAddr-bind: на Android bind к Wi‑Fi/LTE ломает UDP к TURN под VpnService.
+func dialUDPForTURN(ctx context.Context, resolved *net.UDPAddr) (*net.UDPConn, error) {
+	// Keep the wildcard source address even when Android selects the socket's Network.
 	laddr := defaultLocalUDPAddr(resolved)
-	return net.DialUDP("udp", laddr, resolved)
+	if bindPhysicalTransport == nil {
+		return net.DialUDP("udp", laddr, resolved)
+	}
+	dialer := physicalTransportDialer(net.Dialer{LocalAddr: laddr}, bindPhysicalTransport)
+	conn, err := dialer.DialContext(ctx, "udp", resolved.String())
+	if err != nil {
+		return nil, err
+	}
+	return conn.(*net.UDPConn), nil
 }

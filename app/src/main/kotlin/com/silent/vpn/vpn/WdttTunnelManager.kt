@@ -68,7 +68,7 @@ object WdttTunnelManager {
 
     @Volatile var isLoggingEnabled = true
 
-    private var process: Process? = null
+    @Volatile private var process: Process? = null
     private var readerJob: Job? = null
     private var watchdogJob: Job? = null
     private var russianPolicyJob: Job? = null
@@ -109,8 +109,8 @@ object WdttTunnelManager {
     private var refusedCount = 0
     private var currentHashErrorCount = 0
     private var wrapAuthTimeoutCount = 0
-    var processStartedAtMs = 0L
-    private var lastActiveAtMs = 0L
+    @Volatile var processStartedAtMs = 0L
+    @Volatile private var lastActiveAtMs = 0L
 
     private var lastParams: Params? = null
     private var lastContext: Context? = null
@@ -420,7 +420,13 @@ object WdttTunnelManager {
         }
     }
 
-    fun start(context: Context, params: Params, isSwitching: Boolean = false, expectedSession: Params? = null) {
+    fun start(
+        context: Context,
+        params: Params,
+        isSwitching: Boolean = false,
+        expectedSession: Params? = null,
+        bindCurrentPhysicalNetwork: Boolean = false,
+    ) {
         scope.launch {
             startStopMutex.withLock {
                 try {
@@ -445,6 +451,7 @@ object WdttTunnelManager {
                         wrapAuthTimeoutCount = 0
                         processStartedAtMs = 0L
                         lastActiveAtMs = 0L
+                        vkStartupNetworkRetryUsed = false
                         libclientCrashRestarts = 0
                         lastParams = params
                         lastContext = appContext
@@ -526,6 +533,8 @@ object WdttTunnelManager {
 
                     deleteOldConf(appContext)
 
+                    val physicalNetwork = if (bindCurrentPhysicalNetwork) VpnNetworkHelper.findUnderlyingNetwork(appContext) else null
+                    vkStartupDialFailedProcess = null
                     val cmd = buildList {
                         add(primaryPath)
                         addAll(
@@ -541,7 +550,7 @@ object WdttTunnelManager {
                             ),
                         )
                         if (params.adaptiveRelays && !params.isBootstrap) add("-adaptive-relays")
-                        systemDnsForLibclient(appContext).let { dns ->
+                        systemDnsForLibclient(appContext, physicalNetwork).let { dns ->
                             add("-sys-dns")
                             add(dns)
                         }
@@ -552,7 +561,9 @@ object WdttTunnelManager {
                     }
 
                     val libDir = appContext.applicationInfo.nativeLibraryDir
-                    process = LibClientBinary.startLibclientProcess(appContext, cmd, libDir, appContext.filesDir)
+                    process = LibClientBinary.startLibclientProcess(
+                        appContext, cmd, libDir, appContext.filesDir, physicalNetwork?.networkHandle,
+                    )
                     processStartedAtMs = System.currentTimeMillis()
                     russianPolicyJob?.cancel()
                     val policyProcess = process
@@ -621,10 +632,10 @@ object WdttTunnelManager {
         else -> "vkcalls"
     }
 
-    private fun systemDnsForLibclient(context: Context): String {
+    private fun systemDnsForLibclient(context: Context, network: android.net.Network?): String {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
             ?: return DEFAULT_LIBCLIENT_DNS
-        val linkDns = cm.getLinkProperties(cm.activeNetwork)?.dnsServers
+        val linkDns = cm.getLinkProperties(network ?: cm.activeNetwork)?.dnsServers
             ?.mapNotNull { addr ->
                 addr.hostAddress?.takeIf { it.isNotBlank() }?.let { host ->
                     if (host.contains(':')) host else "$host:53"
@@ -927,13 +938,15 @@ object WdttTunnelManager {
 
     private fun startLogReader() {
         readerJob?.cancel()
+        val owner = process ?: return
         readerJob = scope.launch {
-            val reader = process?.inputStream?.bufferedReader() ?: return@launch
+            val reader = owner.inputStream.bufferedReader()
             var collectingConfig = false
             val configBuilder = StringBuilder()
             try {
                 var lastResetTime = System.currentTimeMillis()
                 reader.forEachLine { line ->
+                    if (!isActive || process !== owner) return@forEachLine
                     val now = System.currentTimeMillis()
                     if (now - lastResetTime > 60_000) {
                         refusedCount = 0
@@ -947,6 +960,9 @@ object WdttTunnelManager {
                         .replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "")
                         .trim()
                     appendStderrLine(lineTrim)
+                    if (com.silent.vpn.policy.NetworkRecoveryPolicy.isVkStartupDialFailure(lineTrim)) {
+                        vkStartupDialFailedProcess = owner
+                    }
 
                     noteFloodEscalateFromLog(lineTrim)
 
@@ -1704,11 +1720,29 @@ object WdttTunnelManager {
     }
 
     @Volatile private var networkRestartJob: Job? = null
+    @Volatile private var vkStartupDialFailedProcess: Process? = null
+    @Volatile private var vkStartupNetworkRetryUsed = false
 
     fun isNetworkRestartInFlight(): Boolean = networkRestartJob?.isActive == true
 
+    fun shouldRetryVkStartup(): Boolean = com.silent.vpn.policy.NetworkRecoveryPolicy.shouldRetryVkStartup(
+        bootstrap = isBootstrapMode,
+        live = running.value && process?.isAliveCompat() == true,
+        activeWorkers = activeWorkers.value,
+        dialFailed = process != null && process === vkStartupDialFailedProcess &&
+            lastActiveAtMs == 0L && processStartedAtMs > 0L,
+        elapsedMs = System.currentTimeMillis() - processStartedAtMs,
+        attempted = vkStartupNetworkRetryUsed,
+        authChallenge = floodEscalatePending || captchaInProgress ||
+            captchaManualInProgress || ManlCaptchaWebViewManager.isCaptchaPending,
+    )
+
     @Synchronized
-    fun restartTransport(forceNetwork: Boolean = false, reason: String = ""): Boolean {
+    fun restartTransport(
+        forceNetwork: Boolean = false,
+        reason: String = "",
+        bindCurrentPhysicalNetwork: Boolean = false,
+    ): Boolean {
         if (isBootstrapMode && forceNetwork) {
             updateLog("network_restart_skip", "[СЕТЬ] Bootstrap — мягкое восстановление", 50)
             if (!running.value || process?.isAliveCompat() != true) {
@@ -1724,23 +1758,29 @@ object WdttTunnelManager {
         }
         if (overlayRestoreSuppressed || isNetworkRecoverySuppressed()) return false
         if (networkRestartJob?.isActive == true) return true
-        if (!tunnelReady.value) return false
+        if (bindCurrentPhysicalNetwork) {
+            if (!shouldRetryVkStartup()) return false
+        } else if (!tunnelReady.value) return false
         val params = lastParams ?: return false
         val ctx = lastContext ?: return false
+        if (forceNetwork) vkStartupNetworkRetryUsed = bindCurrentPhysicalNetwork
         val why = reason.trim().takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty()
-        updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта$why", 50)
+        val message = if (bindCurrentPhysicalNetwork) "[СЕТЬ] VK не отвечает — повтор через текущую сеть"
+            else "[СЕТЬ] Перезапуск транспорта$why"
+        updateLog("network_restart", message, 50)
         killProcess()
         activeWorkers.value = 0
         networkRestartJob = scope.launch {
             delay(1500)
-            start(ctx, params, isSwitching = true, expectedSession = params)
+            start(ctx, params, isSwitching = true, expectedSession = params,
+                bindCurrentPhysicalNetwork = bindCurrentPhysicalNetwork)
         }
         return true
     }
 
     /** Явное восстановление после смены сети / звонка — без grace libclient. */
-    fun restartTransportAfterNetwork(reason: String = "") =
-        restartTransport(forceNetwork = true, reason = reason)
+    fun restartTransportAfterNetwork(reason: String = "", bindCurrentPhysicalNetwork: Boolean = false) =
+        restartTransport(forceNetwork = true, reason = reason, bindCurrentPhysicalNetwork = bindCurrentPhysicalNetwork)
 
     /**
      * «Обновить канал Telegram»: перезапуск libclient (новые TURN), WG не снимаем.
@@ -2195,6 +2235,7 @@ object WdttTunnelManager {
         readerJob?.cancel()
         val proc = process
         process = null
+        vkStartupDialFailedProcess = null
         if (proc != null) {
             runCatching {
                 proc.outputStream.write("STOP\n".toByteArray(Charsets.UTF_8))

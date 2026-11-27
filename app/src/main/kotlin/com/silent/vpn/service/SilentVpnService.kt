@@ -1110,6 +1110,7 @@ class SilentVpnService : Service() {
                 reason.startsWith("link_handover:") ||
                 reason.startsWith("validated_after_gap") ||
                 reason.startsWith("underlying_blackout") ||
+                reason.substringBefore(':') == NetworkRecoveryPolicy.VK_STARTUP_NETWORK_STALLED ||
                 (pausedForNetwork && reason.startsWith("internet_restored"))
         if (!skipGrace && System.currentTimeMillis() - connectStartedAtMs < networkGraceMs()) return
         if (reason.startsWith("underlying_blackout")) {
@@ -1155,6 +1156,8 @@ class SilentVpnService : Service() {
             else WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
             return
         }
+        val vkStartupRetry = reason.substringBefore(':') == NetworkRecoveryPolicy.VK_STARTUP_NETWORK_STALLED
+        if (vkStartupRetry && !WdttTunnelManager.shouldRetryVkStartup()) return
         val healthy = WdttTunnelManager.isTransportHealthy()
         // Validation probes and onLosing do not establish a lost data path.
         if (!wasPaused && NetworkRecoveryPolicy.shouldKeepHealthyTransport(reason, healthy)) return
@@ -1183,8 +1186,11 @@ class SilentVpnService : Service() {
             scheduleNetworkRecovery(reason, 1_200L)
             return
         }
-        val accepted = withContext(Dispatchers.IO) { WdttTunnelManager.restartTransportAfterNetwork(reason) }
+        val accepted = withContext(Dispatchers.IO) {
+            WdttTunnelManager.restartTransportAfterNetwork(reason, bindCurrentPhysicalNetwork = vkStartupRetry)
+        }
         if (!accepted) {
+            if (vkStartupRetry && !WdttTunnelManager.shouldRetryVkStartup()) return
             scheduleNetworkRecovery(reason, 1_200L)
             return
         }
@@ -1201,7 +1207,7 @@ class SilentVpnService : Service() {
         lastUnderlyingInternet = true
         dataWatch.reset()
         // WG's peer is loopback. Its device/TUN and existing application sockets survive.
-        WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
+        if (!vkStartupRetry) WdttTunnelManager.reapplyWireGuardForNetworkChange(applicationContext)
     }
 
     private fun recoverDirectAfterNetwork(session: Int, network: Network?) {
@@ -1896,6 +1902,11 @@ class SilentVpnService : Service() {
                     }
                     delay(2000)
                     continue
+                }
+                if (!phoneCallActive && !pausedForNetwork && !WdttTunnelManager.isNetworkRecoverySuppressed() &&
+                    WdttTunnelManager.shouldRetryVkStartup() && VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)
+                ) {
+                    scheduleNetworkRecovery(NetworkRecoveryPolicy.VK_STARTUP_NETWORK_STALLED)
                 }
                 if (!WdttTunnelManager.running.value && (pausedForNetwork || isTunnelPaused)) {
                     if (VpnNetworkHelper.hasAnyUnderlyingInternet(this@SilentVpnService)) {

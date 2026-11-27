@@ -1,5 +1,6 @@
 package com.silent.vpn.ui.screens
 
+import android.content.ActivityNotFoundException
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -17,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +37,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import android.graphics.Matrix
 import android.graphics.Paint as AndroidPaint
 import android.graphics.SweepGradient
@@ -909,7 +912,9 @@ fun MainScreen(
                         MenuPage.SUPPORT -> MenuSupport(
                             theme = theme,
                             fg = fg,
+                            surface = palette.surface,
                             onOpenUrl = onOpenUrl,
+                            onShowError = onShowError,
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.ABOUT -> MenuSimplePage(
                             title = "Silent VPN",
@@ -983,12 +988,16 @@ private fun MenuSimplePage(
 private fun MenuSupport(
     theme: ThemeData?,
     fg: Color,
+    surface: Color,
     onOpenUrl: (String) -> Unit,
+    onShowError: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val muted = fg.copy(alpha = 0.5f)
     val channel = theme?.telegram_channel_url?.takeIf { it.isNotBlank() } ?: "https://t.me/silentvpn3"
     val support = theme?.support_url?.takeIf { it.isNotBlank() } ?: "https://t.me/silentvpn3?direct"
+    val telegram = painterResource(R.drawable.ic_telegram)
+    val website = rememberVectorPainter(Icons.Outlined.Language)
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         TvTextButton(
             onClick = onBack,
@@ -1001,25 +1010,31 @@ private fun MenuSupport(
         Text("Поддержка", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg)
         Text("По вопросам обратитесь через Telegram.", fontSize = 12.sp, color = muted, modifier = Modifier.padding(top = 8.dp, bottom = 16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            listOf("Канал" to channel, "Поддержка" to support).forEach { (label, url) ->
+            listOf(
+                Triple("Канал", channel, telegram),
+                Triple("Поддержка", support, telegram),
+                Triple("Сайт", "https://silentvpn3.github.io/", website),
+            ).forEach { (label, url, icon) ->
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = if (rememberIsTv()) {
-                        Modifier.tvClickable(cornerRadius = 16.dp, onClick = { onOpenUrl(url) })
-                    } else {
-                        Modifier.clickable { onOpenUrl(url) }
+                    modifier = Modifier.tvClickable(cornerRadius = 16.dp) {
+                        try {
+                            onOpenUrl(url)
+                        } catch (_: ActivityNotFoundException) {
+                            onShowError("Не найдено приложение для открытия ссылки")
+                        }
                     },
                 ) {
                     Box(
                         modifier = Modifier
                             .size(48.dp)
-                            .background(Color(0xFFF3F4F6), RoundedCornerShape(16.dp)),
+                            .background(surface, RoundedCornerShape(16.dp)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            painter = painterResource(R.drawable.ic_telegram),
-                            contentDescription = label,
-                            tint = Color.Unspecified,
+                            painter = icon,
+                            contentDescription = null,
+                            tint = fg,
                             modifier = Modifier.size(28.dp),
                         )
                     }

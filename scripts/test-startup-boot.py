@@ -26,6 +26,7 @@ def method(name, text=source):
     return text[start:end]
 
 methods = '\n'.join(method(name) for name in [
+    'sceneDidBecomeActive',
     'loadInitialData', 'restoreSavedAccount', 'startBootstrap', 'connectBootstrap',
     'loadAccount', 'stopBootstrap', 'rememberLoginSession', 'elapsedConnectionTime',
     'loadServerConfigCache', 'cachedServerConfig', 'saveServerConfig', 'persistServerConfigCache',
@@ -43,7 +44,7 @@ cache_source = (ios / 'Silent/Services/ServerConfigCache.swift').read_text(encod
 
 fixture = r'''import Foundation
 enum APIError:Error { case network, unauthorized, http(Int,String), server(String), bootstrapUnavailable(String) }
-enum Stage { case configuration, session, tunnel, data }
+enum Stage { case configuration, session, tunnel, data, complete }
 enum State { case connected, disconnected }
 struct Subscription:Codable { var is_active=true }
 struct DeviceInfo:Codable {var id="fixture-main-device"}
@@ -76,6 +77,8 @@ enum BootstrapLaunch {
 @MainActor final class VPN {
  let clock:Clock; var state=State.disconnected;let sceneDiscardCount=0;var cachePersisted:(()->Bool)?
  init(_ clock:Clock){self.clock=clock}
+ func prepareForegroundScene() async {}
+ func refresh() async {}
  func isApiTunnelActive() async ->Bool{state == .connected}
  func connect(_ config:TunnelConfig,timeout:TimeInterval?=nil) async throws {
    if config.serverIP=="cell1" {clock.record("connect:cell1",timeout ?? 50);throw APIError.network}
@@ -126,6 +129,8 @@ PREVIEW_CONFIG
 @MainActor final class VM {
  let api:API;let vpn:VPN;let clock:Clock
  var loggedIn=false;var authLoading=false;var launchStage:Stage? = .configuration
+ var didStartInitialData=false;var paymentTunnelActive=false;let paymentRestoreKey="fixture-payment"
+ var restartExpiredLoginOnOpen=false;var bootstrapExpired=false;var forgotSent=false
  var authError:String?;var authLoadingTitle="";var profile:UserProfile?;var selectedServer="server1"
  var servers=(1...5).map{ServerSlot(key:"server\($0)")}
  var bootstrapActive=false;var bootstrapAttempted=false;var bootstrapStarting=false
@@ -150,8 +155,9 @@ BOOTSTRAP_PROPERTY
    }
    vpn.cachePersisted={ [weak self] in self?.configSaved == true }
  }
- func logConnection(_ text:String,level:Level = .info){clock.record("log:"+text)}
+ func logConnection(_ text:String,level:Level = .info,key:String?=nil){clock.record("log:"+text)}
  func beginVPNLogSession(){}
+ func dismissRegistrationConfirmation(){authError=nil}
  enum Level {case info,error,success}
  func prefetchServerConfigs(account:String,slots:[String],tunnelActive:Bool) async {clock.record("preview:tunnel",3)}
  func requestMainConfig(_ slot:String,tunnelOnly:Bool) async throws ->VpnConfig{
@@ -162,6 +168,8 @@ BOOTSTRAP_PROPERTY
  }
  func makeTunnel(_ config:VpnConfig,bootstrapDuration:Int)->TunnelConfig{TunnelConfig(serverIP:"cell1")}
  func scheduleServerPrefetch(){clock.record("background-prefetch")}
+ func finishPaymentTunnel(account:String?) async {preconditionFailure("unexpected payment cleanup")}
+ func loadAppearanceAndServers() async {clock.record("appearance")}
  func run() async {await loadInitialData()}
  func confirmedAccount() async throws {try await loadAccount(loadedProfile:UserProfile())}
  func restoreForTest() async {await restoreSavedAccount()}
@@ -306,6 +314,17 @@ METHODS
       nextLaunch.clock.events.contains("connect:cell1") || nextLaunch.clock.events.contains("bootstrap:https-fallback") {
       failures.append("next launch retries the dead first cell instead of remembering successful cell2; trace=\(nextLaunch.clock.events)")
    } else {print("PASS: next launch starts with remembered working cell2 without retrying cell1 or public HTTPS")}
+   let reopened=VM(publicHealthy:false)
+   reopened.api.isLoggedIn=false
+   reopened.didStartInitialData=true
+   reopened.bootstrapExpired=true
+   reopened.bootstrapAttempted=true
+   await reopened.sceneDidBecomeActive()
+   precondition(reopened.bootstrapExpired && reopened.clock.events.isEmpty)
+   reopened.restartExpiredLoginOnOpen=true
+   await reopened.sceneDidBecomeActive()
+   precondition(!reopened.bootstrapExpired && reopened.bootstrapDeadline != nil)
+   print("PASS: a new scene restarts the expired login, foregrounding preserves the expiry panel")
    if !failures.isEmpty {for failure in failures {print("FAIL: "+failure)};exit(1)}
  }
 }

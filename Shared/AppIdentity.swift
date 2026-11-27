@@ -64,6 +64,7 @@ enum RegistrationTunnelRoute {
     static let request = Data("registration-routing".utf8)
     static let internetDNS = ["1.1.1.1", "9.9.9.9"]
     static let duration = 120
+    static let expiredMessage = "Время временного VPN истекло"
 
     static func enable(on active: TunnelConfig) -> TunnelConfig? {
         guard let currentDuration = active.bootstrapDuration, (1...duration).contains(currentDuration),

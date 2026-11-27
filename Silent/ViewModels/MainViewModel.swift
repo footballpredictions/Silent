@@ -28,6 +28,7 @@ final class MainViewModel: ObservableObject {
     @Published var bootstrapStarting = false
     @Published private(set) var bootstrapReconnecting = false
     @Published private(set) var bootstrapFailed = false
+    @Published private(set) var bootstrapExpired = false
     @Published private(set) var bootstrapMailReady = false
     @Published private(set) var connectionLog: [VPNLogEntry] = []
     @Published private(set) var connectionLogSessionID = VPNLog.currentSessionID()
@@ -90,6 +91,7 @@ final class MainViewModel: ObservableObject {
     private var connectedAt: Date?
     private var canRecoverTunnel = false
     private var didStartInitialData = false
+    private var restartExpiredLoginOnOpen = false
     private var tunnelRecovery: Task<Void, Never>?
     private var serverSelectionVersion = 0
     private var prefetchTask: Task<Void, Never>?
@@ -134,7 +136,20 @@ final class MainViewModel: ObservableObject {
 
     func sceneDidBecomeActive() async {
         await vpn.prepareForegroundScene()
-        guard !didStartInitialData else { return }
+        guard !didStartInitialData else {
+            if bootstrapActive || restartExpiredLoginOnOpen { await vpn.refresh() }
+            if restartExpiredLoginOnOpen, vpn.state == .disconnected {
+                restartExpiredLoginOnOpen = false
+                bootstrapActive = false
+                bootstrapDeadline = nil
+                bootstrapExpired = false
+                bootstrapAttempted = false
+                dismissRegistrationConfirmation()
+                forgotSent = false
+                await startBootstrap()
+            }
+            return
+        }
         didStartInitialData = true
         let config = AppIdentity.readTunnelConfig()
         bootstrapActive = config?.bootstrapDuration != nil
@@ -161,6 +176,7 @@ final class MainViewModel: ObservableObject {
     }
 
     private func onSceneDiscard() {
+        if bootstrapExpired { restartExpiredLoginOnOpen = true }
         preparedPaymentRoute = nil
         canRecoverTunnel = false
         tunnelRecovery?.cancel()
@@ -192,13 +208,18 @@ final class MainViewModel: ObservableObject {
         }
         if bootstrapActive {
             bootstrapReconnecting = state == .reconnecting
-            if state == .disconnected, !bootstrapStarting {
-                bootstrapActive = false
-                bootstrapDeadline = nil
-                bootstrapMailReady = false
-                bootstrapFailed = true
-                logConnection(vpn.readError() ?? "Временный VPN отключён")
-            }
+            guard state == .disconnected else { return }
+            let error = vpn.readError()
+            let expired = bootstrapExpired || (!api.isLoggedIn && bootstrapDeadline.map {
+                $0 <= Date() || error == RegistrationTunnelRoute.expiredMessage
+            } == true)
+            guard expired || !bootstrapStarting else { return }
+            bootstrapActive = false
+            bootstrapDeadline = nil
+            bootstrapMailReady = false
+            bootstrapExpired = expired
+            bootstrapFailed = !expired
+            logConnection(error ?? (expired ? RegistrationTunnelRoute.expiredMessage : "Временный VPN отключён"))
             return
         }
         guard (loggedIn || api.isLoggedIn), !vpnActionInProgress, state != vpnState else { return }
@@ -287,10 +308,23 @@ final class MainViewModel: ObservableObject {
         VPNLog.clear()
     }
 
-    private func startBootstrap(registrationRouting: Bool = false, reportFailure: Bool = true) async {
+    func expireBootstrap(at deadline: Date) {
+        guard !Task.isCancelled, !loggedIn, !api.isLoggedIn, bootstrapActive, !bootstrapStarting,
+              bootstrapDeadline == deadline, deadline <= Date() else { return }
+        bootstrapExpired = true
+    }
+
+    func prepareToCloseExpiredLogin() async -> Bool {
+        guard bootstrapExpired, !loggedIn, !api.isLoggedIn else { return false }
+        let stopped = await vpn.disconnect()
+        return stopped && bootstrapExpired && !loggedIn && !api.isLoggedIn
+    }
+
+    private func startBootstrap(registrationRouting: Bool = false, reportFailure: Bool = true,
+                                reuseLogSession: Bool = false) async {
         guard !bootstrapHash.isEmpty, !loggedIn, (!authLoading || registrationRouting),
-              !bootstrapActive, !bootstrapAttempted else { return }
-        beginVPNLogSession()
+              !bootstrapActive, !bootstrapAttempted, !bootstrapExpired else { return }
+        if !reuseLogSession { beginVPNLogSession() }
         bootstrapAttempted = true
         bootstrapActive = true
         bootstrapStarting = true
@@ -387,7 +421,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func retryBootstrap() async {
-        guard !authLoading, !bootstrapStarting, !loggedIn else { return }
+        guard !authLoading, !bootstrapStarting, !loggedIn, !bootstrapExpired else { return }
         authError = nil
         if registrationEmail != nil {
             if !bootstrapActive { bootstrapCell = (bootstrapCell + 1) % BootstrapLaunch.cellHosts.count }
@@ -406,10 +440,11 @@ final class MainViewModel: ObservableObject {
     }
 
     private func prepareRegistrationInternet() async {
-        guard registrationEmail != nil, !bootstrapStarting else { return }
+        guard registrationEmail != nil, !bootstrapStarting, !bootstrapExpired else { return }
         let discardCount = vpn.sceneDiscardCount
         await vpn.refresh()
-        guard discardCount == vpn.sceneDiscardCount, registrationEmail != nil, !bootstrapStarting else { return }
+        guard discardCount == vpn.sceneDiscardCount, registrationEmail != nil,
+              !bootstrapStarting, !bootstrapExpired else { return }
         if vpn.state != .disconnected {
             guard bootstrapActive, vpn.state == .connected else {
                 bootstrapFailed = true
@@ -419,7 +454,7 @@ final class MainViewModel: ObservableObject {
             let deadline = await vpn.enableRegistrationInternet()
             if deadline == nil { await vpn.refresh() }
             bootstrapStarting = false
-            guard discardCount == vpn.sceneDiscardCount else { return }
+            guard discardCount == vpn.sceneDiscardCount, !bootstrapExpired else { return }
             if let deadline, vpn.state == .connected {
                 bootstrapDeadline = deadline
                 bootstrapMailReady = true
@@ -564,7 +599,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func login(email: String, password: String, remember: Bool) async {
-        guard !authLoading, !bootstrapStarting else { return }
+        guard !authLoading, !bootstrapStarting, !bootstrapExpired else { return }
         authLoading = true
         authLoadingTitle = "Вход…"
         authError = nil
@@ -593,7 +628,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func register(email: String, password: String, code: String, remember: Bool) async {
-        guard !authLoading, !bootstrapStarting else { return }
+        guard !authLoading, !bootstrapStarting, !bootstrapExpired else { return }
         authLoading = true
         authLoadingTitle = "Создание аккаунта…"
         authError = nil
@@ -628,7 +663,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func resendVerification(password: String) async {
-        guard let address = registrationEmail, !verificationResending, !password.isEmpty else { return }
+        guard let address = registrationEmail, !verificationResending, !password.isEmpty, !bootstrapExpired else { return }
         verificationResending = true
         authError = nil
         verificationNotice = nil
@@ -644,7 +679,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func forgot(email: String) async {
-        guard !authLoading, !bootstrapStarting else { return }
+        guard !authLoading, !bootstrapStarting, !bootstrapExpired else { return }
         authLoading = true
         authLoadingTitle = "Отправка…"
         authError = nil
@@ -662,38 +697,48 @@ final class MainViewModel: ObservableObject {
 
     func logout() {
         guard loggedIn, canLogout else { return }
+        vpnActionInProgress = true
+        canRecoverTunnel = false
+        errorMessage = nil
+        if vpnState != .disconnected { vpnState = .disconnecting }
         tunnelRecovery?.cancel()
         prefetchTask?.cancel()
         siteRoutingUpdate?.cancel()
-        serverConfigCache = nil
-        KeychainHelper.delete(serverConfigCacheKey)
-        let access = api.accessToken
-        let serverLogout = access.map { token in
-            Task { await api.logoutSession(access: token) }
-        }
-        api.logout()
-        canRecoverTunnel = false
-        sessionsVersion += 1
-        serverSelectionVersion += 1
-        bootstrapAttempted = false
-        profile = nil
-        loggedIn = false
-        servers = ServerCatalog.fixedList
-        serverHint = ""
-        vpnState = .disconnected
-        connectedAt = nil
-        menuOpen = false
-        menuPage = .root
-        payment = .idle
-        russianListReceived = false
         logoutTask = Task {
-            await vpn.disconnect()
-            await serverLogout?.value
-        }
-        Task {
-            await logoutTask?.value
-            guard !api.isLoggedIn else { return }
-            await startBootstrap()
+            defer {
+                logoutTask = nil
+                vpnActionInProgress = false
+            }
+            let stopped = await vpn.disconnect()
+            vpnState = vpn.state
+            guard stopped else {
+                errorMessage = "Не удалось отключить VPN. Повторите выход из аккаунта."
+                return
+            }
+            connectedAt = nil
+            russianListReceived = false
+            beginVPNLogSession()
+            if let access = api.accessToken { await api.logoutSession(access: access) }
+            api.logout()
+            serverConfigCache = nil
+            KeychainHelper.delete(serverConfigCacheKey)
+            sessionsVersion += 1
+            serverSelectionVersion += 1
+            bootstrapAttempted = false
+            bootstrapActive = false
+            bootstrapDeadline = nil
+            bootstrapMailReady = false
+            bootstrapReconnecting = false
+            bootstrapFailed = false
+            bootstrapExpired = false
+            profile = nil
+            servers = ServerCatalog.fixedList
+            serverHint = ""
+            menuOpen = false
+            menuPage = .root
+            payment = .idle
+            loggedIn = false
+            await startBootstrap(reuseLogSession: true)
         }
     }
 

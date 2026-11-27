@@ -207,7 +207,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             do { try await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000_000) }
             catch { return }
             guard let self, !Task.isCancelled, self.bootstrapDeadline == deadline else { return }
-            let text = "Время временного VPN истекло"
+            let text = RegistrationTunnelRoute.expiredMessage
             self.writeError(text)
             self.cancelTunnelWithError(self.tunnelError(text))
         }

@@ -26,6 +26,8 @@ jobs:
           python3 scripts/test-payment-direct-route.py
           python3 scripts/test-payment-split-route.py
           python3 scripts/test-vpn-log-session.py
+          python3 scripts/test-logout-handoff.py
+          python3 scripts/test-login-expiration.py
 
   build:
     needs: startup-regression

@@ -205,15 +205,13 @@ final class VpnManager: ObservableObject {
         return deadline
     }
 
-    func disconnect() async {
-        guard let mgr = try? await load() else {
-            state = .disconnected
-            return
-        }
+    @discardableResult
+    func disconnect() async -> Bool {
+        guard let mgr = try? await load() else { return false }
         let connection = mgr.connection
         guard connection.status != .invalid, connection.status != .disconnected else {
             state = .disconnected
-            return
+            return true
         }
         state = .disconnecting
         if connection.status != .disconnecting { connection.stopVPNTunnel() }
@@ -221,7 +219,9 @@ final class VpnManager: ObservableObject {
             if connection.status == .disconnected || connection.status == .invalid { break }
             do { try await Task.sleep(nanoseconds: 250_000_000) } catch { break }
         }
-        state = Self.map(connection.status)
+        let status = connection.status
+        state = Self.map(status)
+        return status == .disconnected || status == .invalid
     }
 
     func switchPaymentExit(to host: String) async throws -> Bool {

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -55,6 +56,7 @@ import androidx.compose.ui.res.painterResource
 import com.silent.vpn.BuildConfig
 import com.silent.vpn.policy.MenuBackPolicy
 import com.silent.vpn.policy.MenuBackStep
+import com.silent.vpn.policy.OtaGithubDiscovery
 import com.silent.vpn.R
 import com.silent.vpn.ui.components.DebugLogButton
 import com.silent.vpn.ui.components.DebugLogDialog
@@ -62,6 +64,8 @@ import com.silent.vpn.ui.components.HomeBgImage
 import com.silent.vpn.ui.components.MenuNavItem
 import com.silent.vpn.ui.components.MenuNavLogout
 import com.silent.vpn.ui.components.ThemeModeToggle
+import com.silent.vpn.ui.qr.InstallQrDialog
+import com.silent.vpn.ui.qr.MobileInstaller
 import com.silent.vpn.ui.components.isRasterThemeAsset
 import com.silent.vpn.ui.components.resolveThemeAssetUrl
 import com.silent.vpn.data.SilentRepository
@@ -911,10 +915,12 @@ fun MainScreen(
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.SUPPORT -> MenuSupport(
                             theme = theme,
+                            bg = bg,
                             fg = fg,
                             surface = palette.surface,
                             onOpenUrl = onOpenUrl,
                             onShowError = onShowError,
+                            loadApk = { OtaGithubDiscovery.latestAndroidApk(repo.fetchGithubReleasesJson()) },
                         ) { menuPage = MenuPage.ROOT }
                         MenuPage.ABOUT -> MenuSimplePage(
                             title = "Silent VPN",
@@ -987,10 +993,12 @@ private fun MenuSimplePage(
 @Composable
 private fun MenuSupport(
     theme: ThemeData?,
+    bg: Color,
     fg: Color,
     surface: Color,
     onOpenUrl: (String) -> Unit,
     onShowError: (String) -> Unit,
+    loadApk: suspend () -> String?,
     onBack: () -> Unit,
 ) {
     val muted = fg.copy(alpha = 0.5f)
@@ -998,6 +1006,16 @@ private fun MenuSupport(
     val support = theme?.support_url?.takeIf { it.isNotBlank() } ?: "https://t.me/silentvpn3?direct"
     val telegram = painterResource(R.drawable.ic_telegram)
     val website = rememberVectorPainter(Icons.Outlined.Language)
+    val android = rememberVectorPainter(Icons.Filled.Android)
+    val apple = painterResource(R.drawable.ic_apple)
+    var installer by remember { mutableStateOf<MobileInstaller?>(null) }
+    val openSupportUrl: (String) -> Unit = { url ->
+        try {
+            onOpenUrl(url)
+        } catch (_: ActivityNotFoundException) {
+            onShowError("Не найдено приложение для открытия ссылки")
+        }
+    }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         TvTextButton(
             onClick = onBack,
@@ -1015,33 +1033,40 @@ private fun MenuSupport(
                 Triple("Поддержка", support, telegram),
                 Triple("Сайт", "https://silentvpn3.github.io/", website),
             ).forEach { (label, url, icon) ->
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.tvClickable(cornerRadius = 16.dp) {
-                        try {
-                            onOpenUrl(url)
-                        } catch (_: ActivityNotFoundException) {
-                            onShowError("Не найдено приложение для открытия ссылки")
-                        }
-                    },
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .background(surface, RoundedCornerShape(16.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            painter = icon,
-                            contentDescription = null,
-                            tint = fg,
-                            modifier = Modifier.size(28.dp),
-                        )
-                    }
-                    Text(label, fontSize = 11.sp, color = muted, modifier = Modifier.padding(top = 8.dp))
-                }
+                SupportTile(label, icon, fg, surface) { openSupportUrl(url) }
             }
         }
+        Text("Скачать актуальную версию", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = fg,
+            modifier = Modifier.padding(top = 24.dp, bottom = 12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            SupportTile("Android", android, fg, surface) { installer = MobileInstaller.Android }
+            SupportTile("iOS", apple, fg, surface) { installer = MobileInstaller.Ios }
+        }
+    }
+    installer?.let { platform ->
+        InstallQrDialog(platform, bg, fg, loadApk, openSupportUrl) { installer = null }
+    }
+}
+
+@Composable
+private fun SupportTile(
+    label: String,
+    icon: androidx.compose.ui.graphics.painter.Painter,
+    fg: Color,
+    surface: Color,
+    action: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.tvClickable(cornerRadius = 16.dp, onClick = action),
+    ) {
+        Box(
+            modifier = Modifier.size(48.dp).background(surface, RoundedCornerShape(16.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(painter = icon, contentDescription = null, tint = fg, modifier = Modifier.size(28.dp))
+        }
+        Text(label, fontSize = 11.sp, color = fg.copy(alpha = 0.5f), modifier = Modifier.padding(top = 8.dp))
     }
 }
 

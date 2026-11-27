@@ -1,6 +1,7 @@
 package com.silent.vpn.policy
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -54,6 +55,15 @@ class OtaGithubDiscoveryTest {
     fun `same version is current so hive ip outage cannot hide up-to-date`() {
         val got = OtaGithubDiscovery.parse(json, platform = "android", currentVersion = "1.0.166")
         assertEquals(OtaGithubDiscovery.Result.Current("1.0.166"), got)
+    }
+
+    @Test
+    fun `support QR always uses the published Android APK from the official repo`() {
+        val latest = OtaGithubDiscovery.parse(json, "android", "1.0.165") as OtaGithubDiscovery.Result.Available
+        assertEquals(latest.downloadUrl, OtaGithubDiscovery.latestAndroidApk(json))
+        assertNull(OtaGithubDiscovery.latestAndroidApk(json.replace("github.com/silentvpn3/", "github.com/other/")))
+        assertNull(OtaGithubDiscovery.latestAndroidApk(json.replace(".apk", ".exe")))
+        assertNull(OtaGithubDiscovery.latestAndroidApk("{"))
     }
 
     @Test

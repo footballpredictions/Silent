@@ -31,29 +31,31 @@ object OtaGithubDiscovery {
     }
 
     fun parse(json: String?, platform: String, currentVersion: String): Result {
-        val root = runCatching {
-            JsonParser.parseString(json ?: return Result.Unreadable).asJsonObject
-        }.getOrNull() ?: return Result.Unreadable
-        val key = landingKey(platform).ifBlank { return Result.Unreadable }
-        val rowEl = root.get(key)
-        if (rowEl == null || !rowEl.isJsonObject) return Result.Unreadable
-        val row = rowEl.asJsonObject
+        val release = release(json, platform) ?: return Result.Unreadable
+        return if (isNewer(release.version, currentVersion)) release else Result.Current(release.version)
+    }
+
+    private val apkAssetUrl = Regex("""https://github\.com/silentvpn3/silentvpn3\.github\.io/releases/download/[^/?#]+/[^/?#]+\.apk""")
+
+    fun latestAndroidApk(json: String?): String? =
+        release(json, "android")?.downloadUrl?.takeIf(apkAssetUrl::matches)
+
+    private fun release(json: String?, platform: String): Result.Available? = runCatching {
+        val row = JsonParser.parseString(json ?: return null).asJsonObject
+            .getAsJsonObject(landingKey(platform)) ?: return null
         val latest = row.get("version")?.asString?.trim().orEmpty()
         val filename = row.get("filename")?.asString?.trim().orEmpty()
         val url = row.get("download_url")?.asString?.trim().orEmpty()
         if (latest.isEmpty() || filename.isEmpty() || !url.startsWith("http")) {
-            return Result.Unreadable
+            return null
         }
-        if (!isNewer(latest, currentVersion)) {
-            return Result.Current(latest)
-        }
-        return Result.Available(
+        Result.Available(
             version = latest,
             filename = filename,
             size = row.get("size")?.asLong ?: 0L,
             downloadUrl = url,
         )
-    }
+    }.getOrNull()
 
     fun isNewer(latest: String, current: String): Boolean {
         val a = parseVersion(latest)

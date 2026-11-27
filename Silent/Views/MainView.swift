@@ -296,10 +296,14 @@ struct BigToggle: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
+    private static let snakeHeadPosition = 0.875
+    private static let snakeStrokeWidth: CGFloat = 4
+
     var body: some View {
+        let snakeGradient = isLoading ? makeSnakeGradient() : nil
         Button(action: action) {
             TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || scenePhase != .active || (!isOn && !isLoading))) { context in
-                track(at: context.date.timeIntervalSinceReferenceDate)
+                track(at: context.date.timeIntervalSinceReferenceDate, snakeGradient: snakeGradient)
             }
             .frame(width: 154, height: 92)
             .contentShape(Rectangle())
@@ -310,7 +314,7 @@ struct BigToggle: View {
         .accessibilityValue(status)
     }
 
-    private func track(at time: TimeInterval) -> some View {
+    private func track(at time: TimeInterval, snakeGradient: AngularGradient?) -> some View {
         let pulse = reduceMotion ? 1.0 : 1 + 0.06 * (1 - cos(time * 2 * .pi / 3))
         let thumb = reduceMotion ? 1.0 : 1 + 0.05 * (1 - cos(time * 2 * .pi / 1.04))
         let rotation = reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 2.2) / 2.2 * 360
@@ -326,12 +330,17 @@ struct BigToggle: View {
             Circle()
                 .fill(bg)
                 .overlay {
-                    if isLoading {
-                        Circle().strokeBorder(
-                            AngularGradient(colors: [.clear, .clear, progressColor.opacity(0.35), progressColor, .clear], center: .center),
-                            lineWidth: 4
-                        )
-                        .rotationEffect(.degrees(rotation))
+                    if let snakeGradient {
+                        Circle()
+                            .strokeBorder(snakeGradient, lineWidth: Self.snakeStrokeWidth)
+                            .overlay {
+                                Circle()
+                                    .fill(progressColor)
+                                    .frame(width: Self.snakeStrokeWidth, height: Self.snakeStrokeWidth)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                                    .rotationEffect(.degrees(Self.snakeHeadPosition * 360))
+                            }
+                            .rotationEffect(.degrees(rotation - 90))
                     } else {
                         Circle().strokeBorder(color, lineWidth: 2)
                     }
@@ -341,6 +350,24 @@ struct BigToggle: View {
                 .offset(x: isOn ? 35 : -35)
                 .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.7), value: isOn)
         }
+    }
+
+    private func makeSnakeGradient() -> AngularGradient {
+        let tailStart = 0.020
+        let span = Self.snakeHeadPosition - tailStart
+        let steps = 32
+        let gap = progressColor.opacity(0)
+        var stops: [Gradient.Stop] = [.init(color: gap, location: 0)]
+        stops += (0...steps).map { step in
+            let fraction = Double(step) / Double(steps)
+            let location = tailStart + span * fraction
+            let opacity = pow(fraction, 4.4) * 0.98
+            return .init(color: progressColor.opacity(opacity), location: CGFloat(location))
+        }
+        // The solid cap covers the short transition from the head into the gap.
+        stops.append(.init(color: gap, location: CGFloat(Self.snakeHeadPosition + 0.003)))
+        stops.append(.init(color: gap, location: 1))
+        return AngularGradient(stops: stops, center: .center, angle: .zero)
     }
 }
 

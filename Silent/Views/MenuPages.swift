@@ -575,6 +575,7 @@ private struct SupportPage: View {
             HStack(spacing: 24) {
                 link("Канал", vm.theme?.telegram_channel_url.nilIfEmpty ?? "https://t.me/silentvpn3", p)
                 link("Поддержка", vm.theme?.support_url.nilIfEmpty ?? "https://t.me/silentvpn3?direct", p)
+                link("Сайт", "https://silentvpn3.github.io/", p, icon: "globe")
             }
             if let privacy = vm.theme?.privacy_url.nilIfEmpty {
                 Button("Политика") { open(privacy) }.font(.subheadline).foregroundColor(p.link)
@@ -587,11 +588,12 @@ private struct SupportPage: View {
         .padding(16)
     }
 
-    private func link(_ title: String, _ url: String, _ p: Palette) -> some View {
+    private func link(_ title: String, _ url: String, _ p: Palette, icon: String = "paperplane.fill") -> some View {
         Button { open(url) } label: {
             VStack(spacing: 8) {
-                Image(systemName: "paperplane.fill")
+                Image(systemName: icon)
                     .font(.title3)
+                    .accessibilityHidden(true)
                     .frame(width: 48, height: 48)
                     .background(p.fg.opacity(0.06))
                     .cornerRadius(16)

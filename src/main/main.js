@@ -44,6 +44,7 @@ const {
   RELEASES_JSON_URL,
   FETCH_TIMEOUT_MS: GITHUB_OTA_TIMEOUT_MS,
   parseGithubOta,
+  supportInstallerUrl,
   otaDownloadCandidates,
 } = require('./vpn/otaGithubDiscovery')
 const {
@@ -3018,6 +3019,17 @@ function fetchGithubReleasesJson() {
     })
   })
 }
+
+ipcMain.handle('open-latest-installer', async () => {
+  try {
+    const url = supportInstallerUrl(await fetchGithubReleasesJson(), process.platform, process.arch)
+    if (!url) return false
+    await shell.openExternal(url)
+    return true
+  } catch {
+    return false
+  }
+})
 
 ipcMain.handle('app-update-check', async (_, { version, platform } = {}) => {
   const plat = otaPlatform(platform)

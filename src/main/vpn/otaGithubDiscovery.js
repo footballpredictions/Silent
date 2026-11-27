@@ -28,22 +28,22 @@ function landingKey(platform) {
   return p
 }
 
-function parseGithubOta(raw, platform, currentVersion, arch) {
+function parseGithubRelease(raw, platform, arch) {
   let root
   try {
     root = typeof raw === 'string' ? JSON.parse(raw) : raw
   } catch {
-    return { kind: 'unreadable' }
+    return null
   }
-  if (!root || typeof root !== 'object') return { kind: 'unreadable' }
+  if (!root || typeof root !== 'object') return null
   const key = landingKey(platform)
   let row = root[key]
-  if (!row || typeof row !== 'object') return { kind: 'unreadable' }
+  if (!row || typeof row !== 'object') return null
   if (key === 'mac' && row.arches && typeof row.arches === 'object') {
     const archKey = arch === 'arm64' ? 'arm64' : 'x64'
     const slot = row.arches[archKey]
     if (!slot || typeof slot !== 'object' || !slot.version || !slot.download_url) {
-      return { kind: 'unreadable' }
+      return null
     }
     row = { ...row, ...slot }
   }
@@ -51,18 +51,33 @@ function parseGithubOta(raw, platform, currentVersion, arch) {
   const filename = String(row.filename || '').trim()
   const downloadUrl = String(row.download_url || '').trim()
   if (!version || !filename || !/^https?:\/\//i.test(downloadUrl)) {
-    return { kind: 'unreadable' }
+    return null
   }
-  if (!isNewer(version, currentVersion)) {
-    return { kind: 'current', version }
+  return { version, filename, size: Number(row.size) || 0, download_url: downloadUrl }
+}
+
+function supportInstallerUrl(raw, platform, arch) {
+  const release = parseGithubRelease(raw, platform, arch)
+  const extension = { pc: '.exe', linux: '.deb', mac: '.dmg' }[landingKey(platform)]
+  const prefix = 'https://github.com/silentvpn3/silentvpn3.github.io/releases/download/'
+  if (!release || !extension || !release.filename.endsWith(extension)) return null
+  const url = release.download_url
+  if (!url.startsWith(prefix)) return null
+  const assetPath = url.slice(prefix.length).split('/')
+  return assetPath.length === 2 && /^v\d[\w.-]*$/.test(assetPath[0]) &&
+    assetPath[1] === encodeURIComponent(release.filename) ? url : null
+}
+
+function parseGithubOta(raw, platform, currentVersion, arch) {
+  const release = parseGithubRelease(raw, platform, arch)
+  if (!release) return { kind: 'unreadable' }
+  if (!isNewer(release.version, currentVersion)) {
+    return { kind: 'current', version: release.version }
   }
   return {
     kind: 'available',
-    version,
-    filename,
-    size: Number(row.size) || 0,
-    download_url: downloadUrl,
-    github_download_url: downloadUrl,
+    ...release,
+    github_download_url: release.download_url,
     available: true,
   }
 }
@@ -97,5 +112,6 @@ module.exports = {
   isNewer,
   landingKey,
   parseGithubOta,
+  supportInstallerUrl,
   otaDownloadCandidates,
 }

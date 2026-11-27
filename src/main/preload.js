@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   close: () => ipcRenderer.invoke('window-close'),
   quitApp: () => ipcRenderer.invoke('app-quit'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  openLatestInstaller: () => ipcRenderer.invoke('open-latest-installer'),
   getAdminPanelUrl: () => ipcRenderer.invoke('get-admin-panel-url'),
   openAdminPanel: () => ipcRenderer.invoke('open-admin-panel'),
   getPlatform: () => ipcRenderer.invoke('get-platform'),

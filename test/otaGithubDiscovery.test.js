@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const {
   RELEASES_JSON_URL,
   parseGithubOta,
+  supportInstallerUrl,
   landingKey,
   otaDownloadCandidates,
 } = require('../src/main/vpn/otaGithubDiscovery')
@@ -46,6 +47,8 @@ describe('otaGithubDiscovery', () => {
     const got = parseGithubOta(JSON_BODY, 'pc', '1.0.166')
     assert.equal(got.kind, 'current')
     assert.equal(got.version, '1.0.166')
+    assert.match(supportInstallerUrl(JSON_BODY, 'win32', 'x64'), /\.exe$/)
+    assert.match(supportInstallerUrl(JSON_BODY, 'linux', 'x64'), /\.deb$/)
   })
 
   it('is unreadable on garbage so the client does not invent a hive check', () => {
@@ -81,6 +84,14 @@ describe('otaGithubDiscovery', () => {
     assert.equal(arm.kind, 'available')
     assert.match(arm.download_url, /-arm64\.dmg/)
     assert.match(intel.download_url, /-x64\.dmg/)
+    assert.equal(supportInstallerUrl(body, 'darwin', 'arm64'), arm.download_url)
+    assert.equal(supportInstallerUrl(body, 'darwin', 'x64'), intel.download_url)
+  })
+
+  it('does not open an installer from an unexpected repository or file type', () => {
+    assert.equal(supportInstallerUrl(JSON_BODY.replaceAll('github.com/silentvpn3/', 'github.com/other/'), 'pc'), null)
+    assert.equal(supportInstallerUrl(JSON_BODY.replaceAll('Setup.1.0.166.exe', 'Setup.1.0.166.deb'), 'pc'), null)
+    assert.equal(supportInstallerUrl('{', 'pc'), null)
   })
 
   it('maps windows/darwin/tv onto landing keys and never prefers hive download', () => {
